@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { HttpException, HttpStatus } from '@nestjs/common';
+import { HttpException, HttpStatus, NotFoundException } from '@nestjs/common';
 import { CreateClientDto } from './dto/create-client.dto';
 import { UpdateClientDto } from './dto/update-client.dto';
 import { PrismaService } from 'prisma/prisma.service';
@@ -92,7 +92,7 @@ export class ClientService {
       where: {id}
     })
     if(!client) {
-      throw new HttpException('Cliente no encontrado', HttpStatus.NOT_FOUND);
+      throw new NotFoundException('Cliente no encontrado');
     }
 
     return await this.prisma.client.findUnique({
@@ -112,7 +112,7 @@ export class ClientService {
       where: {id}
     });
     if(!client){
-      throw new HttpException('Cliente no encontrado', HttpStatus.NOT_FOUND);
+      throw new NotFoundException('Cliente no encontrado');
     }
     return await this.prisma.client.update({
       where: {id},
@@ -134,6 +134,13 @@ export class ClientService {
    * @returns el cliente eliminado o null si no existe
    */
   async remove(id: number) {
+    const client = await this.prisma.client.findUnique({
+      where: {id}
+    })
+    if(!client){
+      throw new NotFoundException('Cliente no encontrado');
+    }
+    
     return await this.prisma.client.update({
       where: { id },
       data: { isActive: false}
