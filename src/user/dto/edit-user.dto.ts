@@ -3,9 +3,6 @@ import {UserRole} from '../../user/dto/create-user.dto'
 
 export class EditUserDto{
 
-    @IsNumber()
-    id: number
-
     @IsString()
     @IsOptional()
     firstName?: string;

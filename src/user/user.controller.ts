@@ -1,8 +1,10 @@
-import { Controller, Get, Post, Body, Query, Logger, Delete, Patch } from '@nestjs/common';
+import { Controller, Get, Post, Body, Query, Logger, Delete, Patch, Param } from '@nestjs/common';
 import { UserService } from './user.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { EditUserDto } from './dto/edit-user.dto';
 import { ApiResponse } from '../common/dto/response.dto';
+import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
+import e from 'express';
 
 @Controller('users')
 export class UserController {
@@ -11,66 +13,74 @@ export class UserController {
   constructor(private userService: UserService){}
 
   @Get()
-  async getAllUsers(@Query('active') active?: string) {
-    try {
-      // Convertir el parámetro `active` a un booleano o undefined
-      let isActive: boolean | undefined;
-      if (active === 'true') {
-        isActive = true;
-      } else if (active === 'false') {
-        isActive = false;
-      }
-
-      const res = await this.userService.getAllUsers(isActive);
-      return ApiResponse.ok(res, 'Users retrieved successfully');
-    } catch (error) {
-      this.logger.error(error);
-      return ApiResponse.error('Failed to retrieve users', error);
+  async getAllUsers(
+    @Query('active') active?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string
+) {
+    // Convertir el parámetro `active` a un booleano o undefined
+    let isActive: boolean | undefined;
+    if (active === 'true') {
+      isActive = true;
+    } else if (active === 'false') {
+      isActive = false;
     }
+
+    // Convertir paginación manualmente
+    const pagination: PaginationParamsDto = {
+      page: page ? parseInt(page, 10) : undefined,
+      limit: limit ? parseInt(limit, 10) : undefined
+    };
+
+    const res = await this.userService.getAllUsers(isActive, pagination);
+    return ApiResponse.ok(res, 'Usuarios encontrados exitosamente');
   }
 
   @Get('search')
-  async findUser(@Query('id') id?: number, @Query('email') email ?: string, @Query('userName') userName ?: string){
-    try{
-      const idNumber = id ? Number(id) : undefined;
-      const res = await this.userService.findUser(idNumber, email, userName);
-      return ApiResponse.ok(res, 'User retrieved successfully');
-    }catch (error){
-      this.logger.error(error);
-      return ApiResponse.error('Failed to retrieve user', error);
+  async findUser(
+    @Query('email') email ?: string, 
+    @Query('userName') userName ?: string,
+    @Query('isActive') isActive ?: string,
+    @Query('page') page ?: string, 
+    @Query('limit') limit ?: string
+) {
+    //Convertir el parametro isActive a booleano o undefined
+    let active : boolean | undefined;
+    if (isActive === 'true') {
+        active = true;
+    } else if (isActive === 'false') {
+        active = false;
     }
+    const pagination: PaginationParamsDto = {
+        page: page ? parseInt(page, 10) : undefined,
+        limit: limit ? parseInt(limit, 10) : undefined
+    };
+
+    const res = await this.userService.findUser(email, userName, active, pagination);
+    return ApiResponse.ok(res, 'Usuario encontrado exitosamente');
+  }
+
+  @Get(':id')
+  async getUserById(@Param ('id') id: number){
+    const res = await this.userService.getUserById(id);
+    return ApiResponse.ok(res, 'Usuario encontrado exitosamente');
   }
 
   @Post()
   async createUser(@Body() data: CreateUserDto){
-    try{
-      const res = await this.userService.createUser(data);
-      return ApiResponse.ok(res, 'User created successfully');
-    }catch (error){
-      this.logger.error(error);
-      return ApiResponse.error('Failed to create user', error);
-    }
+    const res = await this.userService.createUser(data);
+    return ApiResponse.ok(res, 'Usuario creado exitosamente');
   }
 
-  @Patch('edit')
-  async editUser(@Body() data: EditUserDto){
-    try{
-      const res = await this.userService.editUser(data);
-      return ApiResponse.ok(res, 'User updated successfully');
-    }catch (error){
-      this.logger.error(error);
-      return ApiResponse.error('Failed to update user', error);
-    }
+  @Patch(':id')
+  async editUser(@Param('id') id: number, @Body() data: EditUserDto){
+    const res = await this.userService.editUser(id, data);
+    return ApiResponse.ok(res, 'Usuario actualizado exitosamente');
   }
 
-  @Delete('delete')
-  async deleteUser(@Body('id') id: number){
-    try{
-      const res = await this.userService.deleteUser(id);
-      return ApiResponse.ok(res, 'User deleted successfully');
-    }catch(error){
-      this.logger.error(error);
-      return ApiResponse.error('Failed to delete user', error);
-    }
+  @Delete(':id')
+  async deleteUser(@Param('id') id: number){
+    const res = await this.userService.deleteUser(id);
+    return ApiResponse.ok(res, 'Usuario eliminado exitosamente');
   }
 }
