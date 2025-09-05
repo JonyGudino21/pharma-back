@@ -6,7 +6,6 @@
 
 generator client {
   provider = "prisma-client-js"
-  output   = "../generated/prisma"
 }
 
 datasource db {
@@ -33,6 +32,7 @@ model Client {
 
   @@index([name])
   @@index([rfc])
+  //TODO: agregar phone y email para busqueda
 }
 
 model Product {
