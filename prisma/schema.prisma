@@ -173,6 +173,7 @@ model User {
   sale                      Sale[]
   productPriceHistory       ProductPriceHistory[]
   clientProductPriceHistory ClientProductPriceHistory[]
+  token                     UserToken[]
 
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
@@ -273,6 +274,33 @@ model ClientProductPriceHistory {
 
   startDate   DateTime      @default(now())
   endDate     DateTime?
+}
+
+model UserToken {
+  id            Int       @id @default(autoincrement())
+
+  user          User      @relation(fields: [userId], references: [id])
+  userId        Int
+
+  token         String    @unique
+  type          TokenType @default(REFRESH)
+  ipAddress     String?
+  userAgent     String?
+  lastUsedAt    DateTime?
+  expiresAt     DateTime
+  revoked       Boolean   @default(false)
+  revokedAt     DateTime?
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+enum TokenType {
+  REFRESH          // Para refrescar access tokens
+  ACCESS           // Para acceso a recursos (JWT usualmente)
+  VERIFICATION     // Para verificar email/cuenta
+  PASSWORD_RESET   // Para resetear contraseña
+  API              // Tokens de API de larga duración
 }
 
 enum UserRole {
