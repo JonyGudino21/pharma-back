@@ -32,7 +32,8 @@ model Client {
 
   @@index([name])
   @@index([rfc])
-  //TODO: agregar phone y email para busqueda
+  @@index([phone])
+  @@index([email])
 }
 
 model Product {
@@ -293,6 +294,9 @@ model UserToken {
 
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
+
+  @@index([token])
+  @@index([userId])
 }
 
 enum TokenType {
