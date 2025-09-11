@@ -15,6 +15,12 @@ export class CategoryService {
    * @returns La categoria creada
    */
   async create(data: CreateCategoryDto) {
+    //Validar que la categoria no exista
+    const category = await this.prisma.category.findUnique({
+      where: {name: data.name}
+    }); 
+    if(category) throw new BadRequestException('La categoria ya existe');
+
     return await this.prisma.category.create({
       data:{
         name: data.name,
@@ -83,12 +89,38 @@ export class CategoryService {
     return category;
   }
 
-  update(id: number, updateCategoryDto: UpdateCategoryDto) {
-    return `This action updates a #${id} category`;
+  /**
+   * Actualizar una categoria por su ID
+   * @param id Id de la categoria a actualizar
+   * @param updateCategoryDto DTO de categoria a actualizar
+   * @returns La categoria actualizada
+   */
+  async update(id: number, updateCategoryDto: UpdateCategoryDto) {
+    const category = this.validateCategory(id);
+
+    return await this.prisma.category.update({
+      where: {id},
+      data: {
+        name: updateCategoryDto.name,
+        description: updateCategoryDto.description,
+        isActive: updateCategoryDto.isActive ?? true
+      }
+    });
   }
 
-  remove(id: number) {
-    return `This action removes a #${id} category`;
+  async remove(id: number) {
+    const category = this.validateCategory(id);
+
+    return await this.prisma.category.update({
+      where: {id},
+      data: {
+        isActive: false
+      }
+    })
+  }
+
+  async search(name: string) {
+
   }
 
   /**
