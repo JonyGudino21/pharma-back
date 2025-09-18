@@ -39,8 +39,8 @@ model Client {
 model Product {
   id             Int                @id @default(autoincrement())
 
-  category       Category           @relation(fields: [categoryId], references: [id])
-  categoryId     Int
+  category       Category?          @relation(fields: [categoryId], references: [id])
+  categoryId     Int?
 
   name           String
   description    String?
