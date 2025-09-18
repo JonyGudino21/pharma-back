@@ -97,6 +97,7 @@ export class CategoryService {
    */
   async update(id: number, updateCategoryDto: UpdateCategoryDto) {
     const category = this.validateCategory(id);
+    console.log(updateCategoryDto);
 
     return await this.prisma.category.update({
       where: {id},
@@ -119,8 +120,47 @@ export class CategoryService {
     })
   }
 
-  async search(name: string) {
+  async search(name: string, pagination?: PaginationParamsDto) {
+    const hasPagination = pagination && (pagination.page !== undefined || pagination.limit !== undefined)
+    const page = hasPagination ? pagination?.page ?? 1 : 1;
+    const limit = hasPagination ? pagination?.limit ?? 20 : 20;
+    const skip = (page - 1) * limit;
 
+    const conditions: Array<{ [key: string]: { contains: string; mode: 'insensitive' } }> = [];
+    if(name) {
+      conditions.push({ name: { contains: name, mode: 'insensitive' } });
+    }
+
+    const where = conditions.length > 0 ? { OR: conditions } : {};
+
+    // Si no hay paginacion devolvemos todas las categorias
+    if(!hasPagination) {
+      const categories = await this.prisma.category.findMany({
+        where,
+        orderBy: { name: 'asc' }
+      });
+      return { categories };
+    }
+
+    const [categories, total] = await Promise.all([
+      this.prisma.category.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { name: 'asc' }
+      }),
+      this.prisma.category.count({ where })
+    ])
+
+    return{
+      categories,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit)
+      }
+    }
   }
 
   /**
