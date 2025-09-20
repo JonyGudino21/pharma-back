@@ -39,9 +39,6 @@ model Client {
 model Product {
   id             Int                @id @default(autoincrement())
 
-  category       Category?          @relation(fields: [categoryId], references: [id])
-  categoryId     Int?
-
   name           String
   description    String?
   sku            String             @unique                // Código interno
@@ -56,6 +53,9 @@ model Product {
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
 
+  // Relación muchos a muchos con categorías
+  categories     ProductCategory[]
+  
   saleItems                 SaleItem[]
   priceHistory              ProductPriceHistory[]
   purchaseItems             PurchaseItem[]
@@ -154,10 +154,33 @@ model Category {
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
 
-  products     Product[]
+  // Relación muchos a muchos con productos
+  products     ProductCategory[]
 
   @@unique([name])
   @@index([isActive])
+}
+
+// Tabla intermediaria para la relación muchos a muchos entre Product y Category
+model ProductCategory {
+  id          Int      @id @default(autoincrement())
+  
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId   Int
+  
+  category    Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  categoryId  Int
+  
+  // Campos adicionales opcionales
+  isPrimary   Boolean  @default(false)  // Categoría principal del producto
+  order       Int?                      // Orden de importancia de la categoría
+  
+  createdAt   DateTime @default(now())
+  
+  @@unique([productId, categoryId])  // Evita duplicados
+  @@index([productId])
+  @@index([categoryId])
+  @@index([isPrimary])
 }
 
 model User {
