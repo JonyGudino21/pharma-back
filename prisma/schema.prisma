@@ -103,6 +103,8 @@ model Sale {
 
   items         SaleItem[]
   payments      SalePayment[]
+  saleReturn    SaleReturn[]
+  saleRefunds   SaleRefund[]
 
   @@index([createdAt])
   @@index([invoiceNumber])
@@ -141,6 +143,51 @@ model SalePayment {
 
   @@index([saleId])
   @@index([method])
+}
+
+model SaleReturn { 
+  id             Int         @id @default(autoincrement())
+  
+  sale           Sale        @relation(fields: [saleId], references: [id])
+  saleId         Int
+  processedBy    User?       @relation(fields: [processedById], references: [id])
+  processedById  Int?
+
+  note           String?
+
+  createdAt      DateTime   @default(now())
+
+  items          SaleReturnItem[]
+  refund         SaleRefund[]
+}
+
+model SaleReturnItem {
+  id            Int        @id @default(autoincrement())
+
+  saleReturn    SaleReturn @relation(fields: [saleReturnId], references: [id])
+  saleReturnId  Int
+
+  saleItemId    Int
+  productId     Int
+  quantity      Int
+  unitPrice     Decimal   @db.Decimal(10, 2)
+  subtotal      Decimal   @db.Decimal(12, 2)
+  reason        String?
+}
+
+model SaleRefund {
+  id           Int        @id @default(autoincrement())
+
+  saleReturn   SaleReturn @relation(fields: [saleReturnId], references: [id])
+  saleReturnId Int        @unique
+  sale         Sale       @relation(fields: [saleId], references: [id])
+  saleId       Int
+
+  amount       Decimal    @db.Decimal(12,2)
+  method       PaymentMethod?
+  reference    String?
+
+  createdAt    DateTime  @default(now())
 }
 
 //TODO: Registrar el vuelto en un futuro: CashMovement, CashMovementType, CashMovementCategory 
@@ -198,6 +245,7 @@ model User {
   productPriceHistory       ProductPriceHistory[]
   clientProductPriceHistory ClientProductPriceHistory[]
   token                     UserToken[]
+  saleReturn                SaleReturn[]
 
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
