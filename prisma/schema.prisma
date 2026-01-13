@@ -330,6 +330,10 @@ model ClientProductPrice { //precios especiales por cliente.
   isActive   Boolean      @default(true)
 
   createdAt  DateTime     @default(now())
+
+  @@unique([clientId, productId])
+  @@index([clientId])
+  @@index([productId])
 }
 
 model ClientProductPriceHistory {
