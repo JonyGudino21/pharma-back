@@ -94,6 +94,7 @@ model Sale {
   invoiceNumber String?       @unique   //AAA010101AAA202401000000001  Para CFDI 4.0 en México
   total         Decimal       @db.Decimal(12, 2)
   subtotal      Decimal       @db.Decimal(12, 2)
+  flowStatus    SaleFlowStatus @default(DRAFT)
   status        SaleStatus    @default(PENDING)   
   paymentMethod PaymentMethod @default(CASH)
   note          String?
@@ -401,6 +402,12 @@ enum SaleStatus {
   COMPLETED   // Pagada completamente
   CANCELLED
   REFUNDED    // Rembolsado
+}
+
+enum SaleFlowStatus {
+  DRAFT        // Venta abierta, editable
+  COMPLETED    // Venta cerrada (stock ya impactado)
+  CANCELLED    // Cancelada antes de cerrar
 }
 
 enum PurchaseStatus {
