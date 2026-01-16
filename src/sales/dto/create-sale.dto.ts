@@ -1,7 +1,7 @@
 import { IsInt, IsNumber, IsOptional, IsPositive, ValidateNested, IsArray, IsString } from 'class-validator';
 import { Type } from 'class-transformer';
 
-class SaleItemDto{
+export class SaleItemDto{
   @IsInt()
   productId: number;
 
