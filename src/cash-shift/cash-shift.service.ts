@@ -5,6 +5,7 @@ import { PerformOperationDto } from './dto/perform-operation.dto';
 import { OpenShiftDto } from './dto/open-shift.dto';
 import { CloseShiftDto } from './dto/close-shift.dto';
 import { Decimal } from '@prisma/client/runtime/library';
+import { GetShiftsFilterDto } from './dto/get-shifts-filter.dto';
 
 @Injectable()
 export class CashShiftService {
@@ -168,5 +169,74 @@ export class CashShiftService {
         }
       };
     });
+  }
+
+/**
+ * Obtiene todos los turnos de caja
+ * @param filters filtros de búsqueda
+ * @returns todos los turnos de caja
+ */
+  async findAll(filters?: GetShiftsFilterDto) {
+    const hasPagination = filters && (filters.page !== undefined || filters.limit !== undefined);
+    const page = hasPagination ? filters?.page ?? 1 : 1;
+    const limit = hasPagination ? filters?.limit ?? 20 : 20;
+    const skip = (page - 1) * limit;
+
+    const where: any = {};
+    if(filters?.userId) {
+      where.userId = filters.userId;
+    }
+    if(filters?.status) {
+      where.status = filters.status;
+    }
+    if(filters?.startDate) {
+      where.openedAt = { gte: new Date(filters.startDate) };
+    }
+    if(filters?.endDate) {
+      where.openedAt = { lte: new Date(new Date(filters.endDate).setHours(23, 59, 59, 999)) };
+    }
+
+    if(!hasPagination){
+      const shifts = await this.prisma.cashShift.findMany({
+        where,
+        orderBy: { openedAt: 'desc' }
+      });
+      return { shifts: shifts };
+    }
+
+    const [shifts, total] = await Promise.all([
+      this.prisma.cashShift.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { openedAt: 'desc' },
+      }),
+      this.prisma.cashShift.count({ where })
+    ]);
+
+    return {
+      shifts,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit)
+      }
+    }
+  }
+
+  async findOne(id: number) {
+    const shift = await this.prisma.cashShift.findUnique({
+      where: { id },
+      include: {
+        user: { select: { id: true, userName: true, firstName: true, lastName: true } },
+        transactions: true, // Movimientos de dinero manuales
+        sales: {
+          select: { id: true, total: true, status: true, paymentMethod: true, createdAt: true }
+        }
+      }
+    });
+    if(!shift) throw new NotFoundException('Turno de caja no encontrado');
+    return shift;
   }
 }

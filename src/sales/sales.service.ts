@@ -14,49 +14,7 @@ export class SalesService {
 
   constructor(private prisma: PrismaService){}
 
-  async create(data: CreateSaleDto, userId?: number) {
-    if (!data.items?.length) throw new BadRequestException('Debe agregar al menos un producto');
-
-    // 1. Validar existencia de productos y obtener info básica
-    const productIds = data.items.map((item) => item.productId);
-    const products = await this.prisma.product.findMany({
-      where: { id: { in: productIds } },
-    });
-    
-    if (products.length !== new Set(productIds).size) {
-       throw new BadRequestException('Alguno de los productos no existe o está duplicado en la solicitud');
-    }
-
-    // 2. Calcular totales con precisión Decimal
-    const { subtotal, total } = this.calcTotals(data.items);
-
-    return await this.prisma.$transaction(async (tx) => {
-      // 3. Crear Venta
-      const sale = await tx.sale.create({
-        data: {
-          clientId: data.clientId ?? null,
-          userId: userId ?? null,
-          subtotal: subtotal,
-          total: total,
-          flowStatus: SaleFlowStatus.DRAFT,
-          status: SaleStatus.PENDING,
-          note: data.note ?? null,
-          items: {
-            create: data.items.map((it) => ({
-              productId: it.productId,
-              quantity: it.quantity,
-              price: it.price,
-              subtotal: new Decimal(it.quantity).mul(new Decimal(it.price)),
-            })),
-          },
-        },
-        include: { items: true },
-      });
-
-      this.logger.log(`Venta creada exitosamente. ID: ${sale.id}, Total: ${sale.total}`);
-      return sale;
-    });
-  }
+  async create(data: CreateSaleDto, userId?: number) {}
 
   async addPayment(saleId: number, data: AddPaymentDto) {
     const sale = await this.validateSale(saleId);
@@ -246,57 +204,6 @@ export class SalesService {
    * @returns el item agregado o actualizado
    */
   async addItem(saleId: number, dto: SaleItemDto, userId?: number) {
-    // 1. Validar que la venta sea editable
-    const sale = await this.validateSale(saleId);
-    this.ensureDraftSale(sale);
-
-    // 2. Validar que el producto exista
-    const product = await this.prisma.product.findUnique({
-       where: { id: dto.productId } 
-      });
-    if(!product) throw new NotFoundException('Producto no encontrado');
-
-    const price = new Decimal(dto.price);
-    const quantity = new Decimal(dto.quantity);
-    const subtotal = price.mul(quantity);
-
-    const existingItem = await this.prisma.saleItem.findFirst({
-      where: { saleId, productId: dto.productId }
-    });
-
-    return this.prisma.$transaction(async (tx) => {
-      if(existingItem) {
-        await tx.saleItem.update({
-          where: { id: existingItem.id },
-          data: { 
-            quantity: existingItem.quantity + dto.quantity, 
-            subtotal: existingItem.subtotal.add(subtotal) 
-          }
-        });
-      } else {
-        await tx.saleItem.create(
-          { data: 
-            { 
-              saleId, 
-              productId: dto.productId, 
-              quantity: dto.quantity, 
-              price: price, 
-              subtotal: subtotal 
-            } 
-          }
-        );
-      }
-
-      // 3. actualizar totales de la venta
-      await tx.sale.update({
-        where: { id: saleId },
-        data: {
-          subtotal: { increment: subtotal },
-          total: { increment: subtotal }
-        }
-      })
-
-    });
   }
 
   /**
