@@ -9,10 +9,21 @@ import { CategoryModule } from './category/category.module';
 import { ProductModule } from './product/product.module';
 import { SuppliersModule } from './suppliers/suppliers.module';
 import { PurchaseModule } from './purchase/purchase.module';
-import { SalesModule } from './sales/sales.module';
+// import { SalesModule } from './sales/sales.module';
+import { CashShiftModule } from './cash-shift/cash-shift.module';
 
 @Module({
-  imports: [PrismaModule, UserModule, ClientModule, AuthModule, CategoryModule, ProductModule, SuppliersModule, PurchaseModule, SalesModule],
+  imports: [
+    PrismaModule, 
+    UserModule, 
+    ClientModule, 
+    AuthModule, 
+    CategoryModule, 
+    ProductModule, 
+    SuppliersModule, 
+    PurchaseModule, 
+    // SalesModule, 
+    CashShiftModule],
   controllers: [AppController],
   providers: [AppService],
 })
