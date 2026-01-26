@@ -14,17 +14,22 @@ datasource db {
 }
 
 model Client {
-  id          Int        @id @default(autoincrement())
-  name        String
-  email       String?    @unique
-  phone       String?
-  address     String?
-  rfc         String?
-  curp        String?
-  isActive    Boolean   @default(true)
+  id             Int        @id @default(autoincrement())
+  name           String
+  email          String?    @unique
+  phone          String?
+  address        String?
+  rfc            String?
+  curp           String?
+  isActive       Boolean   @default(true)
 
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  // Configuración de Crédito
+  hasCredit      Boolean   @default(false)
+  creditLimit    Decimal   @db.Decimal(12, 2) @default(0)
+  currentDebt    Decimal   @db.Decimal(12, 2) @default(0) // Campo calculado/caché para velocidad
+
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   sales                 Sale []
   productPrice          ClientProductPrice[]
@@ -39,9 +44,6 @@ model Client {
 model Product {
   id             Int                @id @default(autoincrement())
 
-  category       Category?          @relation(fields: [categoryId], references: [id])
-  categoryId     Int?
-
   name           String
   description    String?
   sku            String             @unique                // Código interno
@@ -50,17 +52,21 @@ model Product {
   stock          Int @default(0)
   minStock       Int @default(5)
   price          Decimal            @db.Decimal(10, 2)     // Precio de VENTA al público
-  cost           Decimal            @db.Decimal(10, 2)     // Precio de COMPRA al proveedor
+  cost           Decimal            @db.Decimal(10, 2)     // Costo promedio actual
 
   isActive       Boolean            @default(true)
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
 
+  // Relación muchos a muchos con categorías
+  categories     ProductCategory[]
+  
   saleItems                 SaleItem[]
   priceHistory              ProductPriceHistory[]
   purchaseItems             PurchaseItem[]
   clientPrice               ClientProductPrice[]
   clientPriceHistory        ClientProductPriceHistory[]
+  movements                 InventoryMovement[]
 
   @@index([name])
   @@index([sku])
@@ -84,25 +90,41 @@ model ProductPriceHistory {
 }
 
 model Sale {
-  id            Int           @id @default(autoincrement())
+  id               Int           @id @default(autoincrement())
 
-  client        Client?       @relation(fields: [clientId], references: [id])
-  clientId      Int?
-  user          User?         @relation(fields: [userId], references: [id])
-  userId        Int?
+  client           Client?       @relation(fields: [clientId], references: [id])
+  clientId         Int?
+  user             User?         @relation(fields: [userId], references: [id])
+  userId           Int?        
+  // Relación con Turno de Caja (CRÍTICO para cuadrar cajeros)
+  cashShift        CashShift?    @relation(fields: [cashShiftId], references: [id])
+  cashShiftId      Int?
 
-  invoiceNumber String?       @unique   //AAA010101AAA202401000000001  Para CFDI 4.0 en México
-  total         Decimal       @db.Decimal(12, 2)
-  subtotal      Decimal       @db.Decimal(12, 2)
-  status        SaleStatus    @default(PENDING)   
-  paymentMethod PaymentMethod @default(CASH)
-  note          String?
+  // Estado financiero REAL
+  paymentStatus    PaymentStatus @default(PENDING) // PENDING, PARTIAL, PAID
 
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
+  total            Decimal       @db.Decimal(12, 2)
+  subtotal         Decimal       @db.Decimal(12, 2)
+  paidAmount       Decimal       @db.Decimal(12, 2) @default(0) // Cuánto han pagado
+  balance          Decimal       @db.Decimal(12, 2) @default(0) // Cuánto deben (Deuda)
 
-  items         SaleItem[]
-  payments      SalePayment[]
+  // Snapshot de utilidad
+  totalCost        Decimal       @db.Decimal(12, 2) @default(0) // Suma del costo de los items al momento de venta
+  profit           Decimal       @db.Decimal(12, 2) @default(0) // total - totalCost (Sin impuestos)
+
+  invoiceNumber    String?       @unique   //AAA010101AAA202401000000001  Para CFDI 4.0 en México
+  flowStatus       SaleFlowStatus @default(DRAFT)
+  status           SaleStatus    @default(PENDING)    
+  paymentMethod    PaymentMethod @default(CASH)
+  note             String?
+
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  items            SaleItem[]
+  payments         SalePayment[]
+  saleReturn       SaleReturn[]
+  saleRefunds      SaleRefund[]
 
   @@index([createdAt])
   @@index([invoiceNumber])
@@ -123,24 +145,76 @@ model SaleItem {
   discount      Decimal     @db.Decimal(10, 2) @default(0)
   subtotal      Decimal     @db.Decimal(10, 2)
 
+  // Guardamos cuánto costaba este producto HOY para calcular ganancia histórica
+  costAtSale    Decimal     @db.Decimal(10, 2)
+
   @@index([saleId])
   @@index([productId])
 }
 
 model SalePayment {
-  id          Int         @id @default(autoincrement())
+  id            Int         @id @default(autoincrement())
 
-  sale        Sale        @relation(fields: [saleId], references: [id])
-  saleId      Int
+  sale          Sale        @relation(fields: [saleId], references: [id])
+  saleId        Int
 
-  method      PaymentMethod
-  amount      Decimal     @db.Decimal(12,2)
-  references  String?
+  method        PaymentMethod
+  amount        Decimal     @db.Decimal(12,2)
+  references    String?
 
-  createdAt   DateTime    @default(now())
+  // Si es en efectivo, ¿a qué caja entró?
+  cashShiftId   Int?
+  isDeposit     Boolean     @default(true) // true = Pago, false = Reembolso
+
+  createdAt     DateTime    @default(now())
 
   @@index([saleId])
   @@index([method])
+}
+
+model SaleReturn { 
+  id             Int         @id @default(autoincrement())
+  
+  sale           Sale        @relation(fields: [saleId], references: [id])
+  saleId         Int
+  processedBy    User?       @relation(fields: [processedById], references: [id])
+  processedById  Int?
+
+  note           String?
+
+  createdAt      DateTime   @default(now())
+
+  items          SaleReturnItem[]
+  refund         SaleRefund[]
+}
+
+model SaleReturnItem {
+  id            Int        @id @default(autoincrement())
+
+  saleReturn    SaleReturn @relation(fields: [saleReturnId], references: [id])
+  saleReturnId  Int
+
+  saleItemId    Int
+  productId     Int
+  quantity      Int
+  unitPrice     Decimal   @db.Decimal(10, 2)
+  subtotal      Decimal   @db.Decimal(12, 2)
+  reason        String?
+}
+
+model SaleRefund {
+  id           Int        @id @default(autoincrement())
+
+  saleReturn   SaleReturn @relation(fields: [saleReturnId], references: [id])
+  saleReturnId Int        @unique
+  sale         Sale       @relation(fields: [saleId], references: [id])
+  saleId       Int
+
+  amount       Decimal    @db.Decimal(12,2)
+  method       PaymentMethod?
+  reference    String?
+
+  createdAt    DateTime  @default(now())
 }
 
 //TODO: Registrar el vuelto en un futuro: CashMovement, CashMovementType, CashMovementCategory 
@@ -154,10 +228,33 @@ model Category {
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
 
-  products     Product[]
+  // Relación muchos a muchos con productos
+  products     ProductCategory[]
 
   @@unique([name])
   @@index([isActive])
+}
+
+// Tabla intermediaria para la relación muchos a muchos entre Product y Category
+model ProductCategory {
+  id          Int      @id @default(autoincrement())
+  
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId   Int
+  
+  category    Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  categoryId  Int
+  
+  // Campos adicionales opcionales
+  isPrimary   Boolean  @default(false)  // Categoría principal del producto
+  order       Int?                      // Orden de importancia de la categoría
+  
+  createdAt   DateTime @default(now())
+  
+  @@unique([productId, categoryId])  // Evita duplicados
+  @@index([productId])
+  @@index([categoryId])
+  @@index([isPrimary])
 }
 
 model User {
@@ -175,6 +272,8 @@ model User {
   productPriceHistory       ProductPriceHistory[]
   clientProductPriceHistory ClientProductPriceHistory[]
   token                     UserToken[]
+  saleReturn                SaleReturn[]
+  cashData                  CashShift[]
 
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
@@ -259,6 +358,10 @@ model ClientProductPrice { //precios especiales por cliente.
   isActive   Boolean      @default(true)
 
   createdAt  DateTime     @default(now())
+
+  @@unique([clientId, productId])
+  @@index([clientId])
+  @@index([productId])
 }
 
 model ClientProductPriceHistory {
@@ -299,6 +402,108 @@ model UserToken {
   @@index([userId])
 }
 
+model CashShift {
+  id               Int       @id @default(autoincrement())
+  
+  user             User      @relation(fields: [userId], references: [id])
+  userId           Int
+  
+  // Control de tiempos
+  openedAt         DateTime  @default(now())
+  closedAt         DateTime? 
+
+  // Control de dinero
+  initialAmount    Decimal   @db.Decimal(12, 2) // Fondo de caja inicial
+  expectedAmount   Decimal?  @db.Decimal(12, 2) // Calculado por el sistema al cerrar
+  realAmount       Decimal?  @db.Decimal(12, 2) // Lo que el cajero contó físicamente (Cierre ciego)
+  difference       Decimal?  @db.Decimal(12, 2) // real - expected (Positivo sobra, Negativo falta)
+
+  status           ShiftStatus @default(OPEN)
+  
+  notes            String?
+
+  transactions     CashTransaction[] // Movimientos de dinero (Entradas/Salidas/Ventas)
+  sales            Sale[]            // Ventas ligadas a este turno
+
+  @@index([userId])
+  @@index([status])
+  @@index([openedAt])
+}
+
+model CashTransaction {
+  id               Int       @id @default(autoincrement())
+
+  shift            CashShift @relation(fields: [shiftId], references: [id])
+  shiftId          Int
+
+  type             CashTransactionType // INGRESO, EGRESO, CORTE
+  amount           Decimal   @db.Decimal(12, 2)
+  reason           String    // "Retiro por exceso de efectivo", "Pago de luz caja chica"
+  
+  referenceId      Int?      // ID opcional si viene de una Venta o Compra
+  relatedTable     String?   // "Sale", "Purchase"
+
+  createdAt        DateTime  @default(now())
+  createdBy        Int       // User ID
+
+  @@index([shiftId])
+}
+
+model InventoryMovement {
+  id               Int       @id @default(autoincrement())
+
+  product          Product   @relation(fields: [productId], references: [id])
+  productId        Int
+
+  type             MovementType
+  quantity         Int       // Positivo (Entrada), Negativo (Salida)
+  
+  // Snapshot financiero: ¿Cuánto valía esto cuando se movió?
+  unitCost         Decimal   @db.Decimal(10, 2) 
+  totalCost        Decimal   @db.Decimal(12, 2)
+
+  // Trazabilidad
+  reason           String    // "Venta #123", "Merma", "Compra #55"
+  referenceId      Int?      // ID de Venta, Compra o Ajuste
+  
+  createdAt        DateTime  @default(now())
+  createdBy        Int       // User ID
+
+  @@index([productId])
+  @@index([createdAt])
+  @@index([type])
+}
+
+enum PaymentStatus {
+  PENDING
+  PARTIAL
+  PAID
+}
+
+enum MovementType {
+  SALE            // Salida por venta
+  PURCHASE        // Entrada por compra
+  RETURN_IN       // Entrada por devolución de cliente
+  RETURN_OUT      // Salida por devolución a proveedor
+  ADJUSTMENT      // Ajuste de inventario (Robo, Conteo)
+  TRANSFER        // Movimiento entre sucursales (Futuro)
+}
+
+enum ShiftStatus {
+  OPEN
+  CLOSED
+  AUDIT_REQUIRED   // Si la diferencia es muy grande, se marca para revisión
+}
+
+enum CashTransactionType {
+  SALE_INCOME      // Venta Contado
+  CREDIT_PAYMENT   // Cliente paga una deuda
+  MANUAL_ADD       // Ingreso manual
+  MANUAL_WITHDRAW  // Sangría / Retiro
+  EXPENSE          // Gasto menor
+}
+
+
 enum TokenType {
   REFRESH          // Para refrescar access tokens
   ACCESS           // Para acceso a recursos (JWT usualmente)
@@ -326,6 +531,12 @@ enum SaleStatus {
   COMPLETED   // Pagada completamente
   CANCELLED
   REFUNDED    // Rembolsado
+}
+
+enum SaleFlowStatus {
+  DRAFT        // Venta abierta, editable
+  COMPLETED    // Venta cerrada (stock ya impactado)
+  CANCELLED    // Cancelada antes de cerrar
 }
 
 enum PurchaseStatus {

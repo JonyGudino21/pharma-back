@@ -10,15 +10,24 @@ export class CreateProductDto {
   description?: string;
 
   @IsString()
-  sku: string;
+  @IsOptional()
+  strength?: string;  // 500mg, 1000mg, etc.
+
+  @IsString()
+  @IsOptional()
+  format?: string;   //Tableta, capsula, etc.
+
+  @IsString()
+  @IsOptional()
+  presentation?: string; // Adulto, infantil, pediátrico
 
   @IsString()
   @IsOptional()
   barcode?: string;
 
   @IsOptional()
-  @IsNumber()
-  categoryId?: number;
+  @IsNumber({}, { each: true })
+  categories?: number[];
 
   @IsBoolean()
   @IsOptional()
