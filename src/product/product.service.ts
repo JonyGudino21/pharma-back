@@ -4,7 +4,7 @@ import { UpdateProductDto } from './dto/update-product.dto';
 import { PrismaService } from 'prisma/prisma.service';
 import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
 import { NotFoundException } from '@nestjs/common';
-import { Product } from '@prisma/client';
+import { MovementType } from '@prisma/client';
 
 @Injectable()
 export class ProductService {
@@ -17,95 +17,89 @@ export class ProductService {
    * @returns El producto creado
    */
   async create(createProductDto: CreateProductDto, userId: number) {
-    // Generar SKU automáticamente
+    //1. Generar SKU automáticamente
     const sku = await this.generateSKU({
       name: createProductDto.name,
       strength: createProductDto.strength ?? '',
       format: createProductDto.format ?? '', // FIX: Add format to CreateProductDto
     });
 
-    //Verificar unicidad del SKU
-    const existingProductBySku = await this.prisma.product.findFirst({
-      where: {
-        sku
-      }
-    });
-    if(existingProductBySku) {
-      throw new BadRequestException(
-        `El SKU ya existe en el producto: ${existingProductBySku.name} (ID: ${existingProductBySku.id})`
-      );
-    }
+    // 2. Transaccion de nacimiento (blindaje)
+    return await this.prisma.$transaction(async (tx) => {
 
-    //Verificar unicidad del barcode si se proporciona
-    if(createProductDto.barcode) {
-      const existingProductByBarcode = await this.prisma.product.findFirst({
-        where: {
-          barcode: createProductDto.barcode
-        },
-        include: {
-          categories: {
-            include: { category: true }
-          }
-        }
-      });
-      if(existingProductByBarcode) {
-        const productInfo = {
-          id: existingProductByBarcode.id,
-          name: existingProductByBarcode.name,
-          sku: existingProductByBarcode.sku,
-          barcode: existingProductByBarcode.barcode,
-          categories: existingProductByBarcode.categories.map(pc => pc.category.name)
-        };
-        throw new BadRequestException(
-          `El código de barras ya existe en el producto: ${existingProductByBarcode.name} (ID: ${existingProductByBarcode.id}, SKU: ${existingProductByBarcode.sku})`
-        );
-      }
-    }
-
-    //Validar categorias
-    if(createProductDto.categories) {
-      const categories = await this.prisma.category.findMany({
-        where: {
-          id: {in: createProductDto.categories}
-        }
-      });
-      if(categories.length !== createProductDto.categories.length) throw new BadRequestException('Alguna categoría no existe');
-    }
-
-    const product = await this.prisma.product.create({
-      data: {
-        name: createProductDto.name,
-        description: createProductDto.description,
-        sku,
-        barcode: createProductDto.barcode,
-        controlled: createProductDto.controlled ?? false,
-        stock: createProductDto.stock ?? 0,
-        minStock: createProductDto.minStock ?? 5,
-        price: createProductDto.price,
-        cost: createProductDto.cost,
-        isActive: true,
-        categories: createProductDto.categories
-          ? {
+      // A.Crear el producto (SIEMPRE con stock 0 al inicio)
+      const product = await tx.product.create({
+        data: {
+          name: createProductDto.name,
+          description: createProductDto.description,
+          sku,
+          barcode: createProductDto.barcode,
+          controlled: createProductDto.controlled ?? false,
+          stock: 0, // SIEMPRE con stock 0 al inicio, la verdad la dicta el movimiento
+          minStock: createProductDto.minStock ?? 5,
+          price: createProductDto.price,
+          cost: createProductDto.cost,
+          isActive: true,
+          categories: createProductDto.categories
+            ? {
               create: createProductDto.categories.map((catId) => ({
                 category: { connect: { id: catId } },
               })),
             }
           : undefined,
-      },
-      include: { categories: { include: { category: true } } },
-    });
-  
-    // Registrar historial de precio inicial
-    await this.prisma.productPriceHistory.create({
-      data: {
-        productId: product.id,
-        changedById: userId,
-        price: product.price,
-        startDate: new Date(),
-      },
-    });
-  
-    return product;
+        },
+        include: {
+          categories: {
+            include: { category: true },
+          }
+        }
+      });
+
+      // B. Crear el historial de precio
+      await tx.productPriceHistory.create({
+        data: {
+          productId: product.id,
+          changedById: userId,
+          price: createProductDto.price,
+          startDate: new Date(),
+        }
+      });
+
+      // C. Gestion de stock inicial
+      const initialStock = createProductDto.stock ?? 0;
+
+      if(initialStock > 0){
+        // Crear movimiento que justifica la exitencia de estas unidades
+        await tx.inventoryMovement.create({
+          data: {
+            productId: product.id,
+            type: MovementType.ADJUSTMENT, 
+            quantity: initialStock,
+            unitCost: createProductDto.cost,
+            totalCost: initialStock * createProductDto.cost,
+            reason: 'Inventario inicial al Crear el producto',
+            createdBy: userId,
+          }
+        });
+
+        // Atualizar el cache de stock del producto
+        const updatedProduct = await tx.product.update({
+          where: { id: product.id },
+          data: {
+            stock: initialStock,
+          },
+          include: {
+            categories: {
+              include: { category: true },
+            }
+          }
+        });
+
+        return updatedProduct;
+      }
+      
+      return product;
+    })
   }
 
   async findAll(active?: boolean, pagination?: PaginationParamsDto) {
