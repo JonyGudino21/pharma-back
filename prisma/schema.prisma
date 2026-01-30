@@ -481,11 +481,13 @@ enum PaymentStatus {
 }
 
 enum MovementType {
+  INITIAL       // Saldo inicial al crear producto
   SALE            // Salida por venta
   PURCHASE        // Entrada por compra
   RETURN_IN       // Entrada por devolución de cliente
   RETURN_OUT      // Salida por devolución a proveedor
   ADJUSTMENT      // Ajuste de inventario (Robo, Conteo)
+  LOSS          // Merma conocida (roto, caducado, robo confirmado) - Gasto
   TRANSFER        // Movimiento entre sucursales (Futuro)
 }
 
