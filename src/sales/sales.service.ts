@@ -1,9 +1,8 @@
 import { Injectable, BadRequestException, NotFoundException, Logger, ConflictException } from '@nestjs/common';
 import { CreateSaleDto } from './dto/create-sale.dto';
-import { UpdateSaleDto } from './dto/update-sale.dto';
 import { AddPaymentDto } from './dto/add-payment.dto';
 import { PrismaService } from '../../prisma/prisma.service';
-import { PaymentMethod, SaleFlowStatus, SaleStatus, Sale, SaleItem, ClientProductPrice, PaymentStatus, MovementType, CashTransactionType } from '@prisma/client';
+import { PaymentMethod, SaleFlowStatus, SaleStatus, Sale, SaleItem, ClientProductPrice, PaymentStatus, MovementType, CashTransactionType, SaleRefund } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { ReturnSaleDto } from './dto/return-sale.dto';
 import { SaleItemDto } from './dto/create-sale.dto';
@@ -274,139 +273,241 @@ export class SalesService {
 
   /**
    * Devvolcuio de venta - parcial o total
+   * Maneja: Reingreso al Kardex, Reembolso de Efectivo o Ajuste de Crédito.
    * @param saleId el ID de la venta
    * @param dto los datos de la devolución
    * @param userId el ID del usuario que crea la devolución
    * @returns la devolución creada
    */
-  async createReturn(saleId: number, dto: ReturnSaleDto, userId?: number) {
-    const sale = await this.validateSale(saleId);
+  async createReturn(saleId: number, dto: ReturnSaleDto, userId: number) {
+    // Valia estado de la venta original
+    const sale = await this.prisma.sale.findUnique({ where: { id: saleId }, include: { client: true } });
 
+    if (!sale) throw new NotFoundException('Venta no encontrada');
     if (sale.flowStatus !== SaleFlowStatus.COMPLETED) {
-      throw new BadRequestException('Solo se pueden devolver ventas cerradas');
+      throw new BadRequestException('Solo se pueden hacer devoluciones sobre ventas FINALIZADAS');
     }
 
+    // 2. Traer items originales para validar cantidades
     const saleItems = await this.prisma.saleItem.findMany({ where: { saleId } });
-    if (!saleItems.length) throw new BadRequestException('No hay productos en la venta');
+    const itemsMap = new Map(saleItems.map(it => [it.id, it]));
 
-    const itemsById = new Map(saleItems.map(it => [it.id, it]));
-
-    // Validaciones previas
-    for (const r of dto.items) {
-      const orig = itemsById.get(r.saleItemId);
-      if (!orig) throw new BadRequestException(`Producto de venta ${r.saleItemId} no encontrado`);
-      if (r.quantity <= 0 || r.quantity > orig.quantity) {
-        throw new BadRequestException(`Cantidad de devolución inválida para el item ${r.saleItemId}`);
-      }
-    }
-
+    // Validar que no estemos devolviendo más de lo vendido
+    // (Aquí podrías agregar lógica para restar lo que YA se ha devuelto antes en otros Returns)
+    
     return await this.prisma.$transaction(async (tx) => {
-      const createdReturn = await tx.saleReturn.create({
+      // A. Crear Cabecera de Devolución
+      const saleReturn = await tx.saleReturn.create({
         data: {
           saleId,
-          processedById: userId ?? null,
-          note: dto.note ?? undefined,
+          processedById: userId,
+          note: dto.note,
         },
       });
 
-      let totalRefund = new Decimal(0);
+      let totalRefundAmount = new Decimal(0);
 
-      for (const r of dto.items) {
-        const orig = itemsById.get(r.saleItemId)!;
-        const unitPrice = new Decimal(orig.price);
-        const quantity = new Decimal(r.quantity);
-        const subtotal = unitPrice.mul(quantity);
+      // B. Procesar cada item devuelto
+      for (const itemDto of dto.items) {
+        const originalItem = itemsMap.get(itemDto.saleItemId);
+        if (!originalItem) throw new BadRequestException(`Item ${itemDto.saleItemId} no pertenece a esta venta`);
 
-        await tx.saleReturnItem.create({
-          data: {
-            saleReturnId: createdReturn.id,
-            saleItemId: orig.id,
-            productId: orig.productId,
-            quantity: r.quantity,
-            unitPrice: unitPrice,
-            subtotal: subtotal,
-            reason: r.reason ?? undefined,
-          },
-        });
-
-        if (r.restock) {
-          await tx.product.update({
-            where: { id: orig.productId },
-            data: { stock: { increment: r.quantity } }
-          });
+        if (itemDto.quantity > originalItem.quantity) {
+             throw new BadRequestException(`No puedes devolver ${itemDto.quantity} cuando solo se vendieron ${originalItem.quantity}`);
         }
 
-        totalRefund = totalRefund.add(subtotal);
-      }
+        const unitPrice = new Decimal(originalItem.price);
+        const subtotal = unitPrice.mul(new Decimal(itemDto.quantity));
+        totalRefundAmount = totalRefundAmount.add(subtotal);
 
-      let refund: any = null;
-      if (dto.refundToCustomer) {
-        refund = await tx.saleRefund.create({
+        // Registro de Item de Devolución
+        await tx.saleReturnItem.create({
           data: {
-            saleReturnId: createdReturn.id,
-            saleId,
-            amount: totalRefund,
+            saleReturnId: saleReturn.id,
+            saleItemId: originalItem.id,
+            productId: originalItem.productId,
+            quantity: itemDto.quantity,
+            unitPrice: unitPrice,
+            subtotal: subtotal,
+            reason: itemDto.reason,
           },
         });
 
-        // Registrar salida de dinero si aplica (opcional, según lógica de negocio)
-        await tx.salePayment.create({
-          data: {
-            saleId,
-            method: PaymentMethod.CASH, // Asumimos efectivo por defecto o debería venir en DTO
-            amount: totalRefund.negated(), // Negativo para representar salida? O positivo con nota?
-            // En muchos sistemas un pago negativo es un reembolso. Aquí lo dejaremos positivo pero con referencia clara.
-            references: `Reembolso - Devolución #${createdReturn.id}`,
-          },
-        });
+        // C. IMPACTO EN INVENTARIO (Kardex)
+        // Solo si restock es true (está en buen estado). 
+        // Si es false (merma), no lo metemos a stock de venta (o podrías meterlo directo a LOSS)
+        if (itemDto.restock) {
+            await this.inventoryService.registerMovement(
+                {
+                    productId: originalItem.productId,
+                    type: MovementType.RETURN_IN, // Entrada por devolución
+                    quantity: itemDto.quantity,
+                    reason: `Devolución Venta #${saleId} - Return #${saleReturn.id}`,
+                    referenceId: saleReturn.id
+                },
+                userId,
+                tx
+            );
+        } else {
+            // Si no es restock (está roto), registramos como LOSS
+            await this.inventoryService.registerMovement(
+              {
+                productId: originalItem.productId,
+                type: MovementType.LOSS,
+                quantity: itemDto.quantity,
+                reason: `Devolución Venta #${saleId} - Return #${saleReturn.id}`,
+                referenceId: saleReturn.id
+              },
+              userId,
+              tx
+            );
+        }
       }
 
-      // Actualizar estado de venta si todo fue devuelto
-      const totalReturnedQty = saleItems.reduce((s, it) => s + it.quantity, 0); // Simplificación: esto debería sumar lo ya devuelto + lo actual
-      // Para hacerlo bien, deberíamos sumar todos los returns previos. Por ahora mantenemos lógica simple.
+      // D. IMPACTO FINANCIERO (Reembolso)
+      let refundData: SaleRefund | null = null;
       
-      this.logger.log(`Devolución creada para venta ${saleId}. Total reembolsado: ${totalRefund}`);
-      return { createdReturn, refund };
+      if (dto.refundToCustomer) {
+        // Opción 1: Era venta a Crédito -> Bajamos la deuda
+        if (sale.client && sale.balance.gt(0)) {
+            // Lógica: Si debe dinero, no le damos efectivo, le bajamos la deuda.
+            const newDebt = new Decimal(sale.client.currentDebt).sub(totalRefundAmount);
+            await tx.client.update({
+                where: { id: sale.client.id },
+                data: { currentDebt: newDebt.lessThan(0) ? 0 : newDebt } // No deuda negativa
+            });
+            // Ajustamos el balance de la venta
+            await tx.sale.update({
+                where: { id: saleId },
+                data: { balance: sale.balance.sub(totalRefundAmount) }
+            });
+        } 
+        // Opción 2: Era venta Contado -> Reembolso de Efectivo (Requiere Caja Abierta)
+        else {
+             const currentShift = await this.cashShiftService.getCurrentShift(userId);
+             if (!currentShift) {
+                 throw new ConflictException('Se requiere caja abierta para realizar reembolso en efectivo');
+             }
+
+             // Registramos Salida de Dinero en Caja
+             await this.cashShiftService.registerOperation(userId, {
+                 type: CashTransactionType.EXPENSE, // O un tipo específico REFUND
+                 amount: totalRefundAmount.toNumber(), // Convertir a number para el servicio
+                 reason: `Reembolso por Devolución #${saleReturn.id}`
+             });
+
+             // Registro contable del reembolso
+             refundData = await tx.saleRefund.create({
+                data: {
+                    saleReturnId: saleReturn.id,
+                    saleId: saleId,
+                    amount: totalRefundAmount,
+                    method: PaymentMethod.CASH // O el método que se usó
+                }
+             });
+        }
+      }
+
+      this.logger.log(`Devolución #${saleReturn.id} procesada por $${totalRefundAmount}`);
+      return { saleReturn, refund: refundData };
     });
   }
 
   /**
-   * Agregar un item a una venta
+   * Agregar un producto a una venta
    * @param saleId el ID de la venta
-   * @param dto los datos del item a agregar
-   * @param userId el ID del usuario que agrega el item
+    * @param dto los datos del item a agregar
    * @returns el item agregado o actualizado
    */
-  async addItem(saleId: number, dto: SaleItemDto, userId?: number) {
+  async addItem(saleId: number, dto: SaleItemDto) {
+    const sale = await this.validateSale(saleId);
+    this.ensureDraftSale(sale);
+
+    // 1. Buscar producto y precio real
+    const product = await this.prisma.product.findUnique({ where: { id: dto.productId } });
+    if (!product || !product.isActive) throw new NotFoundException('Producto no válido');
+
+    // Lógica de precio especial (Simplificada para un item, idealmente reutilizar lógica de create)
+    let price = product.price;
+    if (sale.clientId) {
+       const specialPrice = await this.prisma.clientProductPrice.findUnique({
+           where: { clientId_productId: { clientId: sale.clientId, productId: product.id } }
+       });
+       if (specialPrice && specialPrice.isActive) price = specialPrice.price;
+    }
+
+    const quantity = new Decimal(dto.quantity);
+    const subtotal = price.mul(quantity);
+
+    return await this.prisma.$transaction(async (tx) => {
+      // Upsert: Si ya existe el item, sumamos cantidad. Si no, creamos.
+      const existingItem = await tx.saleItem.findFirst({
+          where: { saleId, productId: dto.productId }
+      });
+
+      if (existingItem) {
+          // Actualizar existente
+          const newQty = new Decimal(existingItem.quantity).add(quantity);
+          const newSubtotal = price.mul(newQty);
+          await tx.saleItem.update({
+              where: { id: existingItem.id },
+              data: { quantity: newQty.toNumber(), subtotal: newSubtotal }
+          });
+      } else {
+          // Crear nuevo
+          await tx.saleItem.create({
+              data: {
+                  saleId,
+                  productId: dto.productId,
+                  quantity: dto.quantity,
+                  price: price,
+                  subtotal: subtotal,
+                  costAtSale: product.cost // Snapshot
+              }
+          });
+      }
+
+      // Recalcular Total Venta
+      // Lo hacemos sumando subtotales de items para evitar errores de deriva
+      const agg = await tx.saleItem.aggregate({ where: { saleId }, _sum: { subtotal: true } });
+      const newTotal = agg._sum.subtotal ?? new Decimal(0);
+
+      await tx.sale.update({
+          where: { id: saleId },
+          data: { total: newTotal, subtotal: newTotal, balance: newTotal.sub(sale.paidAmount) }
+      });
+      
+      return { message: 'Producto agregado', newTotal };
+    });
   }
 
   /**
-   * Eliminar un item de una venta
+   * Eliminar un producto de una venta
    * @param saleId el ID de la venta
    * @param itemId el ID del item a eliminar
    * @returns el item eliminado
    */
   async deleteItem(saleId: number, itemId: number) {
-    // 1. Validar que la venta sea editable
+    // Validar que la venta sea editable
     const sale = await this.validateSale(saleId);
     this.ensureDraftSale(sale);
 
-    // 2. Validar que el item exista
-    const item = await this.prisma.saleItem.findUnique({
-      where: { id: itemId }
-    });
-    if(!item) throw new NotFoundException('Producto no encontrado en la venta');
-
     return this.prisma.$transaction(async (tx) => {
+      const item = await tx.saleItem.findUnique({ where: { id: itemId } });
+      if (!item) throw new NotFoundException('Item no encontrado');
+
       await tx.saleItem.delete({ where: { id: itemId } });
 
+      // Recálculo seguro
+      const agg = await tx.saleItem.aggregate({ where: { saleId }, _sum: { subtotal: true } });
+      const newTotal = agg._sum.subtotal ?? new Decimal(0);
+
       await tx.sale.update({
-        where: { id: saleId },
-        data: {
-          subtotal: { decrement: item.subtotal },
-          total: { decrement: item.subtotal }
-        }
+          where: { id: saleId },
+          data: { total: newTotal, subtotal: newTotal, balance: newTotal.sub(sale.paidAmount) }
       });
+      
+      return { message: 'Producto eliminado', newTotal };
     });
   }
 
@@ -492,14 +593,6 @@ export class SalesService {
       return completedSale;
 
     });
-  }
-
-  private calcTotals(items: { quantity: number, price: number }[]) {
-    let subtotal = new Decimal(0);
-    for (const item of items) {
-      subtotal = subtotal.add(new Decimal(item.quantity).mul(new Decimal(item.price)));
-    }
-    return { subtotal, total: subtotal };
   }
 
   /**

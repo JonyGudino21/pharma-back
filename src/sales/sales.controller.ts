@@ -1,6 +1,6 @@
 import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards } from '@nestjs/common';
 import { SalesService } from './sales.service';
-import { CreateSaleDto } from './dto/create-sale.dto';
+import { CreateSaleDto, SaleItemDto } from './dto/create-sale.dto';
 import { UpdateSaleDto } from './dto/update-sale.dto';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiResponse } from 'src/common/dto/response.dto';
@@ -14,15 +14,15 @@ export class SalesController {
 
   @Post()
   @UseGuards(AuthGuard)
-  async create(@Body() createSaleDto: CreateSaleDto) {
-    const data = await this.salesService.create(createSaleDto);
+  async create(@Body() createSaleDto: CreateSaleDto, @GetUser() user: any) {
+    const data = await this.salesService.create(createSaleDto, user.userId);
     return ApiResponse.ok(data, 'Venta creada correctamente');
   }
 
   @Post(':id/add-payment')
   @UseGuards(AuthGuard)
-  async addPayment(@Param('id') id: number, @Body() addPaymentDto: AddPaymentDto) {
-    const data = await this.salesService.addPayment(id, addPaymentDto);
+  async addPayment(@Param('id') id: number, @Body() addPaymentDto: AddPaymentDto, @GetUser() user: any) {
+    const data = await this.salesService.addPayment(id, addPaymentDto, user.userId);
     return ApiResponse.ok(data, 'Pago agregado correctamente');
   }
 
@@ -38,6 +38,27 @@ export class SalesController {
   async createReturn(@Param('id') id: number, @Body() returnSaleDto: ReturnSaleDto, @GetUser() user: any) {
     const data = await this.salesService.createReturn(id, returnSaleDto, user.userId);
     return ApiResponse.ok(data, 'Devolución creada correctamente');
+  }
+
+  @Post(':id/complete')
+  @UseGuards(AuthGuard)
+  async completeSale(@Param('id') id: number, @GetUser() user: any) {
+    const data = await this.salesService.completeSale(id, user.userId);
+    return ApiResponse.ok(data, 'Venta completada correctamente');
+  }
+
+  @Post(':id/add-product')
+  @UseGuards(AuthGuard)
+  async addProduct(@Param('id') id: number, @Body() addProductDto: SaleItemDto) {
+    const data = await this.salesService.addItem(id, addProductDto);
+    return ApiResponse.ok(data, 'Producto agregado correctamente');
+  }
+
+  @Post(':id/remove-product/:itemId')
+  @UseGuards(AuthGuard)
+  async removeProduct(@Param('id') id: number, @Param('itemId') itemId: number) {
+    const data = await this.salesService.deleteItem(id, itemId);
+    return ApiResponse.ok(data, 'Producto eliminado correctamente');
   }
 
 }
