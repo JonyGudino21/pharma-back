@@ -1,15 +1,22 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { HttpException, HttpStatus, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, ConflictException, NotFoundException, BadRequestException } from '@nestjs/common';
 import { CreateClientDto } from './dto/create-client.dto';
 import { UpdateClientDto } from './dto/update-client.dto';
 import { PrismaService } from 'prisma/prisma.service';
 import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
+import { UpdateCreditConfigDto } from './dto/credit-config.dto';
+import { RegisterClientPaymentDto } from './dto/register-payment.dto';
+import { CashShiftService } from 'src/cash-shift/cash-shift.service';
+import { PaymentMethod, PaymentStatus, SaleStatus, CashTransactionType } from '@prisma/client';
+import { Decimal } from '@prisma/client/runtime/library';
 
 @Injectable()
 export class ClientService {
   private readonly logger = new Logger(ClientService.name);
 
-  constructor (private prisma: PrismaService){}
+  constructor (
+    private prisma: PrismaService,
+    private cashShiftService: CashShiftService
+  ){}
 
   /**
    * Crea un nuevo cliente.
@@ -17,18 +24,31 @@ export class ClientService {
    * @returns el cliente creado
    */
   async create(createClientDto: CreateClientDto) {
-    const res = await this.prisma.client.create({
-      data:{
-        name: createClientDto.name ?? '',
+    // Validar si exiten duplicados
+    const exiting = await this.prisma.client.findFirst({
+      where: {
+        OR: [
+          { email: createClientDto.email },
+          { rfc: createClientDto.rfc }
+        ]
+      }
+    });
+
+    if(exiting) {
+      if(exiting.email === createClientDto.email) throw new ConflictException('El email ya esta registrado');
+      if(exiting.rfc === createClientDto.rfc) throw new ConflictException('El RFC ya esta registrado');
+    }
+
+    return await this.prisma.client.create({
+      data: {
+        name: createClientDto.name,
         email: createClientDto.email,
         phone: createClientDto.phone,
         address: createClientDto.address,
         rfc: createClientDto.rfc,
-        curp: createClientDto.curp
+        curp: createClientDto.curp,
       }
-    });
-
-    return res;
+    })
   }
 
   /**
@@ -89,15 +109,17 @@ export class ClientService {
    */
   async findOne(id: number) {
     const client = await this.prisma.client.findUnique({
-      where: {id}
+      where: {id},
+      include: {
+        // Incluir resumen financiero basico
+        _count: { select: { sales: true } },
+      }
     })
     if(!client) {
       throw new NotFoundException('Cliente no encontrado');
     }
 
-    return await this.prisma.client.findUnique({
-      where: { id }
-    });
+    return client;
   }
 
   /**
@@ -108,12 +130,22 @@ export class ClientService {
    */
   async update(id: number, updateClientDto: UpdateClientDto) {
     //Validar que el cliente exista
-    const client = await this.prisma.client.findUnique({
-      where: {id}
+    await this.findOne(id);
+
+    // Validar si exiten duplicados
+    const exiting = await this.prisma.client.findFirst({
+      where: {
+        OR: [
+          { email: updateClientDto.email },
+          { rfc: updateClientDto.rfc }
+        ]
+      }
     });
-    if(!client){
-      throw new NotFoundException('Cliente no encontrado');
+    if(exiting) {
+      if(exiting.email === updateClientDto.email) throw new ConflictException('El email ya esta registrado');
+      if(exiting.rfc === updateClientDto.rfc) throw new ConflictException('El RFC ya esta registrado');
     }
+
     return await this.prisma.client.update({
       where: {id},
       data: {
@@ -134,12 +166,7 @@ export class ClientService {
    * @returns el cliente eliminado o null si no existe
    */
   async remove(id: number) {
-    const client = await this.prisma.client.findUnique({
-      where: {id}
-    })
-    if(!client){
-      throw new NotFoundException('Cliente no encontrado');
-    }
+    await this.findOne(id);
     
     return await this.prisma.client.update({
       where: { id },
