@@ -502,6 +502,7 @@ enum CashTransactionType {
   CREDIT_PAYMENT   // Cliente paga una deuda
   MANUAL_ADD       // Ingreso manual
   MANUAL_WITHDRAW  // Sangría / Retiro
+  REFUND_OUT       // Rembolso de salida
   EXPENSE          // Gasto menor
 }
 
