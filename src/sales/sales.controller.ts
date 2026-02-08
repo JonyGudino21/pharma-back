@@ -1,16 +1,61 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Delete, Query, UseGuards, ParseIntPipe } from '@nestjs/common';
 import { SalesService } from './sales.service';
 import { CreateSaleDto, SaleItemDto } from './dto/create-sale.dto';
-import { UpdateSaleDto } from './dto/update-sale.dto';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiResponse } from 'src/common/dto/response.dto';
 import { AddPaymentDto } from './dto/add-payment.dto';
 import { GetUser } from 'src/common/decorators/get-user.decorator';
 import { ReturnSaleDto } from './dto/return-sale.dto';
+import { FindAllSalesQueryDto } from './dto/find-all-sales-query.dto';
 
 @Controller('sales')
 export class SalesController {
   constructor(private readonly salesService: SalesService) {}
+
+  /**
+   * Lista ventas con paginación y filtros (Enterprise).
+   * Query: page, limit, startDate, endDate, status, flowStatus, paymentStatus, clientId, userId, invoiceNumber, sortBy, sortOrder
+   */
+  @Get()
+  @UseGuards(AuthGuard)
+  async findAll(@Query() query: FindAllSalesQueryDto) {
+    const data = await this.salesService.findAll(query);
+    return ApiResponse.ok(data, 'Ventas obtenidas correctamente');
+  }
+
+  /**
+   * Resumen de ventas para dashboard (totales por estado, hoy, ingresos).
+   * Query: startDate, endDate (opcionales, ISO 8601)
+   */
+  @Get('summary')
+  @UseGuards(AuthGuard)
+  async getSummary(
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+  ) {
+    const data = await this.salesService.getSummary(startDate, endDate);
+    return ApiResponse.ok(data, 'Resumen de ventas obtenido correctamente');
+  }
+
+  /**
+   * Obtiene una venta por número de factura (exacto).
+   */
+  @Get('by-invoice/:invoiceNumber')
+  @UseGuards(AuthGuard)
+  async findByInvoiceNumber(@Param('invoiceNumber') invoiceNumber: string) {
+    const data = await this.salesService.findByInvoiceNumber(invoiceNumber);
+    return ApiResponse.ok(data, 'Venta obtenida correctamente');
+  }
+
+  /**
+   * Obtiene el detalle de una venta por ID (items, pagos, cliente, usuario).
+   */
+  @Get(':id')
+  @UseGuards(AuthGuard)
+  async findOne(@Param('id', ParseIntPipe) id: number) {
+    const data = await this.salesService.findOne(id);
+    return ApiResponse.ok(data, 'Venta obtenida correctamente');
+  }
 
   @Post()
   @UseGuards(AuthGuard)

@@ -2,12 +2,13 @@ import { Injectable, BadRequestException, NotFoundException, Logger, ConflictExc
 import { CreateSaleDto } from './dto/create-sale.dto';
 import { AddPaymentDto } from './dto/add-payment.dto';
 import { PrismaService } from '../../prisma/prisma.service';
-import { PaymentMethod, SaleFlowStatus, SaleStatus, Sale, SaleItem, ClientProductPrice, PaymentStatus, MovementType, CashTransactionType, SaleRefund } from '@prisma/client';
+import { PaymentMethod, SaleFlowStatus, SaleStatus, Sale, SaleItem, ClientProductPrice, PaymentStatus, MovementType, CashTransactionType, SaleRefund, Prisma } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { ReturnSaleDto } from './dto/return-sale.dto';
 import { SaleItemDto } from './dto/create-sale.dto';
 import { InventoryService } from 'src/inventory/inventory.service';
 import { CashShiftService } from 'src/cash-shift/cash-shift.service';
+import { FindAllSalesQueryDto } from './dto/find-all-sales-query.dto';
 
 @Injectable()
 export class SalesService {
@@ -530,7 +531,7 @@ export class SalesService {
       throw new BadRequestException('Venta no editable, ya fue cerrada');
     if (sale.items.length === 0)
       throw new BadRequestException('La venta no tiene productos');
-    if (sale.status !== SaleStatus.CANCELLED)
+    if (sale.status === SaleStatus.CANCELLED)
       throw new BadRequestException('Venta cancelada, no se puede cerrar');
 
     return await this.prisma.$transaction(async (tx) => {
@@ -593,6 +594,178 @@ export class SalesService {
       return completedSale;
 
     });
+  }
+
+  /**
+   * Obtiene todas las ventas con paginación y filtros.
+   * Orden por defecto: más recientes primero.
+   * @param query filtros, ordenamiento y paginación
+   * @returns ventas paginadas con metadatos
+   */
+  async findAll(query: FindAllSalesQueryDto) {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+    const skip = (page - 1) * limit;
+    const sortBy = query.sortBy ?? 'createdAt';
+    const sortOrder = query.sortOrder ?? 'desc';
+
+    const where: Prisma.SaleWhereInput = {};
+
+    // Filtro por rango de fechas (createdAt)
+    if (query.startDate || query.endDate) {
+      where.createdAt = {};
+      if (query.startDate) {
+        where.createdAt.gte = new Date(query.startDate);
+      }
+      if (query.endDate) {
+        const end = new Date(query.endDate);
+        end.setHours(23, 59, 59, 999);
+        where.createdAt.lte = end;
+      }
+    }
+
+    if (query.status != null) where.status = query.status;
+    if (query.flowStatus != null) where.flowStatus = query.flowStatus;
+    if (query.paymentStatus != null) where.paymentStatus = query.paymentStatus;
+    if (query.clientId != null) where.clientId = query.clientId;
+    if (query.userId != null) where.userId = query.userId;
+
+    if (query.invoiceNumber?.trim()) {
+      where.invoiceNumber = {
+        contains: query.invoiceNumber.trim(),
+        mode: 'insensitive',
+      };
+    }
+
+    const orderBy: Prisma.SaleOrderByWithRelationInput = { [sortBy]: sortOrder };
+
+    const include = {
+      client: { select: { id: true, name: true } },
+      user: { select: { id: true, firstName: true, lastName: true } },
+      _count: { select: { items: true, payments: true } },
+    };
+
+    const [sales, total] = await Promise.all([
+      this.prisma.sale.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy,
+        include,
+      }),
+      this.prisma.sale.count({ where }),
+    ]);
+
+    return {
+      sales,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+        hasNext: page * limit < total,
+        hasPrev: page > 1,
+      },
+    };
+  }
+
+  /**
+   * Obtiene una venta por su ID (detalle completo para factura/detalle).
+   * @param id el ID de la venta
+   * @returns la venta con sus items, pagos, cliente y usuario que vendió
+   */
+  async findOne(id: number) {
+    const sale = await this.prisma.sale.findUnique({
+      where: { id },
+      include: {
+        items: { include: { product: { select: {id: true, name: true, sku: true } } } }, // Nombre del producto
+        payments: true, // Historial de pagos
+        client: { select: { id: true, name: true, rfc: true, address: true, email: true, phone: true } }, // Datos para factura
+        user: { select: { firstName: true, lastName: true } } // Quién vendió
+      }
+    });
+    if (!sale) throw new NotFoundException('Venta no encontrada');
+    return sale;
+  }
+
+  /**
+   * Busca una venta por número de factura (exacto).
+   * Útil para consultas desde front (búsqueda por folio).
+   * @param invoiceNumber número de factura, ej: FAC-20250208-000001
+   * @returns la venta o null
+   */
+  async findByInvoiceNumber(invoiceNumber: string) {
+    const sale = await this.prisma.sale.findUnique({
+      where: { invoiceNumber: invoiceNumber?.trim() || undefined },
+      include: {
+        items: {
+          include: {
+            product: { select: { id: true, name: true, sku: true } },
+          },
+        },
+        payments: true,
+        client: { select: { id: true, name: true, rfc: true } },
+        user: { select: { id: true, firstName: true, lastName: true } },
+      },
+    });
+    if (!sale) throw new NotFoundException('Venta no encontrada con ese número de factura');
+    return sale;
+  }
+
+  /**
+   * Resumen de ventas para dashboards (totales por estado, hoy, etc.).
+   * @param startDate opcional, inicio del rango
+   * @param endDate opcional, fin del rango
+   */
+  async getSummary(startDate?: string, endDate?: string) {
+    const where: Prisma.SaleWhereInput = {};
+    if (startDate || endDate) {
+      where.createdAt = {};
+      if (startDate) where.createdAt.gte = new Date(startDate);
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        where.createdAt.lte = end;
+      }
+    }
+
+    const [byStatus, byFlowStatus, todayCount, totalRevenue] = await Promise.all([
+      this.prisma.sale.groupBy({
+        by: ['status'],
+        where: { ...where, status: { not: SaleStatus.CANCELLED } },
+        _count: { id: true },
+        _sum: { total: true },
+      }),
+      this.prisma.sale.groupBy({
+        by: ['flowStatus'],
+        where,
+        _count: { id: true },
+      }),
+      this.prisma.sale.count({
+        where: {
+          ...where,
+          flowStatus: SaleFlowStatus.COMPLETED,
+          status: { not: SaleStatus.CANCELLED },
+          createdAt: {
+            gte: new Date(new Date().setHours(0, 0, 0, 0)),
+            lte: new Date(),
+          },
+        },
+      }),
+      this.prisma.sale.aggregate({
+        where: { ...where, flowStatus: SaleFlowStatus.COMPLETED, status: { not: SaleStatus.CANCELLED } },
+        _sum: { total: true },
+        _count: { id: true },
+      }),
+    ]);
+
+    return {
+      byStatus,
+      byFlowStatus,
+      todaySalesCount: todayCount,
+      totalRevenue: totalRevenue._sum.total ?? 0,
+      totalSalesCount: totalRevenue._count.id ?? 0,
+    };
   }
 
   /**
