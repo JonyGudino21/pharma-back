@@ -10,7 +10,8 @@ export class SaleItemDto{
 
   @IsNumber()
   @IsPositive()
-  price: number;
+  @IsOptional()
+  price?: number;
 }
 
 export class CreateSaleDto {
