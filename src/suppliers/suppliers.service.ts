@@ -165,28 +165,44 @@ export class SuppliersService {
   }
 
   /**
-   * Busca un proveedor por su nombre, email o telefono
-   * @param searchSupplierDto datos de busqueda
-   * @returns el proveedor encontrado o null si no existe
+   * Busca proveedores por nombre, email o teléfono.
+   * Exige al menos un criterio de búsqueda; si no se envía ninguno, lanza BadRequestException
+   * (evita devolver todos los registros por error).
+   * @param searchSupplierDto criterios de búsqueda (name, email, phone) y paginación opcional
+   * @returns proveedores que coinciden con los criterios
    */
-  async search( searchSupplierDto: SearchSupplierDto ){
-    const hasPagination = searchSupplierDto?.pagination && (searchSupplierDto?.pagination?.page !== undefined || searchSupplierDto?.pagination?.limit !== undefined);
+  async search(searchSupplierDto: SearchSupplierDto) {
+    const name = searchSupplierDto?.name?.trim();
+    const email = searchSupplierDto?.email?.trim();
+    const phone = searchSupplierDto?.phone?.trim();
+
+    const hasSearchCriteria = [name, email, phone].some((v) => v && v.length > 0);
+    if (!hasSearchCriteria) {
+      throw new BadRequestException(
+        'Debe enviar al menos un criterio de búsqueda (name, email o phone). El endpoint search no devuelve todos los proveedores.',
+      );
+    }
+
+    const hasPagination =
+      searchSupplierDto?.pagination &&
+      (searchSupplierDto?.pagination?.page !== undefined ||
+        searchSupplierDto?.pagination?.limit !== undefined);
     const page = hasPagination ? searchSupplierDto?.pagination?.page ?? 1 : 1;
     const limit = hasPagination ? searchSupplierDto?.pagination?.limit ?? 20 : 20;
     const skip = (page - 1) * limit;
 
     const conditions: Array<{ [key: string]: { contains: string; mode: 'insensitive' } }> = [];
-    if(searchSupplierDto?.name){
-      conditions.push({ name: { contains: searchSupplierDto?.name, mode: 'insensitive' } });
+    if (name) {
+      conditions.push({ name: { contains: name, mode: 'insensitive' } });
     }
-    if(searchSupplierDto?.email){
-      conditions.push({ email: { contains: searchSupplierDto?.email, mode: 'insensitive' } });
+    if (email) {
+      conditions.push({ email: { contains: email, mode: 'insensitive' } });
     }
-    if(searchSupplierDto?.phone){
-      conditions.push({ phone: { contains: searchSupplierDto?.phone, mode: 'insensitive' } });
+    if (phone) {
+      conditions.push({ phone: { contains: phone, mode: 'insensitive' } });
     }
 
-    const where = conditions.length > 0 ? { OR: conditions } : {};
+    const where = { OR: conditions };
 
     if(!hasPagination){
       const suppliers = await this.prisma.supplier.findMany({
