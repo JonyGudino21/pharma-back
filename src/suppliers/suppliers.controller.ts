@@ -45,5 +45,11 @@ export class SuppliersController {
     const data = await this.suppliersService.remove(id);
     return ApiResponse.ok(data, 'Supplier removed successfully');
   }
+
+  @Get(':id/account-statement')
+  async getAccountStatement(@Param('id') id: number) {
+    const data = await this.suppliersService.getAccountStatement(id);
+    return ApiResponse.ok(data, 'Estado de cuenta obtenido correctamente');
+  }
 }
 
