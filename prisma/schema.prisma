@@ -516,6 +516,8 @@ enum CashTransactionType {
   MANUAL_ADD       // Ingreso manual
   MANUAL_WITHDRAW  // Sangría / Retiro
   REFUND_OUT       // Rembolso de salida
+  PURCHASE_PAYMENT // Pago a proveedor por mercancía
+  REFUND_IN        // Proveedor nos devuelve dinero
   EXPENSE          // Gasto menor
 }
 
