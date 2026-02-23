@@ -1,19 +1,33 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, ConflictException, Logger } from '@nestjs/common';
 import { PrismaService } from 'prisma/prisma.service';
 import { CreatePurchaseDto } from './dto/create-purchase.dto';
 import { UpdatePurchaseDto } from './dto/update-purchase.dto';
 import { CreatePurchaseItemDto } from './dto/create-purchase-item.dto';
 import { AddPaymentDto } from './dto/add-payment.dto';
-import { Prisma, PurchaseStatus } from '@prisma/client'
+import { Prisma, PurchaseDeliveryStatus, PurchaseStatus, MovementType, PaymentMethod, CashTransactionType } from '@prisma/client'
 import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
 import { UpdatePurchaseItemDto } from './dto/update-item.dto';
+import { InventoryService } from 'src/inventory/inventory.service';
+import { CashShiftService } from 'src/cash-shift/cash-shift.service';
+import { Decimal } from '@prisma/client/runtime/library';
 
 @Injectable()
 export class PurchaseService {
 
-  constructor(private prisma: PrismaService){}
+  private readonly logger = new Logger(PurchaseService.name);
 
-  async create(dto: CreatePurchaseDto, userId?: number) {
+  constructor(
+    private prisma: PrismaService,
+    private inventoryService: InventoryService,
+    private cashShiftService: CashShiftService,
+  ){}
+
+  /**
+   * 1. CREAR ORDEN DE COMPRA
+   * Registra la intención de compra. NO mueve inventario.
+   * Si se envían pagos por adelantado, los procesa.
+   */
+  async create(dto: CreatePurchaseDto, userId: number) {
     //Validar si supplier existe
     const supplier = await this.prisma.supplier.findUnique({
       where: { id: dto.supplierId },
@@ -35,13 +49,15 @@ export class PurchaseService {
 
     //crear purchase e items, pagos y actualizar stock automaticamente
     const purchase = await this.prisma.$transaction(async (tx) => {
+      // A. Crear la cabecera de la compra
       const created = await tx.purchase.create({
         data: {
           supplierId: dto.supplierId,
-          invoiceNumber: dto.invoiceNumber,
+          invoiceNumber: dto.invoiceNumber || `PO-${Date.now()}`, //Genera un folio si no se proporciona
           total,
           subtotal,
           status: PurchaseStatus.PENDING,
+          deliveryStatus: PurchaseDeliveryStatus.PENDING,
           items: {
             create: dto.items.map((item) => ({
               productId: item.productId,
@@ -50,53 +66,77 @@ export class PurchaseService {
               subtotal: Number(item.quantity) * Number(item.cost),
             })),
           },
-          payments: dto.payments && dto.payments.length > 0
-            ? {
-                create: dto.payments.map(p => ({
-                  method: p.method,
-                  amount: p.amount,
-                  references: p.references,
-                })),
-              }
-            : undefined,
-        },
-        include: { 
-          items: { include: { product: true } }, 
-          payments: true 
-        },
+        }
       });
 
-      //Si llegan pagos actualizar estado si ya cubre el total
-      if(created.payments && created.payments.length > 0){
-        const paid = created.payments.reduce((total, p) => total + Number(p.amount), 0);
-        if(paid >= Number(created.total)){
-          await tx.purchase.update({
-            where: { id: created.id },
-            data: { status: PurchaseStatus.PAID },
+      // B. Procesar pagaos adelantados
+      let  totalPaid = new Decimal(0);
+
+      if(dto.payments && dto.payments.length > 0){
+        for(const p of dto.payments){
+          let cashShiftId: number | null = null;
+          if(p.method === PaymentMethod.CASH){
+            const shift = await this.cashShiftService.getCurrentShift(userId);
+            if(!shift) throw new ConflictException('ALERTA! Se requiere caja abierta para pagar en efectivo al proveedor.');
+            cashShiftId = shift.id;
+
+            // Sacamos el dinero de la caja para pagar la compra al proveedor
+            await tx.cashTransaction.create({
+              data: {
+                shiftId: shift.id,
+                type: CashTransactionType.PURCHASE_PAYMENT,
+                amount: p.amount,
+                reason: `Pago de orden de compra ${purchase.id}`,
+                referenceId: purchase.id,
+                relatedTable: 'Purchase',
+                createdBy: userId,
+              }
+            });
+          }
+
+          await tx.purchasePayment.create({
+            data: {
+              purchaseId: purchase.id,
+              method: p.method,
+              amount: p.amount,
+              references: p.references,
+            }
           });
-        } else {
-          await tx.purchase.update({
-            where: { id: created.id },
-            data: { status: PurchaseStatus.PARTIAL },
-          });
+          totalPaid = totalPaid.add(new Decimal(p.amount));
         }
+
+        // Actualizar estado de la compra
+
+        let initStatus: PurchaseStatus = PurchaseStatus.PARTIAL;
+        if(totalPaid.gte(purchase.total)) initStatus = PurchaseStatus.PAID;
+
+        await tx.purchase.update({
+          where: { id: purchase.id },
+          data: {
+            paidAmount: totalPaid,
+            balance: new Decimal(total).sub(totalPaid), 
+            status: initStatus,
+          }
+        });
+      } else {
+        // Sin pagos el balance es el total de la compra
+        await tx.purchase.update({
+          where: { id: purchase.id },
+          data: {
+            balance: purchase.total,
+          }
+        });
       }
 
-      // Actualizar stock de productos automáticamente al crear la compra
-      await this.processStockUpdate(tx, created.items, userId);
-
-      // Recargar la compra con los datos actualizados (stock actualizado)
-      return await tx.purchase.findUnique({
-        where: { id: created.id },
-        include: { 
-          items: { include: { product: true } }, 
+      return tx.purchase.findUnique({
+        where: { id: purchase.id },
+        include: {
+          items: { include: { product: true } },
           payments: true,
-          supplier: true 
-        },
+          supplier: true,
+        }
       });
     });
-
-    return purchase;
   }
 
   async findAll(supplierId?: number, status?: PurchaseStatus, pagination?: PaginationParamsDto) {
@@ -182,197 +222,229 @@ export class PurchaseService {
   }
 
   /**
-   * Cancela una compra por su ID y actualiza el stock de los productos
-   * @param id el ID de la compra
+   * CANCELAR COMPRA (Complejidad Enterprise con Notas de Crédito)
+   * @param returnToCash Si es TRUE: El proveedor nos dio el billete en la mano (Regresa a Caja). Default es FALSE.
+   * @param purchaseId el ID de la compra
    * @param userId el ID del usuario que cancela
    * @returns la compra cancelada
    */
-  async cancel(id: number, userId?: number) {
-    const purchase = await this.validatePurchase(id);
-    //Si ya fue recibido (si implementas received flag) --> considerar revert stock
-    // Por ahora bloqueamos cancelar si ya PAID? (negocio decide)
-    if(purchase.status === PurchaseStatus.PAID){
-      throw new BadRequestException('Compra pagada, no se puede cancelar');
+  async cancel(purchaseId: number, userId: number, returnToCash: boolean = false) {
+    const purchase = await this.validatePurchase(purchaseId);
+    if (purchase.status === PurchaseStatus.CANCELLED) {
+      throw new BadRequestException('La compra ya está cancelada.');
     }
 
-    // Cancelar la compra y descontar el stock en una transacción
-    const cancelled = await this.prisma.$transaction(async (tx) => {
-      // Descontar el stock de los productos (revertir la compra)
-      await this.processStockUpdate(tx, purchase.items, userId, true);
+    return await this.prisma.$transaction(async (tx) => {
+      // 1. Si la mercancia ya estaba en el almacen
+      if(purchase.deliveryStatus === PurchaseDeliveryStatus.RECEIVED){
 
-      // Marcar como cancelada
+        // A. Revertir Inventario (salida de mercancia)
+        for(const item of purchase.items){
+          await this.inventoryService.registerMovement(
+            {
+              productId: item.productId,
+              type: MovementType.RETURN_OUT, // Salida por devolucion a proveedor
+              quantity: item.quantity,
+              reason: `Cancelación de Compra #${purchase.id}`,
+              referenceId: purchase.id,
+            },
+            userId,
+            tx
+          );
+          // Nota: Matemáticamente, revertir el "Costo Promedio Ponderado" es casi imposible 
+           // si hubo más movimientos después. En contabilidad estándar, simplemente 
+           // se saca la mercancía al costo actual. El costo promedio se diluye.
+        }
+
+        // B. Revertir deuda con proveedor
+        if(purchase.balance.gt(0)){
+          await tx.supplier.update({
+            where: { id: purchase.supplierId },
+            data: { balance: { decrement: purchase.balance } }
+          });
+        }
+      }
+
+      // 2. Gestion de dinero (si le dimos adelantos)
+      if (purchase.paidAmount.gt(0)) {
+        if (returnToCash) {
+          // ESCENARIO A: El proveedor sacó dinero de su cartera y nos lo dio.
+          const shift = await this.cashShiftService.getCurrentShift(userId);
+          if (!shift) throw new ConflictException('Se requiere caja abierta para recibir el reembolso en efectivo físico.');
+          
+          await tx.cashTransaction.create({
+            data: {
+              shiftId: shift.id,
+              type: CashTransactionType.REFUND_IN, 
+              amount: purchase.paidAmount,
+              reason: `Efectivo devuelto por proveedor. Cancelación #${purchaseId}`,
+              relatedTable: 'Purchase',
+              referenceId: purchase.id,
+              createdBy: userId
+            }
+          });
+      } else {
+          // ESCENARIO B: NOTA DE CRÉDITO (Nivel Enterprise)
+          // El proveedor no nos dio el dinero, lo guardó. 
+          // Entonces, restamos ese dinero pagado del balance del proveedor.
+          // Si el balance era 0, se volverá NEGATIVO (Ej. -500).
+          // ¡Un balance negativo en proveedores significa Saldo a Favor!
+          await tx.supplier.update({
+            where: { id: purchase.supplierId },
+            data: { balance: { decrement: purchase.paidAmount } }
+          });
+
+          this.logger.log(`Nota de crédito generada: Proveedor #${purchase.supplierId} ahora tiene un saldo a nuestro favor de $${purchase.paidAmount}`);
+        }
+      }
+
+      // 3. Marcar como cancelada
       return await tx.purchase.update({
-        where: { id },
-        data: { status: PurchaseStatus.CANCELLED }
+        where: { id: purchaseId },
+        data: {
+          status: PurchaseStatus.CANCELLED,
+          deliveryStatus: PurchaseDeliveryStatus.CANCELLED,
+          balance: new Decimal(0), // La deuda se anula
+        }
       });
     });
 
-    return cancelled;
   }
 
   /**
-   * Agregar un item a una compra
-   * @param idPurchase el ID de la compra
+   * Agregar un item a una compra (Draft: No impacta inventario)
+   * @param purchaseId el ID de la compra
    * @param dto los datos del item a agregar
    * @returns el item agregado
    */
-  async addItem(idPurchase: number, dto: CreatePurchaseItemDto, userId?: number){
-    const purchase = await this.validatePurchase(idPurchase);
+  async addItem(purchaseId: number, dto: CreatePurchaseItemDto){
+    const purchase = await this.validatePurchase(purchaseId);
 
-    if(purchase.status === PurchaseStatus.CANCELLED) { 
-      throw new BadRequestException('Compra cancelada, no se puede actualizar');
+    // REGLA DE ORO: No modificar si ya se recibió la mercancía
+    if (purchase.deliveryStatus === PurchaseDeliveryStatus.RECEIVED) {
+      throw new BadRequestException('No puedes agregar productos a una compra que ya fue recibida en almacén.');
     }
-    if(purchase.status === PurchaseStatus.PAID) { 
-      throw new BadRequestException('Compra pagada, no se puede actualizar');
+    if (purchase.status === PurchaseStatus.CANCELLED) {
+      throw new BadRequestException('La compra está cancelada.');
     }
 
-    const product = await this.prisma.product.findUnique({
-      where: { id: dto.productId }
-    });
-    if(!product) { throw new NotFoundException('Producto no encontrado'); }
+    const product = await this.prisma.product.findUnique({ where: { id: dto.productId } });
+    if (!product) throw new NotFoundException('Producto no encontrado');
 
-    //Crear item, actualizar stock y recalcular en transaccion
-    const res = await this.prisma.$transaction(async (tx) => {
+    return await this.prisma.$transaction(async (tx) => {
+      // 1. Crear el Item
+      const subtotalItem = new Decimal(dto.quantity).mul(new Decimal(dto.cost));
+      
       const createdItem = await tx.purchaseItem.create({
         data: {
-          purchaseId: idPurchase,
+          purchaseId,
           productId: dto.productId,
           quantity: dto.quantity,
           cost: dto.cost,
-          subtotal: Number(dto.quantity) * Number(dto.cost),
+          subtotal: subtotalItem,
         },
       });
 
-      //Recalcular totales
-      const items = await tx.purchaseItem.findMany({
-        where: { purchaseId: idPurchase }
-      });
-      const { subtotal, total } = this.calculateTotals(items.map(i => ({ quantity: i.quantity, cost: Number(i.cost) })));
+      // 2. Recalcular totales (SIN TOCAR INVENTARIO)
+      const agg = await tx.purchaseItem.aggregate({ where: { purchaseId }, _sum: { subtotal: true } });
+      const newTotal = agg._sum.subtotal ?? new Decimal(0);
 
       await tx.purchase.update({
-        where: { id: idPurchase },
-        data: { subtotal, total }
-      });
-
-      // Actualizar stock del producto agregado
-      await this.processStockUpdate(tx, [createdItem], userId);
-
-      return createdItem;
-    });
-
-    return res;
-  }
-
-  /**
-   * Actualiza un item de una compra y actualiza el stock de los productos 
-   * @param idPurchase el ID de la compra
-   * @param idItem 
-   * @param dto 
-   * @param userId el ID del usuario que actualiza
-   * @returns el item actualizado
-   */
-  async updateItem(idPurchase: number, idItem: number, dto: UpdatePurchaseItemDto, userId?: number){
-    const purchase = await this.validatePurchase(idPurchase);
-    if(purchase.status === PurchaseStatus.CANCELLED) { 
-      throw new BadRequestException('Compra cancelada, no se puede actualizar');
-    }
-    if(purchase.status === PurchaseStatus.PAID) { 
-      throw new BadRequestException('Compra pagada, no se puede actualizar');
-    }
-
-    const item = await this.prisma.purchaseItem.findUnique({
-      where: { id: idItem, purchaseId: idPurchase }
-    });
-    if(!item) { throw new NotFoundException('Producto no encontrado en la compra'); }
-
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const oldQuantity = Number(item.quantity);
-      const newQuantity = Number(dto.quantity); // Cantidad absoluta nueva
-      const newCost = Number(dto.cost);
-      
-      // Calcular la diferencia para actualizar el stock
-      const quantityDifference = newQuantity - oldQuantity;
-      
-      await tx.purchaseItem.update({
-        where: { id: idItem },
-        data: {
-          quantity: newQuantity,
-          cost: newCost,
-          subtotal: newQuantity * newCost,
+        where: { id: purchaseId },
+        data: { 
+            subtotal: newTotal, 
+            total: newTotal,
+            // Si no hay pagos previos, el balance es el total
+            balance: newTotal.sub(purchase.paidAmount) 
         }
       });
 
-      //Recalcular totales
-      const items = await tx.purchaseItem.findMany({
-        where: { purchaseId: idPurchase }
-      });
-      const { subtotal, total } = this.calculateTotals(items.map(i => ({ quantity: i.quantity, cost: Number(i.cost) })));
-
-      await tx.purchase.update({
-        where: { id: idPurchase },
-        data: { subtotal, total }
-      });
-
-      // Actualizar stock solo con la diferencia
-      if(quantityDifference !== 0) {
-        await this.processStockUpdate(tx, [{
-          productId: item.productId,
-          quantity: Math.abs(quantityDifference),
-          cost: newCost
-        }], userId, quantityDifference < 0);
-      }
-
-      return tx.purchaseItem.findUnique({
-        where: { id: idItem },
-      });
+      return createdItem;
     });
-
-    return updated;
   }
 
   /**
-   * Elimina un item de una compra y descuenta el stock
+   * Actualiza un item de una compra (Solo cantidad o costo pactado)
+   * @param purchaseId el ID de la compra
+   * @param itemId el ID del item a actualizar
+    * @param dto 
+    * @param userId el ID del usuario que actualiza
+   * @returns el item actualizado
+   */
+  async updateItem(purchaseId: number, itemId: number, dto: UpdatePurchaseItemDto){
+    const purchase = await this.validatePurchase(purchaseId);
+
+    if (purchase.deliveryStatus === PurchaseDeliveryStatus.RECEIVED) {
+      throw new BadRequestException('No puedes modificar productos de una compra ya ingresada al almacén.');
+    }
+    if (purchase.status === PurchaseStatus.CANCELLED) {
+      throw new BadRequestException('La compra está cancelada.');
+    }
+
+    return await this.prisma.$transaction(async (tx) => {
+      const item = await tx.purchaseItem.findUnique({ where: { id: itemId, purchaseId } });
+      if (!item) throw new NotFoundException('Producto no encontrado en esta compra');
+
+      const newQty = new Decimal(dto.quantity);
+      const newCost = new Decimal(dto.cost);
+      const newSubtotal = newQty.mul(newCost);
+
+      await tx.purchaseItem.update({
+        where: { id: itemId },
+        data: { quantity: dto.quantity, cost: dto.cost, subtotal: newSubtotal }
+      });
+
+      // Recalcular
+      const agg = await tx.purchaseItem.aggregate({ where: { purchaseId }, _sum: { subtotal: true } });
+      const newTotal = agg._sum.subtotal ?? new Decimal(0);
+
+      await tx.purchase.update({
+        where: { id: purchaseId },
+        data: { total: newTotal, subtotal: newTotal, balance: newTotal.sub(purchase.paidAmount) }
+      });
+
+      return { message: 'Producto actualizado', newTotal };
+    });
+  }
+
+  /**
+   * Elimina un producto de una compra
    * @param purcharseId Id de la compra
    * @param itemId Id del item
-   * @param userId Id del usuario que elimina
    * @returns el item eliminado
    */
-  async removeItem(purcharseId: number, itemId: number, userId?: number){
+  async removeItem(purcharseId: number, itemId: number){
     const purchase = await this.validatePurchase(purcharseId);
-    if(purchase.status === PurchaseStatus.CANCELLED) { 
-      throw new BadRequestException('Compra cancelada, no se puede actualizar');
+
+    if (purchase.deliveryStatus === PurchaseDeliveryStatus.RECEIVED) {
+      throw new BadRequestException('No puedes eliminar productos de una compra ya ingresada al almacén.');
     }
-    if(purchase.status === PurchaseStatus.PAID) { 
-      throw new BadRequestException('Compra pagada, no se puede actualizar');
+    if (purchase.status === PurchaseStatus.CANCELLED) {
+      throw new BadRequestException('La compra está cancelada.');
     }
 
-    const res = await this.prisma.$transaction(async (tx) => {
-      // Obtener el item antes de eliminarlo para descontar el stock
-      const itemToDelete = await tx.purchaseItem.findUnique({
-        where: { id: itemId }
+    return await this.prisma.$transaction(async (tx) => {
+      await tx.purchaseItem.delete({ where: { id: itemId } });
+
+      const agg = await tx.purchaseItem.aggregate({ 
+        where: { 
+          purchaseId: purcharseId 
+        }, 
+        _sum: { subtotal: true } 
       });
-      if(!itemToDelete) { throw new NotFoundException('Item no encontrado'); }
+      const newTotal = agg._sum.subtotal ?? new Decimal(0);
 
-      // Descontar el stock del producto
-      await this.processStockUpdate(tx, [itemToDelete], userId, true);
-
-      // Eliminar el item
-      await tx.purchaseItem.delete({
-        where: { id: itemId },
-      });
-
-      // Recalcular totales
-      const items = await tx.purchaseItem.findMany({ where: { purchaseId: purcharseId } });
-      const { subtotal, total } = this.calculateTotals(items.map(i => ({ quantity: i.quantity, cost: Number(i.cost) })));
       await tx.purchase.update({
         where: { id: purcharseId },
-        data: { subtotal, total }
+        data: { 
+          total: newTotal, 
+          subtotal: newTotal, 
+          balance: newTotal.sub(purchase.paidAmount) 
+        }
       });
-      
-      return true;
-    });
 
-    return res;
+      return { message: 'Producto eliminado', newTotal };
+    });
   }
 
   /**
@@ -381,174 +453,248 @@ export class PurchaseService {
    * @param dto los datos del pago
    * @returns el pago agregado
    */
-  async addPayment(purcharseId: number, dto: AddPaymentDto){
+  async addPayment(purcharseId: number, dto: AddPaymentDto, userId: number){
     const purchase = await this.validatePurchase(purcharseId);
     if(purchase.status === PurchaseStatus.CANCELLED) { 
       throw new BadRequestException('Compra cancelada, no se puede actualizar');
     }
+    if (purchase.balance.lte(0)) throw new BadRequestException('Esta compra ya está pagada completamente');
 
-    const payment = await this.prisma.purchasePayment.create({
-      data: {
-        purchaseId: purcharseId,
-        method: dto.method,
-        amount: dto.amount,
-        references: dto.references,
+    return await this.prisma.$transaction(async (tx) => {
+      // 1. Control de caja (Saida de dineru)
+      let cashShiftId: number | null = null;
+      if(dto.method === PaymentMethod.CASH){
+        const shift = await this.cashShiftService.getCurrentShift(userId);
+        if(!shift) throw new ConflictException('ALERTA! Se requiere caja abierta para pagar en efectivo al proveedor.');
+        cashShiftId = shift.id;
+
+        await tx.cashTransaction.create({
+          data: {
+            shiftId: shift.id,
+            type: CashTransactionType.EXPENSE, // Gastos de compra
+            amount: dto.amount,
+            reason: `Pago de orden de compra #${purchase.invoiceNumber}`,
+            referenceId: purchase.id,
+            relatedTable: 'Purchase',
+            createdBy: userId,
+          }
+        });
       }
+
+      // 2. Crear el pago
+      const payment = await tx.purchasePayment.create({
+        data: {
+          purchaseId: purcharseId,
+          method: dto.method,
+          amount: dto.amount,
+          references: dto.references,
+        }
+      });
+
+      // 3. Recalcular saldos de la compra
+      const newPaidAmount = new Decimal(purchase.paidAmount).add(dto.amount);
+      const newBalance = new Decimal(purchase.total).sub(newPaidAmount);
+      const isPaid = newBalance.lte(0);
+
+      await tx.purchase.update({
+        where: { id: purcharseId },
+        data: {
+          paidAmount: newPaidAmount,
+          balance: newBalance,
+          status: isPaid ? PurchaseStatus.PAID : PurchaseStatus.PARTIAL
+        }
+      });
+
+      // 4. Si la compra ya había sido RECIBIDA, el proveedor ya tenía este saldo cargado.
+      // Debemos descontarle la deuda al proveedor.
+      if (purchase.deliveryStatus === PurchaseDeliveryStatus.RECEIVED) {
+        await tx.supplier.update({
+            where: { id: purchase.supplierId },
+            data: { balance: { decrement: dto.amount } }
+        });
+      }
+
+      return payment;
     });
-
-    //recalcular estado de la compra
-    const payments = await this.prisma.purchasePayment.findMany({ where: { purchaseId: purcharseId } });
-    const paid = payments.reduce((total, p) => total + Number(p.amount), 0);
-
-    let newStatus: PurchaseStatus = purchase.status;
-    if(paid >= Number(purchase.total)) newStatus = PurchaseStatus.PAID;
-    else if(paid > 0) newStatus = PurchaseStatus.PARTIAL;
-    else newStatus = PurchaseStatus.PENDING;
-
-    await this.prisma.purchase.update({
-      where: { id: purcharseId },
-      data: { status: newStatus }
-    })
-
-    return payment;
   }
 
   /**
-   * Elimina un pago de una compra
-   * @param purcharseId Id de la compra
+   * Elimina un pago a proveedor (reversion financiera)
+   * @param purchaseId Id de la compra
    * @param paymentId Id del pago
+   * @param userId Id del usuario que elimina el pago
    * @returns el pago eliminado
    */
-  async removePayment(purcharseId: number, paymentId: number) {
-    const purchase = await this.validatePurchase(purcharseId);
-    const payment = await this.prisma.purchasePayment.findUnique({ where: { id: paymentId, purchaseId: purcharseId } });
-    if(!payment) { throw new NotFoundException('Pago no encontrado en la compra'); }
-
-    await this.prisma.purchasePayment.delete({ where: { id: paymentId } });
-
-    //recalcular estado de la compra
-    const payments = await this.prisma.purchasePayment.findMany({ where: { purchaseId: purcharseId } });
-    const paid = payments.reduce((total, p) => total + Number(p.amount), 0);
-
-    let newStatus: PurchaseStatus = purchase.status;
-    if(paid >= Number(purchase.total)) newStatus = PurchaseStatus.PAID;
-    else if(paid > 0) newStatus = PurchaseStatus.PARTIAL;
-    else newStatus = PurchaseStatus.PENDING;
-
-    await this.prisma.purchase.update({
-      where: { id: purcharseId },
-      data: { status: newStatus }
+  async removePayment(purchaseId: number, paymentId: number, userId: number) {
+    const purchase = await this.validatePurchase(purchaseId);
+    
+    const payment = await this.prisma.purchasePayment.findUnique({ 
+        where: { id: paymentId, purchaseId: purchaseId } 
     });
+    
+    if(!payment) throw new NotFoundException('Pago no encontrado en esta compra');
 
-    return payment;
+    return await this.prisma.$transaction(async (tx) => {
+      // 1. REVERSIÓN DE CAJA (Si fue en efectivo)
+      if (payment.method === PaymentMethod.CASH) {
+        const shift = await this.cashShiftService.getCurrentShift(userId);
+        if (!shift) throw new ConflictException('No tienes caja abierta para registrar la devolución de este efectivo.');
+
+        // Si cancelamos un pago de compra, significa que el dinero "regresa" a nuestra caja
+        await tx.cashTransaction.create({
+          data: {
+            shiftId: shift.id,
+            type: CashTransactionType.MANUAL_ADD, // El dinero vuelve a nosotros
+            amount: payment.amount,
+            reason: `Reversión de pago erróneo - Compra #${purchaseId}`,
+            relatedTable: 'PurchasePayment',
+            referenceId: payment.id,
+            createdBy: userId,
+            }
+        });
+      }
+
+      // 2. ELIMINAR EL REGISTRO DEL PAGO
+      await tx.purchasePayment.delete({ where: { id: paymentId } });
+
+      // 3. RECALCULAR SALDOS DE LA COMPRA
+      const newPaidAmount = new Decimal(purchase.paidAmount).sub(payment.amount);
+      const newBalance = new Decimal(purchase.total).sub(newPaidAmount);
+      
+      let newStatus: PurchaseStatus = PurchaseStatus.PARTIAL;
+      if (newPaidAmount.lte(0)) newStatus = PurchaseStatus.PENDING;
+
+      await tx.purchase.update({
+        where: { id: purchaseId },
+        data: { 
+          paidAmount: newPaidAmount, 
+          balance: newBalance, 
+          status: newStatus 
+        }
+      });
+
+      // 4. RECALCULAR DEUDA CON EL PROVEEDOR
+      // Si la mercancía ya se había recibido, el proveedor ya nos había descontado esta deuda.
+      // Al borrar el pago, volvemos a deberle ese dinero.
+      if (purchase.deliveryStatus === PurchaseDeliveryStatus.RECEIVED) {
+        await tx.supplier.update({
+          where: { id: purchase.supplierId },
+          data: { balance: { increment: payment.amount } } // Volvemos a deberle
+        });
+      }
+
+      this.logger.warn(`Pago de $${payment.amount} eliminado de la compra #${purchaseId} por el usuario ${userId}`);
+      return { message: 'Pago revertido correctamente', newBalance };
+    });
   }
 
   /**
-   * Recibe una compra y actualiza el stock de los productos
+   * RECIBIR MERCANCÍA (La Magia del Kardex y Costo Promedio)
+   * Valida caja, impacta Kardex, recalcula costos y asume deuda.
    * @param purcharseId Id de la compra
    * @param userId Id del usuario que recibe
    * @returns true si se recibió correctamente
    */
-  async receive(purcharseId: number, userId?: number) {
+  async receive(purcharseId: number, userId: number) {
     const purchase = await this.validatePurchase(purcharseId);
 
-    // Transacción: por cada item actualizar stock y opcional actualizar cost promedio
-    await this.prisma.$transaction(async (tx) => {
-      await this.processStockUpdate(tx, purchase.items, userId);
-      
-      // Marcar compra como PAID or keep previous status? Decisión de negocio.
-      // Muchas veces se marca RECEIVED separadamente de PAID. Aquí no tenemos field received, así que dejamos status intacto.
-    });
-
-    return true;
-  }
-
-  /**
-   * Finaliza una compra (marca como PAID si pagos alcanzan total o si se fuerza)
-   * @param purcharseId Id de la compra
-   * @param force si se fuerza el estado a PAID
-   * @returns la compra finalizada
-   */
-  async finalize(purcharseId: number, force?: boolean) {
-    const purchase = await this.validatePurchase(purcharseId);
-
-    //marcar compra como PAID si pagos alcanzan total (o cambiar status manualmente si se fuerza)
-    const payments = await this.prisma.purchasePayment.findMany({ where: { purchaseId: purcharseId } });
-    const paid = payments.reduce((total, p) => total + Number(p.amount), 0);
-    if(paid >= Number(purchase.total) || force) {
-      await this.prisma.purchase.update({
-        where: { id: purcharseId },
-        data: { status: PurchaseStatus.PAID }
-      });
+    if (purchase.deliveryStatus === PurchaseDeliveryStatus.RECEIVED) {
+      throw new BadRequestException('Esta compra ya fue recibida e inventariada.');
     }
-    //Si no alcanza, mandar error de pago insuficiente
-    else{ throw new BadRequestException('Pagos insuficientes para marcar como PAID'); }
-
-    return true;
-  }
-
-  /**
-   * Procesa la actualización de stock de los productos en una compra
-   * Calcula el costo promedio ponderado y registra el historial de precios
-   * @param tx transacción de prisma
-   * @param items items de la compra
-   * @param userId Id del usuario que procesa (opcional)
-   */
-  private async processStockUpdate(
-    tx: Prisma.TransactionClient, 
-    items: any[], 
-    userId?: number,
-    subtract?: boolean
-  ) {
-    for(const it of items){
-      const product = await tx.product.findUnique({ where: { id: it.productId } });
-      if(!product) { 
-        throw new NotFoundException(`Producto ${it.product?.name ?? ''} no encontrado`); 
+    if (purchase.status === PurchaseStatus.CANCELLED) {
+      throw new BadRequestException('No se puede recibir una compra cancelada.');
+    }
+  
+    return await this.prisma.$transaction(async (tx) => {
+      // 1. Procesar cada item para actualizar stock y costos
+      for (const item of purchase.items) {
+        // Obtenemos producto actual para sus datos de stock/costo
+        const product = await tx.product.findUnique({ where: { id: item.productId } });
+        if (!product) {
+          this.logger.warn(`Producto ${item.productId} no encontrado en la compra ${purcharseId}`);
+          continue;
+        }
+        
+        // A. CÁLCULO DE COSTO PROMEDIO PONDERADO
+        const currentStock = new Decimal(product.stock);
+        const currentCost = new Decimal(product.cost);
+        const incomingQty = new Decimal(item.quantity);
+        const incomingCost = new Decimal(item.cost);
+  
+        // Fórmula: ( (StockActual * CostoActual) + (Entrada * CostoEntrada) ) / (StockActual + Entrada)
+        const currentValue = currentStock.mul(currentCost);
+        const incomingValue = incomingQty.mul(incomingCost);
+        const totalStock = currentStock.add(incomingQty);
+        
+        let newAverageCost = currentCost; // Por defecto si stock es 0 y entra 0 (raro)
+        if (totalStock.gt(0)) {
+          newAverageCost = currentValue.add(incomingValue).div(totalStock);
+        }
+  
+        // B. Actualizar SOLO el Costo en el Producto (El stock lo mueve el InventoryService)
+        await tx.product.update({
+          where: { id: product.id},
+          data: { cost: newAverageCost } // Solo costo, el stock lo mueve el Kardex abajo
+        });
+  
+        // C. REGISTRAR EN KARDEX (Suma el invetnario de forma auditable)
+        await this.inventoryService.registerMovement(
+          {
+            productId: item.productId,
+            type: MovementType.PURCHASE,
+            quantity: item.quantity,
+            reason: `Recepción Compra #${purchase.invoiceNumber}`,
+            referenceId: purchase.id
+          },
+          userId,
+          tx
+        );
+        
+        // D. Guardar historial si el costo cambió significativamente
+        if (!currentCost.equals(newAverageCost)) {
+          // Cerramos historial anterior (simplificado para no hacer muy larga la query)
+           await tx.productPriceHistory.create({
+              data: {
+                  productId: product.id,
+                  price: newAverageCost, // Guardamos el nuevo costo promedio
+                  changedById: userId,
+                  startDate: new Date()
+              }
+          });
+        }
       }
-
-      // Actualizar cost promedio (weighted average)
-      const currentStock = Number(product.stock);
-      const currentCost = Number(product.cost ?? 0);
-      const addedStock = subtract ? -Number(it.quantity) : Number(it.quantity);
-      const addedCost = Number(it.cost);
-
-      const newStock = currentStock + addedStock;
-      const newCost = currentStock + addedStock === 0
-        ? addedCost
-        : ((currentStock * currentCost) + (addedStock * addedCost)) / (currentStock + addedStock);
-
-      await tx.product.update({
-        where: { id: product.id },
-        data: {
-          stock: newStock,
-          cost: newCost,
-        },
+  
+      // 2. ACTUALIZAR DEUDA CON PROVEEDOR
+      // La deuda con el proveedor solo es oficial cuando recibimos la mercancía.
+      if (purchase.balance.gt(0)) {
+        await tx.supplier.update({
+            where: { id: purchase.supplierId },
+            data: { balance: { increment: purchase.balance } }
+        });
+      }
+  
+      // 3. ACTUALIZAR ESTADO DE COMPRA (Ya recibimos la mercancía)
+      const receivedPurcharse = await tx.purchase.update({
+        where: { id: purcharseId },
+        data: { deliveryStatus: PurchaseDeliveryStatus.RECEIVED }
       });
 
-      // Registrar historial de precio si cambió el cost
-      await tx.productPriceHistory.create({
-        data: {
-          productId: product.id,
-          changedById: userId ?? undefined,
-          price: newCost,
-          startDate: new Date(),
-        },
-      });
-    }
+      this.logger.log(`Compra #${purcharseId} Recibida. Costos promedio actualizados.`);
+      return receivedPurcharse;
+    });
   }
 
   //Helper: calcular total y subtotal de los items
   private calculateTotals(items: {quantity: number, cost: number}[]) {
-    const subtotal = items.reduce((s, it) => s + Number(it.quantity) * Number(it.cost), 0);
-    const total = subtotal; //aqui se puede aplicar descuentos, impuestos, etc.
-    return { subtotal, total };
+    const subtotal = items.reduce((s, it) => s.add(new Decimal(it.quantity).mul(new Decimal(it.cost))), new Decimal(0));
+    return { subtotal, total: subtotal }; // O aplicar IVA si es necesario
   }
 
   //Validar que exita la compra
   private async validatePurchase(id: number) {
     const purchase = await  this.prisma.purchase.findUnique({
       where: { id },
-      include: { items: { include: { product: true } }, payments: true, supplier: true }
+      include: { items: true, payments: true }
     })
     if(!purchase) { throw new NotFoundException('Compra no encontrada'); }
 

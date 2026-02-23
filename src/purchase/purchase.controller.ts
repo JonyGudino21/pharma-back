@@ -49,44 +49,37 @@ export class PurchaseController {
 
   @Post(':id/add-product')
   @UseGuards(JwtAuthGuard)
-  async addItem(@Param('id') id: number, @Body() addItemDto: CreatePurchaseItemDto, @GetUser() user: any) {
-    const data = await this.purchaseService.addItem(id, addItemDto, user.userId);
+  async addItem(@Param('id') id: number, @Body() addItemDto: CreatePurchaseItemDto) {
+    const data = await this.purchaseService.addItem(id, addItemDto);
     return ApiResponse.ok(data, 'Producto agregado correctamente');
   }
 
   @Patch(':id/update-product/:itemId')
   @UseGuards(JwtAuthGuard)
-  async updateItem(@Param('id') id: number, @Param('itemId') itemId: number, @Body() updateItemDto: UpdatePurchaseItemDto, @GetUser() user: any) {
-    const data = await this.purchaseService.updateItem(id, itemId, updateItemDto, user.userId);
+  async updateItem(@Param('id') id: number, @Param('itemId') itemId: number, @Body() updateItemDto: UpdatePurchaseItemDto) {
+    const data = await this.purchaseService.updateItem(id, itemId, updateItemDto);
     return ApiResponse.ok(data, 'Producto actualizado correctamente');
   }
 
   @Delete(':id/remove-product/:itemId')
   @UseGuards(JwtAuthGuard)
-  async removeItem(@Param('id') id: number, @Param('itemId') itemId: number, @GetUser() user: any) {
-    const data = await this.purchaseService.removeItem(id, itemId, user.userId);
+  async removeItem(@Param('id') id: number, @Param('itemId') itemId: number) {
+    const data = await this.purchaseService.removeItem(id, itemId);
     return ApiResponse.ok(data, 'Producto eliminado correctamente');
   }
 
   @Post(':id/add-payment')
   @UseGuards(JwtAuthGuard)
-  async addPayment(@Param('id') id: number, @Body() addPaymentDto: AddPaymentDto) {
-    const data = await this.purchaseService.addPayment(id, addPaymentDto);
+  async addPayment(@Param('id') id: number, @Body() addPaymentDto: AddPaymentDto, @GetUser() user: any) {
+    const data = await this.purchaseService.addPayment(id, addPaymentDto, user.userId);
     return ApiResponse.ok(data, 'Pago agregado correctamente');
   }
 
   @Delete(':id/remove-payment/:paymentId')
   @UseGuards(JwtAuthGuard)
-  async removePayment(@Param('id') id: number, @Param('paymentId') paymentId: number) {
-    const data = await this.purchaseService.removePayment(id, paymentId);
+  async removePayment(@Param('id') id: number, @Param('paymentId') paymentId: number, @GetUser() user: any) {
+    const data = await this.purchaseService.removePayment(id, paymentId, user.userId);
     return ApiResponse.ok(data, 'Pago eliminado correctamente');
-  }
-
-  @Post(':id/finalize')
-  @UseGuards(JwtAuthGuard)
-  async finalize(@Param('id') id: number, @Body() body: { force?: boolean }) {
-    const data = await this.purchaseService.finalize(id, body.force);
-    return ApiResponse.ok(data, 'Compra finalizada correctamente');
   }
   
 }
