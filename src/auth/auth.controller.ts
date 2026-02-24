@@ -3,7 +3,10 @@ import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { LogoutDto } from './dto/logout.dto';
-import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { RolesGuard } from 'src/common/guards/roles.guard';
+import { Roles } from 'src/common/decorators/roles.decorator';
+import { UserRole } from '@prisma/client';
 import type { Request } from 'express';
 import { ApiResponse } from 'src/common/dto/response.dto';
 import { GetUser } from 'src/common/decorators/get-user.decorator';
@@ -45,12 +48,22 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @Get('me')
   async me(@GetUser() user: any){
-    return ApiResponse.ok(user, 'Usuario encontrado exitosamente');
+    // 1. Obtener la configuración de permisos del usuario (Nuevo método en el servicio)
+    const permissions = this.authService.getUserPermissions(user.role);
+    
+    // 2. Retornar el usuario + sus permisos
+    return ApiResponse.ok({
+       user,
+       permissions
+    }, 'Usuario encontrado exitosamente');
   }
 
+  // === EJEMPLO DE USO DE ROLES ===
   // @UseGuards(JwtAuthGuard, RolesGuard)
-  // @Roles('ADMIN', 'MANAGER')
-  // @Get('admin-only')
-  // adminEndpoint() { ... }
+  // @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  // @Get('manager-only')
+  // async testRoles() {
+  //   return "Si ves esto, eres Manager o Admin";
+  // }
   
 }
