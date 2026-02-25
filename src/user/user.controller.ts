@@ -4,9 +4,15 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { EditUserDto } from './dto/edit-user.dto';
 import { ApiResponse } from '../common/dto/response.dto';
 import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
-import e from 'express';
+import { UseGuards } from '@nestjs/common';
+import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
+import { RolesGuard } from 'src/common/guards/roles.guard';
+import { Roles } from 'src/common/decorators/roles.decorator';
+import { UserRole } from '@prisma/client';
 
 @Controller('users')
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles(UserRole.ADMIN)
 export class UserController {
   private readonly logger = new Logger(UserController.name);
 

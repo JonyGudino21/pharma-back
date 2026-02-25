@@ -15,6 +15,11 @@ import { GetUser } from 'src/common/decorators/get-user.decorator';
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
+  /**
+   * Autentica a un usuario y genera sus tokens de acceso y refresco.
+   * Público: No requiere token.
+   * @param data Credenciales (email, password)
+   */
   @Post('login')
   async login(@Body() data: LoginDto, @Req() req : Request){
     const ua = req.get('user-agent');
@@ -23,18 +28,31 @@ export class AuthController {
     return ApiResponse.ok(res, 'Inicio de sesión exitoso');
   }
 
+  /**
+   * Renueva el Access Token usando un Refresh Token válido.
+   * Público: Se usa cuando el JWT expira.
+   * @param data Refresh token actual
+   */
   @Post('refresh')
   async refresh(@Body() data: RefreshTokenDto, @Req() req : Request){
     const res = await this.authService.refresh(data.refreshToken, req.ip, req.get('user-agent'));
     return ApiResponse.ok(res, 'Token actualizado exitosamente');
   }
 
+  /**
+   * Cierra la sesión actual revocando el refresh token enviado.
+   * Público/Opcional Privado: No necesita estrictamente JWT, solo revoca el token enviado.
+   */
   @Post('logout')
   async logout(@Body() data: LogoutDto, @Req() req: Request){
     const res = await this.authService.logout(data.refreshToken, req.ip, req.get('user-agent'));
     return ApiResponse.ok(res, 'Cierre de sesión exitoso');
   }
 
+  /**
+   * Cierra TODAS las sesiones activas del usuario (revoca todos sus refresh tokens en bd).
+   * Privado: Requiere estar logueado.
+   */
   @UseGuards(JwtAuthGuard)
   @Post('logout-all')
   async logoutAll(@GetUser() user: any, @Req() req: Request){
@@ -45,6 +63,10 @@ export class AuthController {
     )
   }
 
+  /**
+   * Obtiene el perfil del usuario autenticado junto con su matriz de permisos (RBAC).
+   * Privado: Usado por el frontend para armar la interfaz (menús, botones) al iniciar app.
+   */
   @UseGuards(JwtAuthGuard)
   @Get('me')
   async me(@GetUser() user: any){
@@ -53,8 +75,8 @@ export class AuthController {
     
     // 2. Retornar el usuario + sus permisos
     return ApiResponse.ok({
-       user,
-       permissions
+      user,
+      permissions
     }, 'Usuario encontrado exitosamente');
   }
 
