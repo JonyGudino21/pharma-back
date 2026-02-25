@@ -290,11 +290,16 @@ model Supplier {
   email      String?      @unique
   isActive   Boolean      @default(true)
 
+  creditDays  Int       @default(0)        // Días de crédito (Ej. 30)
+  balance     Decimal   @db.Decimal(12, 2) @default(0) // Cuánto le debemos nosotros
+
   purchases  Purchase[]
 
   createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
 
   @@index([name])
+  @@index([email])
 }
 
 model Purchase {
@@ -303,10 +308,16 @@ model Purchase {
   supplier      Supplier        @relation(fields: [supplierId], references: [id])
   supplierId    Int
 
-  invoiceNumber String
+  invoiceNumber String          //folio de la factura
   total         Decimal         @db.Decimal(10, 2)
   subtotal      Decimal         @db.Decimal(10, 2)
-  status        PurchaseStatus  @default(PENDING)
+  paidAmount    Decimal         @db.Decimal(12, 2) @default(0) // Cuánto hemos abonado
+  balance       Decimal         @db.Decimal(12, 2) @default(0) // Cuánto falta pagar (Deuda)
+  
+  status        PurchaseStatus  @default(PENDING)              // estado del pago
+
+  // Define si la mercancía ya entró al almacén o es solo un pedido
+  deliveryStatus PurchaseDeliveryStatus @default(PENDING)
 
   items         PurchaseItem[]
   payments      PurchasePayment[]
@@ -315,6 +326,8 @@ model Purchase {
   updatedAt     DateTime        @updatedAt
 
   @@index([status])
+  @@index([deliveryStatus])
+  @@index([invoiceNumber])
 }
 
 model PurchaseItem {
@@ -503,6 +516,8 @@ enum CashTransactionType {
   MANUAL_ADD       // Ingreso manual
   MANUAL_WITHDRAW  // Sangría / Retiro
   REFUND_OUT       // Rembolso de salida
+  PURCHASE_PAYMENT // Pago a proveedor por mercancía
+  REFUND_IN        // Proveedor nos devuelve dinero
   EXPENSE          // Gasto menor
 }
 
@@ -546,5 +561,11 @@ enum PurchaseStatus {
   PENDING    // Pedido registrado pero no pagado
   PARTIAL    // Abonado parcialmente
   PAID       // Pagado completamente
+  CANCELLED
+}
+
+enum PurchaseDeliveryStatus {
+  PENDING    // Orden creada, mercancía no ha llegado
+  RECEIVED   // Mercancía recibida e Inventario actualizado (Kardex)
   CANCELLED
 }

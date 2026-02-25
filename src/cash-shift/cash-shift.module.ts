@@ -6,6 +6,7 @@ import { PrismaModule } from '../../prisma/prisma.module';
 @Module({
   controllers: [CashShiftController],
   providers: [CashShiftService],
-  imports: [PrismaModule]
+  imports: [PrismaModule],
+  exports: [CashShiftService],
 })
 export class CashShiftModule {}
