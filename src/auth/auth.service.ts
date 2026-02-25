@@ -7,6 +7,7 @@ import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { LogoutDto } from './dto/logout.dto'
 import { UserRole } from '@prisma/client';
+import { UserPermissions } from './types/user-permissions.types';
 
 type JwtPayload = { sub: number, role: string, userName: string };
 
@@ -134,5 +135,66 @@ export class AuthService {
   async logoutAll(userId: number, ip?: string, au?: string){
     await this.tokens.revokeAllUserRefreshTokens(userId, ip, au);
     return true;
+  }
+
+  /**
+   * Mapa de permisos basado en el rol del usuario (Enterprise).
+   * El frontend usa estos flags para UI; el backend debe reforzar con @Roles() en cada endpoint.
+   * Ver types/user-permissions.types.ts para la matriz rol-permiso.
+   */
+  getUserPermissions(role: UserRole): UserPermissions {
+    const isAdmin = role === UserRole.ADMIN;
+    const isCashier = role === UserRole.CASHIER;
+    const isManager = role === UserRole.MANAGER;
+    const isManagerOrAdmin = isManager || isAdmin;
+    const isPharmacist = role === UserRole.PHARMACIST;
+    const canOperatePOS = true; // CASHIER, PHARMACIST, MANAGER, ADMIN
+
+    return {
+      // ---- Ventas (sales) ----
+      canSell: canOperatePOS,
+      canCancelSales: isManagerOrAdmin,
+      canGiveDiscounts: isManagerOrAdmin,
+      canReturnSales: isManagerOrAdmin,
+      canViewSalesSummary: canOperatePOS,
+
+      // ---- Clientes (client) ----
+      canViewClients: canOperatePOS,
+      canCreateClient: canOperatePOS,
+      canEditClient: isManagerOrAdmin,
+      canDeleteClient: isManagerOrAdmin,
+      canViewDebtors: isManagerOrAdmin,
+      canViewAccountStatement: canOperatePOS,
+      canUpdateCreditConfig: isManagerOrAdmin,
+      canRegisterClientPayment: canOperatePOS,
+
+      // ---- Categorías (category) ----
+      canManageCategories: isManagerOrAdmin || isPharmacist,
+
+      // ---- Inventario (inventory) ----
+      canViewKardex: isManagerOrAdmin || isPharmacist,
+      canAdjustInventory: isManagerOrAdmin,
+      canViewLowStockAlerts: isManagerOrAdmin || isPharmacist,
+      canViewInventoryValuation: isManagerOrAdmin,
+
+      // ---- Caja (cash-shift) ----
+      canOpenShift: canOperatePOS,
+      canWithdrawCash: isManagerOrAdmin,
+      canViewAllShifts: isManagerOrAdmin,
+
+      // ---- Reportes / Analytics ----
+      canViewAnalytics: isManagerOrAdmin,
+
+      // ---- Catálogos ----
+      canManageProducts: isManagerOrAdmin || isPharmacist,
+      canManageSuppliers: isManagerOrAdmin,
+
+      // ---- Compras (purchase) ----
+      canViewPurchases: isManagerOrAdmin || isPharmacist,
+      canManagePurchases: isManagerOrAdmin || isPharmacist,
+
+      // ---- Usuarios ----
+      canManageUsers: isAdmin,
+    };
   }
 }
