@@ -79,6 +79,7 @@ En la carpeta **`docs/`** está la documentación oficial para integrar esta API
 | Documento | Contenido |
 |-----------|-----------|
 | [**API_CONTRACT.md**](docs/API_CONTRACT.md) | Contrato general: formato de respuestas de éxito y error, paginación estándar, seguridad (Bearer token e interceptor para futura migración a cookies), RBAC con `GET /auth/me` y objeto `permissions`. |
+| [**FRONTEND_RESPONSE_HANDLING.md**](docs/FRONTEND_RESPONSE_HANDLING.md) | **Estructura de comunicación para el Front:** manejo unificado de aciertos y errores (envelope, qué leer en éxito/error, códigos HTTP, flujo con interceptor y referencia a los archivos del Back que implementan el contrato). |
 | [**PERMISSIONS_MATRIX.md**](docs/PERMISSIONS_MATRIX.md) | Matriz de permisos por rol (CASHIER, PHARMACIST, MANAGER, ADMIN) y uso en la UI. |
 | [**AUTH_MODULE.md**](docs/AUTH_MODULE.md) | Login, refresh, logout, logout-all, GET /auth/me; payloads y manejo de errores. |
 | [**USER_MODULE.md**](docs/USER_MODULE.md) | CRUD de usuarios (solo ADMIN), listado, búsqueda, soft delete. |
