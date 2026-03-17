@@ -12,7 +12,7 @@
   <a href="https://www.prisma.io/" target="_blank"><img src="https://img.shields.io/badge/Prisma-ORM-2D3748?logo=prisma" alt="Prisma" /></a>
 </p>
 
-Backend REST desarrollado con **NestJS** y **Prisma** para un sistema de gestión integral de farmacia: inventario, ventas, compras, clientes con crédito, turnos de caja y control de acceso por roles.
+Backend REST desarrollado con **NestJS** y **Prisma** para un sistema de control operacional (ERP / POS / CRM) de nivel enterprise: inventario inmutable (Kardex), ventas y compras con flujos financieros estrictos (Decimal), clientes con crédito y precios especiales, turnos de caja con arqueo ciego, y control de acceso por roles (RBAC). La **documentación técnica oficial** para integración con el frontend está en la carpeta [**docs/**](docs/).
 
 ---
 
@@ -21,6 +21,7 @@ Backend REST desarrollado con **NestJS** y **Prisma** para un sistema de gestió
 - [Descripción](#descripción)
 - [Stack tecnológico](#stack-tecnológico)
 - [Arquitectura y módulos](#arquitectura-y-módulos)
+- [Documentación técnica](#documentación-técnica)
 - [Modelo de datos (resumen)](#modelo-de-datos-resumen)
 - [Requisitos previos](#requisitos-previos)
 - [Instalación y ejecución](#instalación-y-ejecución)
@@ -55,18 +56,44 @@ El proyecto aplica una arquitectura modular (NestJS), validación y transformaci
 
 ## Arquitectura y módulos
 
-- **Auth** — Login, logout, refresh token; JWT (access + refresh), tokens persistidos en BD.
-- **User** — CRUD de usuarios con roles: `ADMIN`, `MANAGER`, `PHARMACIST`, `CASHIER`.
-- **Client** — CRUD de clientes; crédito (límite, deuda actual); estado de cuenta; listado de deudores; precios especiales por cliente; registro de abonos.
-- **Category** — Categorías con relación muchos a muchos a productos.
-- **Product** — Productos (SKU, código de barras, stock, costo, precio, controlado); historial de precios; relación con categorías.
-- **Suppliers** — Proveedores.
-- **Purchase** — Compras a proveedores, ítems, pagos y estados.
-- **CashShift** — Turnos de caja: apertura/cierre, fondo inicial, cuadre (esperado vs real), operaciones (ingresos, egresos, sangría, reembolsos).
-- **Inventory** — Movimientos de inventario (inicial, venta, compra, devoluciones, ajustes, mermas) con costo unitario y trazabilidad.
-- **Sales** — Módulo preparado en código (controlador/servicio/DTOs); integración en app pendiente de activación.
+- **Auth** — Login, logout, refresh token, logout-all; JWT (access + refresh), tokens persistidos en BD; **GET /auth/me** con usuario y matriz de permisos (RBAC) para el frontend.
+- **User** — CRUD de usuarios (solo ADMIN): roles `ADMIN`, `MANAGER`, `PHARMACIST`, `CASHIER`; soft delete.
+- **Client** — CRUD de clientes; crédito (`hasCredit`, `creditLimit`, `currentDebt`); estado de cuenta; listado de deudores (MANAGER); precios especiales por cliente; registro de abonos (FIFO, efectivo con caja abierta).
+- **Category** — Categorías de productos (nombre único); listado, búsqueda y soft delete; MANAGER/PHARMACIST para escribir.
+- **Product** — Catálogo: SKU automático, código de barras, stock (inicial vía movimiento), costo/precio, categorías; historial de precios; soft delete.
+- **Suppliers** — Proveedores (solo MANAGER); estado de cuenta (cuentas por pagar); no eliminar con deuda ni compras pendientes.
+- **Purchase** — Compras a proveedores: ítems, pagos, recepción de mercancía (Kardex + costo promedio ponderado), cancelación; efectivo requiere caja abierta.
+- **Sales** — Ventas (POS/CRM): carrito, ítems, pagos, completar (inventario + factura + crédito), cancelación y devoluciones; precios especiales por cliente; efectivo con caja abierta.
+- **CashShift** — Turnos de caja: apertura/cierre con arqueo ciego (`expectedAmount` vs `realAmount`), operaciones manuales (sangrías, gastos) solo MANAGER; un turno abierto por usuario.
+- **Inventory** — Inventario inmutable: ajustes manuales (MANAGER), alertas de stock bajo, Kardex, valoración, consulta de stock; el stock solo se modifica vía movimientos.
+- **Analytics** — Dashboard (solo MANAGER/ADMIN): KPIs financieros, liquidez, tendencias por método de pago, top 5 productos; rango de fechas opcional.
 
-Elementos transversales: **ApiResponse**, **ValidationPipe** global, **AllExceptionsFilter**, paginación reutilizable, decoradores `@GetUser()` y `@Roles()`, guards JWT y de roles.
+Elementos transversales: **ApiResponse**, **ValidationPipe** global, **AllExceptionsFilter**, paginación reutilizable (`page`, `limit`, `totalPages`), decoradores `@GetUser()` y `@Roles()`, guards JWT y de roles. Montos financieros con **Decimal** (Prisma).
+
+---
+
+## Documentación técnica
+
+En la carpeta **`docs/`** está la documentación oficial para integrar esta API (p. ej. desde un frontend Vue 3 / Nuxt):
+
+| Documento | Contenido |
+|-----------|-----------|
+| [**API_CONTRACT.md**](docs/API_CONTRACT.md) | Contrato general: formato de respuestas de éxito y error, paginación estándar, seguridad (Bearer token e interceptor para futura migración a cookies), RBAC con `GET /auth/me` y objeto `permissions`. |
+| [**FRONTEND_RESPONSE_HANDLING.md**](docs/FRONTEND_RESPONSE_HANDLING.md) | **Estructura de comunicación para el Front:** manejo unificado de aciertos y errores (envelope, qué leer en éxito/error, códigos HTTP, flujo con interceptor y referencia a los archivos del Back que implementan el contrato). |
+| [**PERMISSIONS_MATRIX.md**](docs/PERMISSIONS_MATRIX.md) | Matriz de permisos por rol (CASHIER, PHARMACIST, MANAGER, ADMIN) y uso en la UI. |
+| [**AUTH_MODULE.md**](docs/AUTH_MODULE.md) | Login, refresh, logout, logout-all, GET /auth/me; payloads y manejo de errores. |
+| [**USER_MODULE.md**](docs/USER_MODULE.md) | CRUD de usuarios (solo ADMIN), listado, búsqueda, soft delete. |
+| [**CASH_SHIFT_MODULE.md**](docs/CASH_SHIFT_MODULE.md) | Turnos de caja, arqueo ciego, operaciones manuales, current-shift. |
+| [**CATEGORY_MODULE.md**](docs/CATEGORY_MODULE.md) | Categorías de productos: CRUD, listado, búsqueda. |
+| [**CLIENT_MODULE.md**](docs/CLIENT_MODULE.md) | Clientes, estado de cuenta, crédito, abonos, deudores. |
+| [**INVENTORY_MODULE.md**](docs/INVENTORY_MODULE.md) | Ajustes, alertas de stock, Kardex, valoración, stock por producto. |
+| [**PRODUCT_MODULE.md**](docs/PRODUCT_MODULE.md) | Catálogo: creación, listado, búsqueda, SKU/barcode, soft delete. |
+| [**PURCHASE_MODULE.md**](docs/PURCHASE_MODULE.md) | Compras: ítems, pagos, recepción, cancelación. |
+| [**SALES_MODULE.md**](docs/SALES_MODULE.md) | Ventas: carrito, ítems, pagos, completar, cancelar, devoluciones. |
+| [**SUPPLIERS_MODULE.md**](docs/SUPPLIERS_MODULE.md) | Proveedores, estado de cuenta (cuentas por pagar). |
+| [**ANALYTICS_MODULE.md**](docs/ANALYTICS_MODULE.md) | Dashboard: KPIs, liquidez, tendencias, top productos. |
+
+Cada módulo documenta: resumen de negocio, reglas clave, endpoints (método, ruta, roles), payloads destacados, manejo de errores para la UI y consejos de implementación en frontend.
 
 ---
 
@@ -130,10 +157,13 @@ Ejemplo de variables necesarias (crear `.env` en la raíz):
 | `JWT_SECRET`          | Secreto para firmar JWTs             |
 | `JWT_EXPIRES_IN`      | Caducidad del access token (ej. 15m) |
 | `REFRESH_TOKEN_EXPIRES_IN` | Caducidad del refresh token   |
+| `JWT_REFRESH_DAYS_REMEMBER` | Días de validez del refresh si "recordar sesión" (ej. 7) |
+| `JWT_REFRESH_DAYS_DEFAULT`  | Días de validez del refresh por defecto (ej. 1) |
 | `FRONTEND_URL`        | Origen permitido para CORS           |
 | `PORT`                | Puerto del servidor (ej. 3005)       |
+| `TOLERANCE_THRESHOLD` | Umbral de diferencia (en unidades) en cierre de caja; si se supera, el turno queda `AUDIT_REQUIRED` (ej. 10) |
 
-Ajustar según existan más configuraciones (ej. refresh token “remember”, etc.).
+Ajustar según existan más configuraciones en el código.
 
 ---
 
@@ -141,30 +171,34 @@ Ajustar según existan más configuraciones (ej. refresh token “remember”, e
 
 ```
 pharma-back/
+├── docs/                   # Documentación técnica oficial (API y módulos)
+│   ├── API_CONTRACT.md     # Contrato general de la API
+│   ├── PERMISSIONS_MATRIX.md
+│   └── *_MODULE.md         # Documentación por módulo (Auth, User, Sales, etc.)
 ├── prisma/
-│   ├── schema.prisma      # Modelos, enums e índices
-│   ├── prisma.service.ts  # Servicio inyectable Prisma
+│   ├── schema.prisma       # Modelos, enums e índices
 │   └── migrations/        # Migraciones versionadas
 ├── src/
-│   ├── main.ts            # Bootstrap, CORS, ValidationPipe, filtro global
-│   ├── app.module.ts      # Módulo raíz e imports
-│   ├── auth/              # Login, JWT, refresh, guards
-│   ├── user/
-│   ├── client/            # Clientes, crédito, estado de cuenta, pagos
+│   ├── main.ts             # Bootstrap, CORS, ValidationPipe, filtro global
+│   ├── app.module.ts       # Módulo raíz e imports
+│   ├── auth/               # Login, JWT, refresh, /me (permisos RBAC)
+│   ├── user/               # CRUD usuarios (ADMIN)
+│   ├── client/             # Clientes, crédito, estado de cuenta, abonos
 │   ├── category/
 │   ├── product/
 │   ├── suppliers/
 │   ├── purchase/
-│   ├── sales/             # (listo para integrar)
-│   ├── cash-shift/        # Turnos y operaciones de caja
-│   ├── inventory/         # Movimientos de inventario
-│   └── common/            # DTOs, decoradores, filtros, guards
+│   ├── sales/              # Ventas, POS, cancelación, devoluciones
+│   ├── cash-shift/         # Turnos y operaciones de caja
+│   ├── inventory/          # Movimientos, Kardex, ajustes, valoración
+│   ├── analytics/          # Dashboard (KPIs, liquidez, tendencias)
+│   └── common/             # DTOs, decoradores, filtros, guards
 ├── test/
 ├── package.json
 └── README.md
 ```
 
-Cada dominio suele incluir: `*.controller.ts`, `*.service.ts`, `*.module.ts` y carpeta `dto/`.
+Cada dominio incluye: `*.controller.ts`, `*.service.ts`, `*.module.ts` y carpeta `dto/`.
 
 ---
 
@@ -184,4 +218,4 @@ Proyecto de uso privado / sin licencia pública (UNLICENSED). Ver `package.json`
 
 ---
 
-*README actualizado en función del estado actual del código y del esquema Prisma. Para contribuir o ejecutar tests, revisar los scripts en `package.json` (`test`, `test:e2e`, `lint`, etc.).*
+*README actualizado con la documentación técnica en `docs/`. Para integrar el frontend, empezar por [docs/API_CONTRACT.md](docs/API_CONTRACT.md) y luego la ficha de cada módulo. Scripts de tests y lint en `package.json`.*
