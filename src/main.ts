@@ -6,6 +6,9 @@ import { AllExceptionsFilter } from './common/filters/http-exception.filter'
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
+  // Prefijo global: todas las rutas bajo http://localhost:3005/api
+  app.setGlobalPrefix('api');
+
   app.enableCors({
     origin: [process.env.FRONTEND_URL, "*"],
     credentials: true,
