@@ -2,6 +2,8 @@
 
 Documentación técnica oficial del Backend (NestJS / Prisma / PostgreSQL) para integración con el Frontend (Vue 3 / Nuxt). Este documento define el contrato común de todas las respuestas, errores, paginación, seguridad y RBAC.
 
+> **Para el Frontend:** si solo necesitas la **estructura de comunicación de aciertos y errores** (qué leer en éxito/error, códigos HTTP, interceptor), usa el documento dedicado [**FRONTEND_RESPONSE_HANDLING.md**](FRONTEND_RESPONSE_HANDLING.md).
+
 ---
 
 ## 1. Formato estándar de respuesta de éxito
