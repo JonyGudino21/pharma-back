@@ -21,12 +21,33 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     if (exception instanceof HttpException) {
       status = exception.getStatus();
-      const res: any = exception.getResponse();
-      message = res?.message || exception.message;
-      error = res;
+      const res: unknown = exception.getResponse();
+      if (typeof res === 'string') {
+        message = res;
+        error = { message: res };
+      } else if (typeof res === 'object' && res !== null) {
+        const msg =
+          'message' in res
+            ? (res as { message?: string | string[] }).message
+            : undefined;
+        message =
+          typeof msg === 'string'
+            ? msg
+            : Array.isArray(msg)
+              ? msg.join(', ')
+              : exception.message;
+        error = res;
+      } else {
+        message = exception.message;
+        error = { message: String(res) };
+      }
     } else if (exception instanceof Error) {
       message = exception.message;
-      error = exception.stack;
+      const showStack = process.env.NODE_ENV !== 'production';
+      error = {
+        name: exception.name,
+        ...(showStack && exception.stack ? { stack: exception.stack } : {}),
+      };
     }
 
     response.status(status).json(
@@ -35,11 +56,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
         message,
         undefined,
         {
-					...error,
-					path: request.url,
-					method: request.method,
-					timestamp: new Date().toISOString(),
-				},
+          ...error,
+          path: request.url,
+          method: request.method,
+          timestamp: new Date().toISOString(),
+        },
         status,
       ),
     );
