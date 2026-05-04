@@ -4,7 +4,10 @@ import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
 import { SearchCategoryDto } from './dto/search-category.dto';
 import { ApiResponse } from 'src/common/dto/response.dto';
-import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
+import {
+  PaginationWithActiveQueryDto,
+  parseQueryActiveFilter,
+} from 'src/common/dto/pagination-with-active-query.dto';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
@@ -29,13 +32,9 @@ export class CategoryController {
    * [CATÁLOGO] Lista todas las categorías. (Público para usuarios del sistema)
    */
   @Get()
-  async findAll(@Query('active') active?: string, @Query() pagination?: PaginationParamsDto) {
-    let isActive: boolean | undefined;
-    if (active === 'true') {
-      isActive = true;
-    } else if (active === 'false') {
-      isActive = false;
-    }
+  async findAll(@Query() query: PaginationWithActiveQueryDto) {
+    const { active, ...pagination } = query;
+    const isActive = parseQueryActiveFilter(active);
     const res = await this.categoryService.findAll(isActive, pagination);
     return ApiResponse.ok(res, 'Categories retrieved successfully');
   }
