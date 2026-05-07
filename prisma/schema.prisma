@@ -49,6 +49,9 @@ model Product {
   sku            String             @unique                // Código interno
   barcode        String?            @unique
   controlled     Boolean            @default(false)        // Medicamento controlado
+  strength       String?                                   // 500mg, 1000mg
+  format         String?                                   // Tableta, Capsula
+  presentation   String?                                   // Adulto, Infantil
   stock          Int @default(0)
   minStock       Int @default(5)
   price          Decimal            @db.Decimal(10, 2)     // Precio de VENTA al público
