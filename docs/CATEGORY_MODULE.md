@@ -32,6 +32,15 @@ Este módulo gestiona las **categorías o familias de productos** (ej. Analgési
 
 Todos requieren **JWT**. Paginación estándar: `data.categories` y `data.pagination` cuando se envían `page` y/o `limit`.
 
+### Parámetros de query en `GET /category`
+
+| Parámetro | Obligatorio | Descripción |
+|-----------|-------------|-------------|
+| `active` | No | Solo los strings **`true`** o **`false`**. Filtra por `isActive`. Si se omite, no se filtra por estado. Otros valores → **400** (validación). |
+| `page`, `limit` | No | Paginación; sin `page`/`limit` el servicio puede devolver todas las categorías que cumplan el filtro. |
+
+Misma convención que `GET /products`: DTO de query con paginación + `active` para alinearse con el `ValidationPipe` global.
+
 ---
 
 ## 4. Payload destacado

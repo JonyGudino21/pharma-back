@@ -36,6 +36,15 @@ Este módulo mantiene el **catálogo de productos**: alta, edición, baja lógic
 
 Todos requieren **JWT**. Donde hay `@Roles`, se aplica además `RolesGuard`.
 
+### Parámetros de query en `GET /products`
+
+| Parámetro | Obligatorio | Descripción |
+|-----------|-------------|-------------|
+| `active` | No | Solo los strings **`true`** o **`false`**. Filtra por `isActive`. Si se omite, el listado no filtra por estado. Cualquier otro valor (p. ej. `1`, `yes`) → **400** por validación del DTO. |
+| `page`, `limit` | No | Paginación estándar; si no se envían, el backend puede devolver todos los registros según la lógica del servicio. |
+
+El listado usa un DTO de query que extiende la paginación y declara `active` explícitamente, de modo que es compatible con el `ValidationPipe` global (`whitelist` + `forbidNonWhitelisted`).
+
 ---
 
 ## 4. Payload destacado
