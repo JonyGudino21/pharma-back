@@ -1,7 +1,7 @@
 import { IsOptional, IsString } from "class-validator";
 import { PaginationParamsDto } from "src/common/dto/pagination-params.dto";
 
-export class SearchSupplierDto {
+export class SearchSupplierDto extends PaginationParamsDto {
   @IsOptional()
   @IsString()
   name?: string;
@@ -13,7 +13,4 @@ export class SearchSupplierDto {
   @IsOptional()
   @IsString()
   phone?: string;
-
-  @IsOptional()
-  pagination?: PaginationParamsDto; 
 }

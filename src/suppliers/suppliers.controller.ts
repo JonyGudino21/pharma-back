@@ -9,6 +9,7 @@ import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { UserRole } from '@prisma/client';
+import { PaginationWithActiveQueryDto, parseQueryActiveFilter } from 'src/common/dto/pagination-with-active-query.dto';
 
 @Controller('suppliers')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -29,8 +30,11 @@ export class SuppliersController {
    * [DIRECTORIO] Listado paginado de proveedores.
    */
   @Get()
-  async findAll(@Query() findAllSupplierDto: FindAllSupplierDto) {
-    const data = await this.suppliersService.findAll(findAllSupplierDto);
+  async findAll(@Query() query: PaginationWithActiveQueryDto) {
+    const { active, ...pagination } = query;
+    const isActive = parseQueryActiveFilter(active);
+
+    const data = await this.suppliersService.findAll(isActive, pagination);
     return ApiResponse.ok(data, 'Suppliers retrieved successfully');
   }
 

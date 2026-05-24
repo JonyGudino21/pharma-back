@@ -6,6 +6,7 @@ import { SearchSupplierDto } from './dto/search-supplier.dto';
 import { FindAllSupplierDto } from './dto/findAll-supplier.dto';
 import { Decimal } from '@prisma/client/runtime/library';
 import { PurchaseStatus } from '@prisma/client';
+import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
 
 @Injectable()
 export class SuppliersService {
@@ -47,15 +48,16 @@ export class SuppliersService {
    * @param pagination parametros de paginacion (opcional)
    * @returns todos los proveedores
    */
-  async findAll(findAllSupplierDto: FindAllSupplierDto) {
-    const hasPagination = findAllSupplierDto.pagination && (findAllSupplierDto.pagination.page !== undefined || findAllSupplierDto.pagination.limit !== undefined);
-    const page = hasPagination ? findAllSupplierDto.pagination?.page ?? 1 : 1;
-    const limit = hasPagination ? findAllSupplierDto.pagination?.limit ?? 20 : 20;
+  async findAll(isActive: boolean | undefined, pagination?: PaginationParamsDto) {
+    const hasPagination = pagination && (pagination.page !== undefined || pagination.limit !== undefined);
+    const page = hasPagination ? pagination.page ?? 1 : 1;
+    const limit = hasPagination ? pagination.limit ?? 20 : 20;
     const skip = (page - 1) * limit;
 
     let whereClause = {};
-    if(findAllSupplierDto.isActive){
-      whereClause = { isActive: findAllSupplierDto.isActive };
+    // Ahora isActive es un booleano puro o undefined. ¡La lógica funcionará perfecto!
+    if (isActive !== undefined) {
+      whereClause = { isActive };
     }
 
     // Si no hay paginación, devolver todos sin paginar
@@ -184,11 +186,10 @@ export class SuppliersService {
     }
 
     const hasPagination =
-      searchSupplierDto?.pagination &&
-      (searchSupplierDto?.pagination?.page !== undefined ||
-        searchSupplierDto?.pagination?.limit !== undefined);
-    const page = hasPagination ? searchSupplierDto?.pagination?.page ?? 1 : 1;
-    const limit = hasPagination ? searchSupplierDto?.pagination?.limit ?? 20 : 20;
+      searchSupplierDto?.page !== undefined ||
+      searchSupplierDto?.limit !== undefined;
+    const page = hasPagination ? searchSupplierDto?.page ?? 1 : 1;
+    const limit = hasPagination ? searchSupplierDto?.limit ?? 20 : 20;
     const skip = (page - 1) * limit;
 
     const conditions: Array<{ [key: string]: { contains: string; mode: 'insensitive' } }> = [];
