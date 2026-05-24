@@ -2,7 +2,7 @@ import { IsOptional, IsInt, IsEnum, IsObject } from 'class-validator';
 import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
 import { PurchaseStatus } from '@prisma/client';
 
-export class FindAllPurchaseDto {
+export class FindAllPurchaseDto extends PaginationParamsDto {
 
   @IsOptional()
   @IsInt()
@@ -11,8 +11,4 @@ export class FindAllPurchaseDto {
   @IsOptional()
   @IsEnum(PurchaseStatus)
   status?: PurchaseStatus;
-
-  @IsOptional()
-  @IsObject()
-  pagination?: PaginationParamsDto;
 }
