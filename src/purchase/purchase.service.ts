@@ -158,6 +158,9 @@ export class PurchaseService {
     if(!hasPagination){
       const purchases = await this.prisma.purchase.findMany({
         where,
+        include: {
+          supplier: { select: { name: true, id: true } },
+        },
         orderBy: { createdAt: 'desc' }
       });
       return { purchases };
@@ -168,7 +171,10 @@ export class PurchaseService {
         where,
         skip,
         take: limit,
-        orderBy: { createdAt: 'desc' }
+        orderBy: { createdAt: 'desc' },
+        include: {
+          supplier: { select: { name: true, id: true } },
+        },
       }),
       this.prisma.purchase.count({ where })
     ]);
@@ -696,7 +702,15 @@ export class PurchaseService {
   private async validatePurchase(id: number) {
     const purchase = await  this.prisma.purchase.findUnique({
       where: { id },
-      include: { items: true, payments: true }
+      include: { 
+        items: { 
+          include: { 
+            product: { select: { name: true, sku: true } }
+          } 
+        },
+        payments: true,
+        supplier: true,
+      }
     })
     if(!purchase) { throw new NotFoundException('Compra no encontrada'); }
 
