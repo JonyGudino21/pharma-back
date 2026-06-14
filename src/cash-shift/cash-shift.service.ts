@@ -161,6 +161,7 @@ export class CashShiftService {
         summary: {
           initial: shift.initialAmount,
           salesCash: totalSalesCash,
+          manualIngress: totalManualIngress,
           withdrawals: totalManualEgress,
           expected: expectedAmount,
           real: dto.realAmount,
