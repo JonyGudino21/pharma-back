@@ -33,7 +33,7 @@ export class PurchaseController {
    */
   @Get()
   async findAll(@Query() findAllPurchaseDto: FindAllPurchaseDto) {
-    const data = await this.purchaseService.findAll(findAllPurchaseDto.supplierId, findAllPurchaseDto.status, findAllPurchaseDto.pagination);
+    const data = await this.purchaseService.findAll(findAllPurchaseDto.supplierId, findAllPurchaseDto.status, {page: findAllPurchaseDto.page, limit: findAllPurchaseDto.limit});
     return ApiResponse.ok(data, 'Compras encontradas correctamente');
   }
 

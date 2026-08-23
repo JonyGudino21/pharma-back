@@ -128,3 +128,5 @@ Todos requieren **JWT**. Paginación: sin `page`/`limit` devuelve todas; con ell
 - **Listado:** Filtros por `supplierId` y `status`; paginación con `page` y `limit`. Respuesta sin paginación: `data.purchases`; con paginación: `data.purchases` + `data.pagination`.
 - **Decimales:** Totales, balances y montos vienen como Decimal (string en JSON). Formatear para moneda en la UI.
 - **Eliminar pago:** Solo para corrección de errores. Mostrar el monto y advertir que el efectivo volverá a caja (si fue CASH) y que el saldo de la compra aumentará.
+
+:advertencia -> checar el proceso de cuando se cmncela una compra a un proveedor si si meodifica el precio del producto que regrese a como estaba por que aun lo deja en cuenta y hay que tener cuidado con eso

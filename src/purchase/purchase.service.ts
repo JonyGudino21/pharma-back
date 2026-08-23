@@ -86,8 +86,8 @@ export class PurchaseService {
                 shiftId: shift.id,
                 type: CashTransactionType.PURCHASE_PAYMENT,
                 amount: p.amount,
-                reason: `Pago de orden de compra ${purchase.id}`,
-                referenceId: purchase.id,
+                reason: `Pago de orden de compra ${created.id}`,
+                referenceId: created.id,
                 relatedTable: 'Purchase',
                 createdBy: userId,
               }
@@ -96,7 +96,7 @@ export class PurchaseService {
 
           await tx.purchasePayment.create({
             data: {
-              purchaseId: purchase.id,
+              purchaseId: created.id,
               method: p.method,
               amount: p.amount,
               references: p.references,
@@ -108,10 +108,10 @@ export class PurchaseService {
         // Actualizar estado de la compra
 
         let initStatus: PurchaseStatus = PurchaseStatus.PARTIAL;
-        if(totalPaid.gte(purchase.total)) initStatus = PurchaseStatus.PAID;
+        if(totalPaid.gte(created.total)) initStatus = PurchaseStatus.PAID;
 
         await tx.purchase.update({
-          where: { id: purchase.id },
+          where: { id: created.id },
           data: {
             paidAmount: totalPaid,
             balance: new Decimal(total).sub(totalPaid), 
@@ -121,15 +121,15 @@ export class PurchaseService {
       } else {
         // Sin pagos el balance es el total de la compra
         await tx.purchase.update({
-          where: { id: purchase.id },
+          where: { id: created.id },
           data: {
-            balance: purchase.total,
+            balance: created.total,
           }
         });
       }
 
       return tx.purchase.findUnique({
-        where: { id: purchase.id },
+        where: { id: created.id },
         include: {
           items: { include: { product: true } },
           payments: true,
@@ -137,6 +137,8 @@ export class PurchaseService {
         }
       });
     });
+
+    return purchase;
   }
 
   async findAll(supplierId?: number, status?: PurchaseStatus, pagination?: PaginationParamsDto) {
@@ -156,6 +158,9 @@ export class PurchaseService {
     if(!hasPagination){
       const purchases = await this.prisma.purchase.findMany({
         where,
+        include: {
+          supplier: { select: { name: true, id: true } },
+        },
         orderBy: { createdAt: 'desc' }
       });
       return { purchases };
@@ -166,7 +171,10 @@ export class PurchaseService {
         where,
         skip,
         take: limit,
-        orderBy: { createdAt: 'desc' }
+        orderBy: { createdAt: 'desc' },
+        include: {
+          supplier: { select: { name: true, id: true } },
+        },
       }),
       this.prisma.purchase.count({ where })
     ]);
@@ -694,7 +702,15 @@ export class PurchaseService {
   private async validatePurchase(id: number) {
     const purchase = await  this.prisma.purchase.findUnique({
       where: { id },
-      include: { items: true, payments: true }
+      include: { 
+        items: { 
+          include: { 
+            product: { select: { name: true, sku: true } }
+          } 
+        },
+        payments: true,
+        supplier: true,
+      }
     })
     if(!purchase) { throw new NotFoundException('Compra no encontrada'); }
 
