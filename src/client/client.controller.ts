@@ -14,6 +14,7 @@ import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
 import { UseGuards } from '@nestjs/common';
+import { SearchClientDto } from './dto/search.dto';
 
 @Controller('client')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -45,12 +46,8 @@ export class ClientController {
    * [CRM] Buscador rápido de clientes (ideal para la barra de búsqueda del POS).
    */
   @Get('search')
-  async search(
-    @Query('name') name?: string,
-    @Query('email') email?: string,
-    @Query('phone') phone?: string,
-    @Query() pagination?: PaginationParamsDto
-  ) {
+  async search(@Query() query: SearchClientDto) {
+    const { name, email, phone, pagination } = query;
     const res = await this.clientService.findClient(name, email, phone, pagination);
     return ApiResponse.ok(res, 'Clientes encontrados exitosamente');
   }
