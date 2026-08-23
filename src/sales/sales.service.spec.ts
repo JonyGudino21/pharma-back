@@ -1,125 +1,199 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { ConflictException, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Decimal } from '@prisma/client/runtime/library';
 import { SalesService } from './sales.service';
 import { PrismaService } from '../../prisma/prisma.service';
-import { Decimal } from '@prisma/client/runtime/library';
-import { BadRequestException } from '@nestjs/common';
+import { InventoryService } from '../inventory/inventory.service';
+import { CashShiftService } from '../cash-shift/cash-shift.service';
 
-const mockPrismaService = {
-  product: {
-    findMany: jest.fn(),
-    updateMany: jest.fn(),
-    update: jest.fn(),
-    findUnique: jest.fn(),
-  },
-  sale: {
-    create: jest.fn(),
-    update: jest.fn(),
-    findUnique: jest.fn(),
-  },
-  salePayment: {
-    create: jest.fn(),
-    aggregate: jest.fn(),
-  },
-  saleReturn: {
-    create: jest.fn(),
-  },
-  saleReturnItem: {
-    create: jest.fn(),
-  },
-  saleRefund: {
-    create: jest.fn(),
-  },
-  saleItem: {
-    findMany: jest.fn(),
-  },
-  clientProductPrice: {
-    findUnique: jest.fn(),
-    upsert: jest.fn(),
-  },
-  clientProductPriceHistory: {
-    create: jest.fn(),
-  },
-  $transaction: jest.fn((cb) => cb(mockPrismaService)),
-};
-
-describe('SalesService', () => {
+/**
+ * Pruebas del contrato de CONCURRENCIA del cierre de venta (P0-1).
+ *
+ * Se valida que el paso DRAFT → COMPLETED se reclame de forma atómica
+ * (compare-and-swap) DENTRO de la transacción, y que el límite de crédito
+ * no pueda excederse por dos ventas simultáneas.
+ */
+describe('SalesService — cierre de venta a prueba de concurrencia', () => {
   let service: SalesService;
-  let prisma: PrismaService;
+
+  const tx = {
+    sale: { updateMany: jest.fn(), findUnique: jest.fn(), update: jest.fn() },
+    saleItem: { findMany: jest.fn(), aggregate: jest.fn() },
+    client: { update: jest.fn() },
+    // Ramas de cancel() con pagos reales (reembolso y salida de caja)
+    saleReturn: { create: jest.fn() },
+    saleRefund: { create: jest.fn() },
+    cashTransaction: { create: jest.fn() },
+    // updateClientPricesOnSaleComplete usa estos 4 métodos al cerrar una venta con cliente
+    clientProductPrice: { findUnique: jest.fn(), upsert: jest.fn() },
+    clientProductPriceHistory: { create: jest.fn(), updateMany: jest.fn() },
+  };
+
+  const mockPrisma = { $transaction: jest.fn((cb: any) => cb(tx)) };
+  const mockInventory = { registerMovement: jest.fn(), lockProductRow: jest.fn() };
+  const mockCashShift = { getCurrentShift: jest.fn() };
+
+  const ventaBase = {
+    id: 10,
+    clientId: null as number | null,
+    total: new Decimal(300),
+    paidAmount: new Decimal(300),
+    balance: new Decimal(0),
+    note: null,
+    status: 'PENDING',
+    flowStatus: 'DRAFT',
+    client: null as any,
+    items: [
+      { id: 2, productId: 55, quantity: 1, price: new Decimal(100), costAtSale: new Decimal(50) },
+      { id: 1, productId: 11, quantity: 2, price: new Decimal(100), costAtSale: new Decimal(40) },
+    ],
+  };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         SalesService,
-        { provide: PrismaService, useValue: mockPrismaService },
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: InventoryService, useValue: mockInventory },
+        { provide: CashShiftService, useValue: mockCashShift },
       ],
     }).compile();
 
     service = module.get<SalesService>(SalesService);
-    prisma = module.get<PrismaService>(PrismaService);
     jest.clearAllMocks();
+
+    tx.sale.updateMany.mockResolvedValue({ count: 1 });   // claim exitoso por defecto
+    tx.sale.findUnique.mockResolvedValue(ventaBase);
+    tx.sale.update.mockImplementation(({ data }: any) => Promise.resolve({ ...ventaBase, ...data }));
+    tx.saleItem.findMany.mockResolvedValue([]);
+    mockInventory.registerMovement.mockResolvedValue({ totalCost: new Decimal(60) });
   });
 
-  it('should be defined', () => {
-    expect(service).toBeDefined();
-  });
+  describe('claim atómico del cierre', () => {
+    it('reclama la venta con un UPDATE condicional sobre flowStatus DRAFT', async () => {
+      await service.completeSale(10, 99);
 
-  describe('create', () => {
-    it('should create a sale with atomic stock updates', async () => {
-      const dto = {
-        items: [{ productId: 1, quantity: 2, price: 100 }],
-      };
-      
-      mockPrismaService.product.findMany.mockResolvedValue([{ id: 1, name: 'Test Product', stock: 10 }]);
-      mockPrismaService.product.updateMany.mockResolvedValue({ count: 1 });
-      mockPrismaService.sale.create.mockResolvedValue({ id: 1, total: new Decimal(200) });
-
-      const result = await service.create(dto as any);
-
-      expect(mockPrismaService.product.updateMany).toHaveBeenCalledWith({
-        where: { id: 1, stock: { gte: 2 } },
-        data: { stock: { decrement: 2 } },
+      expect(tx.sale.updateMany).toHaveBeenCalledWith({
+        where: { id: 10, flowStatus: 'DRAFT' },
+        data: { flowStatus: 'COMPLETED' },
       });
-      expect(result).toBeDefined();
     });
 
-    it('should throw if stock is insufficient', async () => {
-       const dto = {
-        items: [{ productId: 1, quantity: 20, price: 100 }],
-      };
-      mockPrismaService.product.findMany.mockResolvedValue([{ id: 1, name: 'Test Product', stock: 10 }]);
-      mockPrismaService.product.updateMany.mockResolvedValue({ count: 0 }); // Fail update
+    it('rechaza con ConflictException si otra operación ya cerró la venta', async () => {
+      tx.sale.updateMany.mockResolvedValue({ count: 0 });          // no pudimos reclamarla
+      tx.sale.findUnique.mockResolvedValue({ flowStatus: 'COMPLETED' });
 
-      await expect(service.create(dto as any)).rejects.toThrow('Stock insuficiente');
+      await expect(service.completeSale(10, 99)).rejects.toThrow(ConflictException);
+      // Lo crítico: no se descontó stock por segunda vez.
+      expect(mockInventory.registerMovement).not.toHaveBeenCalled();
+    });
+
+    it('rechaza si la venta fue cancelada por otra operación', async () => {
+      tx.sale.updateMany.mockResolvedValue({ count: 0 });
+      tx.sale.findUnique.mockResolvedValue({ flowStatus: 'CANCELLED' });
+
+      await expect(service.completeSale(10, 99)).rejects.toThrow(ConflictException);
+      expect(mockInventory.registerMovement).not.toHaveBeenCalled();
+    });
+
+    it('lanza NotFoundException si la venta no existe', async () => {
+      tx.sale.updateMany.mockResolvedValue({ count: 0 });
+      tx.sale.findUnique.mockResolvedValue(null);
+
+      await expect(service.completeSale(10, 99)).rejects.toThrow(NotFoundException);
+    });
+
+    it('rechaza una venta sin productos', async () => {
+      tx.sale.findUnique.mockResolvedValue({ ...ventaBase, items: [] });
+      await expect(service.completeSale(10, 99)).rejects.toThrow(BadRequestException);
     });
   });
 
-  describe('addPayment', () => {
-      it('should calculate payment status correctly', async () => {
-          const saleId = 1;
-          const dto = { method: 'CASH', amount: 50 };
-          
-          mockPrismaService.sale.findUnique.mockResolvedValue({ id: 1, total: new Decimal(100), status: 'PENDING' });
-          mockPrismaService.salePayment.create.mockResolvedValue({});
-          mockPrismaService.salePayment.aggregate.mockResolvedValue({ _sum: { amount: new Decimal(50) } });
-          mockPrismaService.sale.update.mockResolvedValue({});
+  describe('prevención de deadlocks', () => {
+    it('descuenta inventario en orden ascendente de productId', async () => {
+      // Los items llegan desordenados (55 antes que 11) a propósito.
+      await service.completeSale(10, 99);
 
-          const result = await service.addPayment(saleId, dto as any);
-          
-          expect(result.status).toBe('PARTIAL');
+      const productIds = mockInventory.registerMovement.mock.calls.map(
+        (c: any[]) => c[0].productId,
+      );
+      expect(productIds).toEqual([11, 55]); // ordenado, no [55, 11]
+    });
+  });
+
+  describe('límite de crédito', () => {
+    const ventaCredito = {
+      ...ventaBase,
+      clientId: 7,
+      paidAmount: new Decimal(0),
+      balance: new Decimal(300),
+      client: { id: 7, name: 'Farmacia Cliente', hasCredit: true },
+    };
+
+    it('incrementa la deuda de forma atómica (no read-modify-write)', async () => {
+      tx.sale.findUnique.mockResolvedValue(ventaCredito);
+      tx.client.update.mockResolvedValue({
+        name: 'Farmacia Cliente',
+        currentDebt: new Decimal(300),
+        creditLimit: new Decimal(1000),
       });
 
-       it('should complete sale if paid fully', async () => {
-          const saleId = 1;
-          const dto = { method: 'CASH', amount: 50 };
-          
-          mockPrismaService.sale.findUnique.mockResolvedValue({ id: 1, total: new Decimal(100), status: 'PARTIAL' });
-          mockPrismaService.salePayment.create.mockResolvedValue({});
-          mockPrismaService.salePayment.aggregate.mockResolvedValue({ _sum: { amount: new Decimal(100) } });
-          mockPrismaService.sale.update.mockResolvedValue({});
+      await service.completeSale(10, 99);
 
-          const result = await service.addPayment(saleId, dto as any);
-          
-          expect(result.status).toBe('COMPLETED');
+      expect(tx.client.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 7 },
+          data: { currentDebt: { increment: ventaCredito.balance } },
+        }),
+      );
+    });
+
+    it('aborta si tras el incremento la deuda supera el límite', async () => {
+      tx.sale.findUnique.mockResolvedValue(ventaCredito);
+      // Simula que una venta concurrente ya subió la deuda: 900 + 300 = 1200 > 1000
+      tx.client.update.mockResolvedValue({
+        name: 'Farmacia Cliente',
+        currentDebt: new Decimal(1200),
+        creditLimit: new Decimal(1000),
       });
+
+      await expect(service.completeSale(10, 99)).rejects.toThrow(BadRequestException);
+      // El rollback de la transacción deshace el incremento; no se toca inventario.
+      expect(mockInventory.registerMovement).not.toHaveBeenCalled();
+    });
+
+    it('rechaza saldo pendiente sin cliente asignado', async () => {
+      tx.sale.findUnique.mockResolvedValue({ ...ventaCredito, client: null, clientId: null });
+      await expect(service.completeSale(10, 99)).rejects.toThrow(BadRequestException);
+    });
+
+    it('rechaza saldo pendiente de un cliente sin crédito', async () => {
+      tx.sale.findUnique.mockResolvedValue({
+        ...ventaCredito,
+        client: { id: 7, name: 'Contado', hasCredit: false },
+      });
+      await expect(service.completeSale(10, 99)).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('cancelación de venta', () => {
+    it('reclama la cancelación de forma atómica', async () => {
+      tx.sale.findUnique.mockResolvedValue({ ...ventaBase, paidAmount: new Decimal(0) });
+      await service.cancel(10, 99);
+
+      expect(tx.sale.updateMany).toHaveBeenCalledWith({
+        where: { id: 10, status: { not: 'CANCELLED' } },
+        data: { status: 'CANCELLED' },
+      });
+    });
+
+    it('rechaza una segunda cancelación simultánea', async () => {
+      tx.sale.updateMany.mockResolvedValue({ count: 0 });
+      tx.sale.findUnique.mockResolvedValue({ id: 10 });
+
+      await expect(service.cancel(10, 99)).rejects.toThrow(ConflictException);
+      // No debe reingresar stock dos veces.
+      expect(mockInventory.registerMovement).not.toHaveBeenCalled();
+    });
   });
 });

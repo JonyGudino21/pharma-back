@@ -243,38 +243,76 @@ export class PurchaseService {
     }
 
     return await this.prisma.$transaction(async (tx) => {
-      // 1. Si la mercancia ya estaba en el almacen
-      if(purchase.deliveryStatus === PurchaseDeliveryStatus.RECEIVED){
+      // CLAIM ATÓMICO DE LA CANCELACIÓN:
+      // dos cancelaciones simultáneas sacaban el stock DOS VECES, revertían el
+      // costo dos veces y generaban dos notas de crédito al proveedor.
+      const claim = await tx.purchase.updateMany({
+        where: { id: purchaseId, status: { not: PurchaseStatus.CANCELLED } },
+        data: { status: PurchaseStatus.CANCELLED },
+      });
 
-        // A. Revertir Inventario (salida de mercancia)
-        for(const item of purchase.items){
+      if (claim.count === 0) {
+        throw new ConflictException('Esta compra ya fue cancelada por otra operación.');
+      }
+
+      // Releemos DENTRO de la transacción. Crítico: si una recepción concurrente se
+      // confirmó entre nuestra lectura inicial y el claim, con datos obsoletos NO
+      // revertiríamos el inventario y el stock quedaría sumado en una compra cancelada.
+      const fresh = await tx.purchase.findUnique({
+        where: { id: purchaseId },
+        include: { items: true },
+      });
+      if (!fresh) throw new NotFoundException('Compra no encontrada');
+
+      // 1. Si la mercancia ya estaba en el almacen
+      if(fresh.deliveryStatus === PurchaseDeliveryStatus.RECEIVED){
+
+        // A. Revertir Inventario (salida de mercancia) Y el costo promedio ponderado.
+        // Orden determinista por productId para prevenir deadlocks.
+        const orderedItems = [...fresh.items].sort((a, b) => a.productId - b.productId);
+
+        for(const item of orderedItems){
+          const purchaseUnitCost = new Decimal(item.cost);
+
+          // A.1 REVERTIR EL COSTO PROMEDIO **ANTES** de mover el stock.
+          // El helper necesita leer el stock que todavía incluye la mercancía de esta
+          // compra para poder despejar correctamente el valor que aportó.
+          await this.reverseAverageCost(
+            tx,
+            item.productId,
+            item.quantity,
+            purchaseUnitCost,
+            userId,
+            fresh.id,
+          );
+
+          // A.2 Sacar la mercancía del Kardex valuada al costo REAL al que entró
+          // (no al promedio vigente), para que el valor del inventario cuadre.
           await this.inventoryService.registerMovement(
             {
               productId: item.productId,
               type: MovementType.RETURN_OUT, // Salida por devolucion a proveedor
               quantity: item.quantity,
-              reason: `Cancelación de Compra #${purchase.id}`,
-              referenceId: purchase.id,
+              reason: `Cancelación de Compra #${fresh.id}`,
+              referenceId: fresh.id,
             },
             userId,
-            tx
+            tx,
+            purchaseUnitCost,
           );
-          // Nota: Matemáticamente, revertir el "Costo Promedio Ponderado" es casi imposible 
-           // si hubo más movimientos después. En contabilidad estándar, simplemente 
-           // se saca la mercancía al costo actual. El costo promedio se diluye.
         }
 
         // B. Revertir deuda con proveedor
-        if(purchase.balance.gt(0)){
+        if(fresh.balance.gt(0)){
           await tx.supplier.update({
-            where: { id: purchase.supplierId },
-            data: { balance: { decrement: purchase.balance } }
+            where: { id: fresh.supplierId },
+            data: { balance: { decrement: fresh.balance } }
           });
         }
       }
 
       // 2. Gestion de dinero (si le dimos adelantos)
-      if (purchase.paidAmount.gt(0)) {
+      if (fresh.paidAmount.gt(0)) {
         if (returnToCash) {
           // ESCENARIO A: El proveedor sacó dinero de su cartera y nos lo dio.
           const shift = await this.cashShiftService.getCurrentShift(userId);
@@ -284,10 +322,10 @@ export class PurchaseService {
             data: {
               shiftId: shift.id,
               type: CashTransactionType.REFUND_IN, 
-              amount: purchase.paidAmount,
+              amount: fresh.paidAmount,
               reason: `Efectivo devuelto por proveedor. Cancelación #${purchaseId}`,
               relatedTable: 'Purchase',
-              referenceId: purchase.id,
+              referenceId: fresh.id,
               createdBy: userId
             }
           });
@@ -298,11 +336,11 @@ export class PurchaseService {
           // Si el balance era 0, se volverá NEGATIVO (Ej. -500).
           // ¡Un balance negativo en proveedores significa Saldo a Favor!
           await tx.supplier.update({
-            where: { id: purchase.supplierId },
-            data: { balance: { decrement: purchase.paidAmount } }
+            where: { id: fresh.supplierId },
+            data: { balance: { decrement: fresh.paidAmount } }
           });
 
-          this.logger.log(`Nota de crédito generada: Proveedor #${purchase.supplierId} ahora tiene un saldo a nuestro favor de $${purchase.paidAmount}`);
+          this.logger.log(`Nota de crédito generada: Proveedor #${fresh.supplierId} ahora tiene un saldo a nuestro favor de $${fresh.paidAmount}`);
         }
       }
 
@@ -612,17 +650,53 @@ export class PurchaseService {
     if (purchase.status === PurchaseStatus.CANCELLED) {
       throw new BadRequestException('No se puede recibir una compra cancelada.');
     }
-  
+
     return await this.prisma.$transaction(async (tx) => {
-      // 1. Procesar cada item para actualizar stock y costos
-      for (const item of purchase.items) {
+      // CLAIM ATÓMICO DE LA RECEPCIÓN:
+      // la validación de arriba ocurre fuera de la transacción, así que dos
+      // recepciones simultáneas la pasaban ambas → stock sumado DOS VECES,
+      // deuda con el proveedor duplicada y costo promedio calculado dos veces.
+      const claim = await tx.purchase.updateMany({
+        where: {
+          id: purcharseId,
+          deliveryStatus: PurchaseDeliveryStatus.PENDING,
+          status: { not: PurchaseStatus.CANCELLED },
+        },
+        data: { deliveryStatus: PurchaseDeliveryStatus.RECEIVED },
+      });
+
+      if (claim.count === 0) {
+        throw new ConflictException(
+          'Esta compra ya fue recibida o cancelada por otra operación.',
+        );
+      }
+
+      // Releemos la compra DENTRO de la transacción: los datos leídos antes del
+      // claim pueden estar obsoletos (ej. un pago concurrente cambió el balance,
+      // que es justo lo que usaremos para la deuda del proveedor).
+      const fresh = await tx.purchase.findUnique({
+        where: { id: purcharseId },
+        include: { items: true },
+      });
+      if (!fresh) throw new NotFoundException('Compra no encontrada');
+
+      // 1. Procesar cada item para actualizar stock y costos.
+      // Orden determinista por productId para prevenir deadlocks.
+      const orderedItems = [...fresh.items].sort((a, b) => a.productId - b.productId);
+
+      for (const item of orderedItems) {
+        // BLOQUEO DE FILA antes de leer para RECALCULAR el costo promedio:
+        // sin esto, dos recepciones del mismo producto leen el mismo costo y
+        // una sobreescribe el promedio calculado por la otra.
+        await this.inventoryService.lockProductRow(tx, item.productId);
+
         // Obtenemos producto actual para sus datos de stock/costo
         const product = await tx.product.findUnique({ where: { id: item.productId } });
         if (!product) {
           this.logger.warn(`Producto ${item.productId} no encontrado en la compra ${purcharseId}`);
           continue;
         }
-        
+
         // A. CÁLCULO DE COSTO PROMEDIO PONDERADO
         const currentStock = new Decimal(product.stock);
         const currentCost = new Decimal(product.cost);
@@ -651,8 +725,8 @@ export class PurchaseService {
             productId: item.productId,
             type: MovementType.PURCHASE,
             quantity: item.quantity,
-            reason: `Recepción Compra #${purchase.invoiceNumber}`,
-            referenceId: purchase.id
+            reason: `Recepción Compra #${fresh.invoiceNumber}`,
+            referenceId: fresh.id
           },
           userId,
           tx
@@ -672,24 +746,112 @@ export class PurchaseService {
         }
       }
   
-      // 2. ACTUALIZAR DEUDA CON PROVEEDOR
+      // 2. ACTUALIZAR DEUDA CON PROVEEDOR (con el balance fresco)
       // La deuda con el proveedor solo es oficial cuando recibimos la mercancía.
-      if (purchase.balance.gt(0)) {
+      if (fresh.balance.gt(0)) {
         await tx.supplier.update({
-            where: { id: purchase.supplierId },
-            data: { balance: { increment: purchase.balance } }
+            where: { id: fresh.supplierId },
+            data: { balance: { increment: fresh.balance } }
         });
       }
-  
-      // 3. ACTUALIZAR ESTADO DE COMPRA (Ya recibimos la mercancía)
-      const receivedPurcharse = await tx.purchase.update({
-        where: { id: purcharseId },
-        data: { deliveryStatus: PurchaseDeliveryStatus.RECEIVED }
-      });
+
+      // 3. El deliveryStatus ya quedó en RECEIVED en el claim atómico.
+      const receivedPurcharse = await tx.purchase.findUniqueOrThrow({ where: { id: purcharseId } });
 
       this.logger.log(`Compra #${purcharseId} Recibida. Costos promedio actualizados.`);
       return receivedPurcharse;
     });
+  }
+
+  /**
+   * REVERSIÓN DEL COSTO PROMEDIO PONDERADO (Cancelación de compra recibida)
+   *
+   * PROBLEMA QUE RESUELVE:
+   * Al recibir una compra recalculamos el costo promedio del producto. Si esa compra
+   * se cancela y solo devolvemos el stock (sin tocar el costo), el producto se queda
+   * con un costo "contaminado" para siempre: el valor del inventario queda inflado o
+   * diluido y la utilidad de las ventas futuras se calcula mal.
+   *
+   * SOLUCIÓN (reversión por VALOR, no por promedio):
+   * Retiramos del inventario exactamente el valor que esa compra aportó:
+   *   valorActual   = stockActual * costoActual
+   *   valorARetirar = cantidad * costoDeLaCompra   <-- costo REAL al que entró
+   *   nuevoCosto    = (valorActual - valorARetirar) / (stockActual - cantidad)
+   *
+   * Si no hubo movimientos intermedios, esto restaura EXACTAMENTE el costo original.
+   * Si los hubo, deja el valor del inventario consistente (que es lo contablemente correcto).
+   *
+   * @returns el nuevo costo aplicado (o el actual si no fue posible/necesario revertir)
+   */
+  private async reverseAverageCost(
+    tx: Prisma.TransactionClient,
+    productId: number,
+    quantity: number,
+    purchaseUnitCost: Decimal,
+    userId: number,
+    purchaseId: number,
+  ): Promise<Decimal | null> {
+    // BLOQUEO DE FILA: la reversión es un read-modify-write sobre el costo.
+    // Sin el bloqueo, una recepción concurrente del mismo producto podría
+    // recalcular el promedio en paralelo y perderse una de las dos escrituras.
+    await this.inventoryService.lockProductRow(tx, productId);
+
+    const product = await tx.product.findUnique({ where: { id: productId } });
+    if (!product) return null;
+
+    const currentStock = new Decimal(product.stock);
+    const currentCost = new Decimal(product.cost);
+
+    const currentValue = currentStock.mul(currentCost);
+    const valueToRemove = new Decimal(quantity).mul(purchaseUnitCost);
+
+    const newStock = currentStock.sub(new Decimal(quantity));
+    const newValue = currentValue.sub(valueToRemove);
+
+    // CASO 1: El stock queda en 0 (o menos). El costo promedio deja de tener sentido
+    // matemático (división entre cero). Conservamos el último costo conocido como
+    // referencia para futuras compras: es la práctica contable estándar.
+    if (newStock.lte(0)) {
+      this.logger.log(
+        `Reversión de costo omitida (stock resultante 0) Producto #${productId}, Compra #${purchaseId}. Se conserva el costo ${currentCost}.`,
+      );
+      return currentCost;
+    }
+
+    // CASO 2: El valor resultante sería negativo. Indica inconsistencia de datos
+    // (ej. movimientos posteriores a costos muy distintos). No corrompemos el costo:
+    // conservamos el actual y dejamos rastro para auditoría.
+    if (newValue.lt(0)) {
+      this.logger.warn(
+        `Reversión de costo abortada: valor negativo en Producto #${productId} (Compra #${purchaseId}). ` +
+        `Valor actual: ${currentValue}, a retirar: ${valueToRemove}. Se conserva el costo ${currentCost}. REVISAR MANUALMENTE.`,
+      );
+      return currentCost;
+    }
+
+    const newAverageCost = newValue.div(newStock);
+
+    await tx.product.update({
+      where: { id: productId },
+      data: { cost: newAverageCost },
+    });
+
+    // Trazabilidad: dejamos constancia del costo revertido (igual que en receive)
+    if (!currentCost.equals(newAverageCost)) {
+      await tx.productPriceHistory.create({
+        data: {
+          productId,
+          price: newAverageCost,
+          changedById: userId,
+          startDate: new Date(),
+        },
+      });
+      this.logger.log(
+        `Costo promedio revertido en Producto #${productId}: ${currentCost} -> ${newAverageCost} (Cancelación Compra #${purchaseId})`,
+      );
+    }
+
+    return newAverageCost;
   }
 
   //Helper: calcular total y subtotal de los items

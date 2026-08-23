@@ -177,13 +177,33 @@ export class SalesService {
    * @returns la venta cancelada
    */
   async cancel(saleId: number, userId: number){
-    const sale = await this.validateSale(saleId);
-    if (sale.status === SaleStatus.CANCELLED) throw new BadRequestException('Venta ya cancelada');
-
     return await this.prisma.$transaction(async (tx) => {
+      // CLAIM ATÓMICO DE LA CANCELACIÓN:
+      // sin esto, dos cancelaciones simultáneas reingresaban el stock DOS VECES
+      // y emitían dos reembolsos por la misma venta.
+      const claim = await tx.sale.updateMany({
+        where: { id: saleId, status: { not: SaleStatus.CANCELLED } },
+        data: { status: SaleStatus.CANCELLED },
+      });
+
+      if (claim.count === 0) {
+        const current = await tx.sale.findUnique({ where: { id: saleId }, select: { id: true } });
+        if (!current) throw new NotFoundException('Venta no encontrada');
+        throw new ConflictException('Esta venta ya fue cancelada por otra operación');
+      }
+
+      // Releemos dentro de la transacción (ya reservada para nosotros)
+      const sale = await tx.sale.findUnique({ where: { id: saleId } });
+      if (!sale) throw new NotFoundException('Venta no encontrada');
+
       // 1. REVERSIÓN DE INVENTARIO (Si la mercancía ya había salido)
       if (sale.flowStatus === SaleFlowStatus.COMPLETED) {
-        const items = await tx.saleItem.findMany({ where: { saleId } });
+        // Orden determinista por productId: previene deadlocks entre operaciones
+        // concurrentes que toquen los mismos productos en distinto orden.
+        const items = await tx.saleItem.findMany({
+          where: { saleId },
+          orderBy: { productId: 'asc' },
+        });
 
         for (const item of items) {
           await this.inventoryService.registerMovement(
@@ -308,8 +328,16 @@ export class SalesService {
 
       let totalRefundAmount = new Decimal(0);
 
-      // B. Procesar cada item devuelto
-      for (const itemDto of dto.items) {
+      // B. Procesar cada item devuelto.
+      // Orden determinista por productId (previene deadlocks entre devoluciones
+      // concurrentes que toquen los mismos productos en distinto orden).
+      const orderedReturnItems = [...dto.items].sort((a, b) => {
+        const pa = itemsMap.get(a.saleItemId)?.productId ?? 0;
+        const pb = itemsMap.get(b.saleItemId)?.productId ?? 0;
+        return pa - pb;
+      });
+
+      for (const itemDto of orderedReturnItems) {
         const originalItem = itemsMap.get(itemDto.saleItemId);
         if (!originalItem) throw new BadRequestException(`Item ${itemDto.saleItemId} no pertenece a esta venta`);
 
@@ -513,6 +541,140 @@ export class SalesService {
   }
 
   /**
+   * Fija la CANTIDAD EXACTA de una línea de la venta (borrador).
+   *
+   * Se conserva el precio ya aplicado en la línea (que puede ser un precio especial
+   * del cliente o uno negociado), por lo que un cambio de cantidad nunca re-precia.
+   * Para eliminar la línea usar `deleteItem`.
+   *
+   * @param saleId ID de la venta
+   * @param itemId ID de la línea
+   * @param quantity nueva cantidad (>= 1, validado por DTO)
+   */
+  async updateItem(saleId: number, itemId: number, quantity: number) {
+    const sale = await this.validateSale(saleId);
+    this.ensureDraftSale(sale);
+
+    return await this.prisma.$transaction(async (tx) => {
+      const item = await tx.saleItem.findFirst({ where: { id: itemId, saleId } });
+      if (!item) throw new NotFoundException('Producto no encontrado en esta venta');
+
+      // Validación temprana de existencias (UX: fallar pronto).
+      // La verificación autoritativa y atómica sigue ocurriendo en completeSale.
+      const product = await tx.product.findUnique({ where: { id: item.productId } });
+      if (!product) throw new NotFoundException('Producto no válido');
+      if (product.stock < quantity) {
+        throw new BadRequestException(
+          `Stock insuficiente para ${product.name}. Disponible: ${product.stock}`,
+        );
+      }
+
+      const newSubtotal = item.price.mul(new Decimal(quantity));
+
+      await tx.saleItem.update({
+        where: { id: itemId },
+        data: { quantity, subtotal: newSubtotal },
+      });
+
+      const newTotal = await this.recalculateSaleTotals(tx, saleId, sale.paidAmount);
+      return { message: 'Cantidad actualizada', newTotal };
+    });
+  }
+
+  /**
+   * Asigna (o quita) el CLIENTE de una venta en borrador y RE-PRECIA los items.
+   *
+   * Regla de negocio crítica: los precios especiales viven por cliente
+   * (`ClientProductPrice`), así que cambiar de cliente obliga a recalcular el precio
+   * de cada línea. Si no se hiciera, la venta quedaría con los precios del cliente
+   * anterior (o del público) y el cobro sería incorrecto.
+   *
+   * @param saleId ID de la venta
+   * @param clientId ID del cliente, o null/undefined para Público General
+   */
+  async setClient(saleId: number, clientId?: number | null) {
+    const sale = await this.validateSale(saleId);
+    this.ensureDraftSale(sale);
+
+    // Validar el cliente destino (si se asigna uno)
+    if (clientId) {
+      const client = await this.prisma.client.findUnique({ where: { id: clientId } });
+      if (!client) throw new NotFoundException('Cliente no encontrado');
+      if (!client.isActive) throw new BadRequestException('El cliente está inactivo');
+    }
+
+    return await this.prisma.$transaction(async (tx) => {
+      const items = await tx.saleItem.findMany({ where: { saleId } });
+
+      // Precios especiales del NUEVO cliente para los productos del carrito
+      const productIds = items.map((i) => i.productId);
+      let priceMap = new Map<number, Decimal>();
+
+      if (clientId && productIds.length > 0) {
+        const specialPrices = await tx.clientProductPrice.findMany({
+          where: { clientId, productId: { in: productIds }, isActive: true },
+        });
+        priceMap = new Map(specialPrices.map((p) => [p.productId, p.price]));
+      }
+
+      // Precios de lista (fallback cuando no hay precio especial)
+      const products = await tx.product.findMany({
+        where: { id: { in: productIds } },
+        select: { id: true, price: true },
+      });
+      const listPriceMap = new Map(products.map((p) => [p.id, p.price]));
+
+      // RE-PRECIAR cada línea
+      for (const item of items) {
+        const newPrice =
+          priceMap.get(item.productId) ??
+          listPriceMap.get(item.productId) ??
+          item.price;
+
+        if (!newPrice.equals(item.price)) {
+          await tx.saleItem.update({
+            where: { id: item.id },
+            data: {
+              price: newPrice,
+              subtotal: newPrice.mul(new Decimal(item.quantity)),
+            },
+          });
+        }
+      }
+
+      await tx.sale.update({ where: { id: saleId }, data: { clientId: clientId ?? null } });
+
+      const newTotal = await this.recalculateSaleTotals(tx, saleId, sale.paidAmount);
+
+      this.logger.log(
+        `Venta #${saleId}: cliente asignado ${clientId ?? 'Público General'}. Total re-preciado: ${newTotal}`,
+      );
+
+      return { message: 'Cliente actualizado', newTotal };
+    });
+  }
+
+  /**
+   * Helper: recalcula total/subtotal/balance de la venta sumando los subtotales
+   * de sus líneas (evita deriva por cálculos incrementales).
+   */
+  private async recalculateSaleTotals(
+    tx: Prisma.TransactionClient,
+    saleId: number,
+    paidAmount: Decimal,
+  ): Promise<Decimal> {
+    const agg = await tx.saleItem.aggregate({ where: { saleId }, _sum: { subtotal: true } });
+    const newTotal = agg._sum.subtotal ?? new Decimal(0);
+
+    await tx.sale.update({
+      where: { id: saleId },
+      data: { total: newTotal, subtotal: newTotal, balance: newTotal.sub(paidAmount) },
+    });
+
+    return newTotal;
+  }
+
+  /**
    * Cierra una venta y actualiza el estado de la venta
    * Maneja: Salida de Inventario, Validación de Crédito, Cálculo de Utilidad.
    * @param saleId el ID de la venta
@@ -520,44 +682,88 @@ export class SalesService {
    * @returns la venta cerrada
    */
   async completeSale(saleId: number, userId: number) {
-    // 1. Validar que la venta sea editable y traer productos
-    const sale = await this.prisma.sale.findUnique({
-      where: { id: saleId },
-      include: { items: true, client: true }
-    });
-
-    if(!sale) throw new NotFoundException('Venta no encontrada');
-    if (sale.flowStatus !== SaleFlowStatus.DRAFT)
-      throw new BadRequestException('Venta no editable, ya fue cerrada');
-    if (sale.items.length === 0)
-      throw new BadRequestException('La venta no tiene productos');
-    if (sale.status === SaleStatus.CANCELLED)
-      throw new BadRequestException('Venta cancelada, no se puede cerrar');
-
     return await this.prisma.$transaction(async (tx) => {
-      // 1.Validacion financiera (credito vs contado)
+      // ─────────────────────────────────────────────────────────────────────────
+      // 1. CLAIM ATÓMICO DEL CIERRE (compare-and-swap)
+      //
+      // Antes se validaba `flowStatus === DRAFT` FUERA de la transacción: dos
+      // peticiones simultáneas (doble clic, reintento de red) pasaban ambas la
+      // validación y la venta se cerraba dos veces → stock descontado por
+      // duplicado y dos folios para la misma venta.
+      //
+      // Ahora la transición DRAFT → COMPLETED se reclama con un UPDATE
+      // condicional: la BD garantiza que sólo UNA ejecución afecta la fila.
+      // Si la transacción falla después, el claim se revierte con ella.
+      // ─────────────────────────────────────────────────────────────────────────
+      const claim = await tx.sale.updateMany({
+        where: { id: saleId, flowStatus: SaleFlowStatus.DRAFT },
+        data: { flowStatus: SaleFlowStatus.COMPLETED },
+      });
+
+      if (claim.count === 0) {
+        // No pudimos reclamarla: o no existe, o alguien más ya la cerró/canceló.
+        const current = await tx.sale.findUnique({
+          where: { id: saleId },
+          select: { flowStatus: true },
+        });
+        if (!current) throw new NotFoundException('Venta no encontrada');
+        if (current.flowStatus === SaleFlowStatus.COMPLETED) {
+          throw new ConflictException('Esta venta ya fue cerrada por otra operación');
+        }
+        throw new ConflictException('La venta ya no es editable (fue cancelada)');
+      }
+
+      // 2. Releer la venta DENTRO de la transacción (datos frescos y ya reservados)
+      const sale = await tx.sale.findUnique({
+        where: { id: saleId },
+        include: { items: true, client: true },
+      });
+
+      if (!sale) throw new NotFoundException('Venta no encontrada');
+      if (sale.items.length === 0)
+        throw new BadRequestException('La venta no tiene productos');
+      if (sale.status === SaleStatus.CANCELLED)
+        throw new BadRequestException('Venta cancelada, no se puede cerrar');
+
+      // 3. Validacion financiera (credito vs contado)
       if(sale.balance.gt(0)){
         if(!sale.client) throw new BadRequestException('La venta tiene saldo pendiente y no tiene cliente. Debe pagarse en su totalidad');
         if(!sale.client.hasCredit) throw new BadRequestException(`El cliente ${sale.client.name} no tiene credito. Debe liquidar el saldo: ${sale.balance}`);
-      
-        // Validar limite de credito (deuda actual + nuevo saldo <= limite )
-        const currentDebt = new Decimal(sale.client?.currentDebt ?? 0);
-        const newTotalDebt = currentDebt.add(sale.balance);
 
-        if(newTotalDebt.gt(sale.client!.creditLimit)) throw new BadRequestException(`Límite de crédito excedido. Disponible: $${new Decimal(sale.client!.creditLimit).sub(currentDebt)}, Requerido: $${sale.balance}`);
-
-        // actualizar deuda al cliente
-        await tx.client.update({
+        // LÍMITE DE CRÉDITO A PRUEBA DE CONCURRENCIA:
+        // Antes se leía `currentDebt`, se sumaba en memoria y se escribía el total.
+        // Dos ventas a crédito simultáneas del mismo cliente leían la misma deuda y
+        // ambas pasaban la validación, superando el límite.
+        // Ahora incrementamos de forma atómica (la BD serializa el acceso a la fila)
+        // y verificamos DESPUÉS: si el límite se excede, la transacción revierte todo.
+        const updatedClient = await tx.client.update({
           where: { id: sale.clientId! },
-          data: { currentDebt: newTotalDebt }
+          data: { currentDebt: { increment: sale.balance } },
+          select: { name: true, currentDebt: true, creditLimit: true },
         });
+
+        if (updatedClient.currentDebt.gt(updatedClient.creditLimit)) {
+          const disponible = updatedClient.creditLimit.sub(
+            updatedClient.currentDebt.sub(sale.balance),
+          );
+          throw new BadRequestException(
+            `Límite de crédito excedido. Disponible: $${disponible}, Requerido: $${sale.balance}`,
+          );
+        }
       }
 
-      // 2.Impacto de inventario
+      // 4. Impacto de inventario
       let totalCostOfSale = new Decimal(0);
 
-      for (const item of sale.items) {
-        // DELEGAMOS AL EXPERTO: InventoryService
+      // ORDEN DETERMINISTA (por productId) para PREVENIR DEADLOCKS:
+      // si dos ventas tocan los mismos productos en orden inverso, cada una
+      // bloquea la fila que la otra necesita y Postgres aborta una. Recorriendo
+      // siempre en el mismo orden, los bloqueos se toman en secuencia y sólo
+      // hay espera, nunca deadlock.
+      const orderedItems = [...sale.items].sort((a, b) => a.productId - b.productId);
+
+      for (const item of orderedItems) {
+        // DELEGAMOS AL EXPERTO: InventoryService (descuento atómico y guardado)
         const movement = await this.inventoryService.registerMovement(
           {
             productId: item.productId,
@@ -579,7 +785,7 @@ export class SalesService {
       const completedSale = await tx.sale.update({
         where: { id: saleId },
         data: {
-          flowStatus: SaleFlowStatus.COMPLETED, // SELLADO
+          // flowStatus ya quedó SELLADO en el claim atómico del paso 1.
           totalCost: totalCostOfSale,
           profit: profit,
           invoiceNumber: invoiceNumber,
@@ -587,7 +793,7 @@ export class SalesService {
         }
       });
 
-      // 4. Actualizar precios históricos del cliente
+      // 6. Actualizar precios históricos del cliente
       await this.updateClientPricesOnSaleComplete(tx, sale, userId);
 
       this.logger.log(`Venta #${saleId} finalizada. Factura: ${invoiceNumber}`);

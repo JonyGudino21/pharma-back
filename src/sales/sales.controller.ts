@@ -1,6 +1,8 @@
-import { Controller, Get, Post, Body, Param, Delete, Query, UseGuards, ParseIntPipe } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Body, Param, Delete, Query, UseGuards, ParseIntPipe } from '@nestjs/common';
 import { SalesService } from './sales.service';
 import { CreateSaleDto, SaleItemDto } from './dto/create-sale.dto';
+import { SetClientDto } from './dto/set-client.dto';
+import { UpdateSaleItemDto } from './dto/update-sale-item.dto';
 import { ApiResponse } from 'src/common/dto/response.dto';
 import { AddPaymentDto } from './dto/add-payment.dto';
 import { GetUser } from 'src/common/decorators/get-user.decorator';
@@ -82,6 +84,32 @@ export class SalesController {
   async removeProduct(@Param('id') id: number, @Param('itemId') itemId: number) {
     const data = await this.salesService.deleteItem(id, itemId);
     return ApiResponse.ok(data, 'Producto eliminado correctamente');
+  }
+
+  /**
+   * [OPERATIVO/POS] Fija la cantidad exacta de una línea (no re-precia).
+   */
+  @Patch(':id/update-item/:itemId')
+  async updateItem(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('itemId', ParseIntPipe) itemId: number,
+    @Body() dto: UpdateSaleItemDto,
+  ) {
+    const data = await this.salesService.updateItem(id, itemId, dto.quantity);
+    return ApiResponse.ok(data, 'Cantidad actualizada correctamente');
+  }
+
+  /**
+   * [OPERATIVO/POS] Asigna o quita el cliente de la venta.
+   * Re-precia los items según los precios especiales del cliente.
+   */
+  @Patch(':id/set-client')
+  async setClient(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: SetClientDto,
+  ) {
+    const data = await this.salesService.setClient(id, dto.clientId ?? null);
+    return ApiResponse.ok(data, 'Cliente actualizado correctamente');
   }
 
   /**
