@@ -20,8 +20,13 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
     sale: { updateMany: jest.fn(), findUnique: jest.fn(), update: jest.fn() },
     saleItem: { findMany: jest.fn(), aggregate: jest.fn() },
     client: { update: jest.fn() },
+    // Ramas de cancel() con pagos reales (reembolso y salida de caja)
+    saleReturn: { create: jest.fn() },
+    saleRefund: { create: jest.fn() },
+    cashTransaction: { create: jest.fn() },
+    // updateClientPricesOnSaleComplete usa estos 4 métodos al cerrar una venta con cliente
     clientProductPrice: { findUnique: jest.fn(), upsert: jest.fn() },
-    clientProductPriceHistory: { create: jest.fn() },
+    clientProductPriceHistory: { create: jest.fn(), updateMany: jest.fn() },
   };
 
   const mockPrisma = { $transaction: jest.fn((cb: any) => cb(tx)) };
