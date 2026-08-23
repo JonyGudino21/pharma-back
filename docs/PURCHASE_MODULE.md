@@ -129,4 +129,33 @@ Todos requieren **JWT**. Paginación: sin `page`/`limit` devuelve todas; con ell
 - **Decimales:** Totales, balances y montos vienen como Decimal (string en JSON). Formatear para moneda en la UI.
 - **Eliminar pago:** Solo para corrección de errores. Mostrar el monto y advertir que el efectivo volverá a caja (si fue CASH) y que el saldo de la compra aumentará.
 
-:advertencia -> checar el proceso de cuando se cmncela una compra a un proveedor si si meodifica el precio del producto que regrese a como estaba por que aun lo deja en cuenta y hay que tener cuidado con eso
+## 7. Reversión del costo promedio al cancelar (RESUELTO)
+
+> **Advertencia original (resuelta):** al cancelar una compra ya recibida se devolvía el
+> stock pero **no** se restauraba el costo promedio del producto, dejándolo "contaminado".
+
+**Cómo se resolvió.** `POST /purchase/:id/cancel` ahora revierte el costo **por valor**,
+no por promedio. Para cada ítem de una compra `RECEIVED`:
+
+```
+valorActual   = stockActual * costoActual
+valorARetirar = cantidad * costoDeLaCompra      // costo REAL al que entró
+nuevoCosto    = (valorActual - valorARetirar) / (stockActual - cantidad)
+```
+
+Si no hubo movimientos intermedios, el costo original se restaura **exactamente**.
+Si los hubo, el valor del inventario queda consistente (criterio contable estándar).
+
+Detalles de implementación:
+
+- El costo se revierte **antes** de mover el stock (el cálculo necesita el stock que aún
+  incluye la mercancía de la compra).
+- La salida al Kardex (`RETURN_OUT`) se valúa al **costo real de la compra**, no al promedio
+  vigente, mediante el parámetro `unitCostOverride` de `InventoryService.registerMovement`.
+- Se registra un `ProductPriceHistory` con el costo revertido (trazabilidad).
+- **Bordes protegidos:** si el stock resultante es 0 se conserva el último costo conocido
+  (el promedio no está definido); si el valor resultante sería negativo se aborta la
+  reversión, se conserva el costo y se emite un `warn` para revisión manual.
+
+**Nota:** `addItem`, `updateItem` y `removeItem` ya bloquean compras `RECEIVED`, por lo que
+no pueden alterar el costo promedio: la reversión solo aplica en la cancelación.
