@@ -3,9 +3,11 @@ import { Type } from 'class-transformer';
 
 export class SaleItemDto{
   @IsInt()
+  @IsPositive()
   productId: number;
 
   @IsInt()
+  @IsPositive()
   quantity: number;
 
   @IsNumber()

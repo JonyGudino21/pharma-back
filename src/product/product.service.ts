@@ -35,6 +35,9 @@ export class ProductService {
           sku,
           barcode: createProductDto.barcode,
           controlled: createProductDto.controlled ?? false,
+          format: createProductDto.format,
+          presentation: createProductDto.presentation,
+          strength: createProductDto.strength,
           stock: 0, // SIEMPRE con stock 0 al inicio, la verdad la dicta el movimiento
           minStock: createProductDto.minStock ?? 5,
           price: createProductDto.price,
@@ -265,6 +268,9 @@ export class ProductService {
       sku: newSku, // Incluir el SKU actualizado
       barcode: updateProductDto.barcode,
       controlled: updateProductDto.controlled,
+      format: updateProductDto.format,
+      presentation: updateProductDto.presentation,
+      strength: updateProductDto.strength,
       stock: updateProductDto.stock,
       minStock: updateProductDto.minStock,
       price: updateProductDto.price,

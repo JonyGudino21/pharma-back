@@ -1,8 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
+import { UserRole } from '@prisma/client';
+import type { AuthenticatedUser } from 'src/auth/types/authenticated-user.type';
 
-type JwtPayload = { sub: number, role: string, userName: string };
+type JwtPayload = { sub: number; role: UserRole; userName: string };
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy){
@@ -19,7 +21,13 @@ export class JwtStrategy extends PassportStrategy(Strategy){
    * @param payload el payload del token JWT
    * @returns el usuario validado
    */
-  async validate(payload: JwtPayload){
-    return { userId: payload.sub, role: payload.role, userName: payload.userName };
+  async validate(payload: JwtPayload): Promise<AuthenticatedUser> {
+    const id = payload.sub;
+    return {
+      id,
+      userId: id,
+      role: payload.role,
+      userName: payload.userName,
+    };
   }
 }

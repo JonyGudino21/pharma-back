@@ -2,7 +2,10 @@ import { Controller, Get, Post, Body, Patch, Param, Delete, Query, UseGuards } f
 import { ProductService } from './product.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
-import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
+import {
+  PaginationWithActiveQueryDto,
+  parseQueryActiveFilter,
+} from 'src/common/dto/pagination-with-active-query.dto';
 import { ApiResponse } from 'src/common/dto/response.dto';
 import { SearchProductDto } from './dto/search-product.dto';
 import { GetUser } from 'src/common/decorators/get-user.decorator';
@@ -31,14 +34,9 @@ export class ProductController {
    * Sin @Roles porque el Cajero necesita ver el catálogo.
    */
   @Get()
-  async findAll(@Query('active') active?: string, @Query() pagination?: PaginationParamsDto) {
-    console.log(active);
-    let isActive: boolean | undefined;
-    if (active === 'true') {
-      isActive = true;
-    } else if (active === 'false') {
-      isActive = false;
-    }
+  async findAll(@Query() query: PaginationWithActiveQueryDto) {
+    const { active, ...pagination } = query;
+    const isActive = parseQueryActiveFilter(active);
     const res = await this.productService.findAll(isActive, pagination);
     return ApiResponse.ok(res, 'Producto encontrado exitosamente');
   }

@@ -124,42 +124,47 @@ export class ClientService {
   }
 
   /**
-   * Actualiza un cliente por su ID.
-   * @param id el ID del cliente a actualizar
-   * @param updateClientDto los nuevos datos del cliente
-   * @returns el cliente actualizado
-   */
-  async update(id: number, updateClientDto: UpdateClientDto) {
-    //Validar que el cliente exista
-    await this.findOne(id);
+ * Actualiza un cliente por su ID.
+ * @param id el ID del cliente a actualizar
+ * @param updateClientDto los nuevos datos del cliente
+ * @returns el cliente actualizado
+ */
+async update(id: number, updateClientDto: UpdateClientDto) {
+  // 1. Validar que el cliente exista antes de hacer nada
+  await this.findOne(id);
 
-    // Validar si exiten duplicados
-    const exiting = await this.prisma.client.findFirst({
+  // 2. Construir condiciones dinámicas para evitar validar campos nulos/indefinidos
+  const orConditions: { email?: string; rfc?: string }[] = [];
+  if (updateClientDto.email) orConditions.push({ email: updateClientDto.email });
+  if (updateClientDto.rfc) orConditions.push({ rfc: updateClientDto.rfc });
+
+  // 3. Si se están intentando actualizar campos únicos, validar duplicados
+  if (orConditions.length > 0) {
+    const existing = await this.prisma.client.findFirst({
       where: {
-        OR: [
-          { email: updateClientDto.email },
-          { rfc: updateClientDto.rfc }
-        ]
+        OR: orConditions,
+        NOT: { id } // CRÍTICO: Excluye al cliente actual de la búsqueda
       }
     });
-    if(exiting) {
-      if(exiting.email === updateClientDto.email) throw new ConflictException('El email ya esta registrado');
-      if(exiting.rfc === updateClientDto.rfc) throw new ConflictException('El RFC ya esta registrado');
-    }
 
-    return await this.prisma.client.update({
-      where: {id},
-      data: {
-        name: updateClientDto.name,
-        email: updateClientDto.email,
-        phone: updateClientDto.phone,
-        address: updateClientDto.address,
-        rfc: updateClientDto.rfc,
-        curp: updateClientDto.curp,
-        isActive: updateClientDto.isActive
+    if (existing) {
+      if (updateClientDto.email && existing.email === updateClientDto.email) {
+        throw new ConflictException('El email ya está registrado por otro cliente');
       }
-    })
+      if (updateClientDto.rfc && existing.rfc === updateClientDto.rfc) {
+        throw new ConflictException('El RFC ya está registrado por otro cliente');
+      }
+    }
   }
+
+  // 4. Actualizar usando la inyección directa del DTO limpio
+  return await this.prisma.client.update({
+    where: { id },
+    data: {
+      ...updateClientDto, // Si el DTO está bien tipado, esto es más limpio y escalable
+    }
+  });
+}
 
   /**
    * Eliminar un cliente por su Id

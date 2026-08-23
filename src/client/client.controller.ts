@@ -4,6 +4,7 @@ import { CreateClientDto } from './dto/create-client.dto';
 import { UpdateClientDto } from './dto/update-client.dto';
 import { ApiResponse } from 'src/common/dto/response.dto';
 import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
+import { PaginationWithActiveQueryDto, parseQueryActiveFilter } from 'src/common/dto/pagination-with-active-query.dto';
 import { AccountStatementQueryDto } from './dto/account-statement-query.dto';
 import { UpdateCreditConfigDto } from './dto/credit-config.dto';
 import { GetUser } from 'src/common/decorators/get-user.decorator';
@@ -13,6 +14,7 @@ import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
 import { UseGuards } from '@nestjs/common';
+import { SearchClientDto } from './dto/search.dto';
 
 @Controller('client')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -26,38 +28,28 @@ export class ClientController {
   @Post()
   async create(@Body() createClientDto: CreateClientDto) {
     const res = await this.clientService.create(createClientDto);
-    return ApiResponse.ok(res, 'Client created successfully');
+    return ApiResponse.ok(res, 'Cliente creado exitosamente');
   }
 
   /**
    * [CRM] Listado general de clientes.
    */
   @Get()
-  async findAll(@Query('active') active?: string, @Query() pagination?: PaginationParamsDto) {
-    //Convertir el active a un boolean o indefinido
-    let isActive: boolean | undefined;
-    if ( active === 'true'){
-      isActive = true;
-    } else if (active === 'false'){
-      isActive = false;
-    }
-
+  async findAll(@Query() query: PaginationWithActiveQueryDto) {
+    const { active, ...pagination } = query;
+    const isActive = parseQueryActiveFilter(active);
     const res = await this.clientService.findAll(isActive, pagination);
-    return ApiResponse.ok(res, 'Clients retrieved successfully');
+    return ApiResponse.ok(res, 'Clientes obtenidos exitosamente');
   }
 
   /**
    * [CRM] Buscador rápido de clientes (ideal para la barra de búsqueda del POS).
    */
   @Get('search')
-  async search(
-    @Query('name') name?: string,
-    @Query('email') email?: string,
-    @Query('phone') phone?: string,
-    @Query() pagination?: PaginationParamsDto
-  ) {
+  async search(@Query() query: SearchClientDto) {
+    const { name, email, phone, pagination } = query;
     const res = await this.clientService.findClient(name, email, phone, pagination);
-    return ApiResponse.ok(res, 'Clients retrieved successfully');
+    return ApiResponse.ok(res, 'Clientes encontrados exitosamente');
   }
 
   /**
