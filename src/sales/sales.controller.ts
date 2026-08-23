@@ -1,7 +1,6 @@
 import { Controller, Get, Post, Body, Param, Delete, Query, UseGuards, ParseIntPipe } from '@nestjs/common';
 import { SalesService } from './sales.service';
 import { CreateSaleDto, SaleItemDto } from './dto/create-sale.dto';
-import { AuthGuard } from '@nestjs/passport';
 import { ApiResponse } from 'src/common/dto/response.dto';
 import { AddPaymentDto } from './dto/add-payment.dto';
 import { GetUser } from 'src/common/decorators/get-user.decorator';
@@ -44,7 +43,6 @@ export class SalesController {
    * [OPERATIVO] Obtiene una venta por número de factura (exacto).
    */
   @Get('by-invoice/:invoiceNumber')
-  @UseGuards(AuthGuard)
   async findByInvoiceNumber(@Param('invoiceNumber') invoiceNumber: string) {
     const data = await this.salesService.findByInvoiceNumber(invoiceNumber);
     return ApiResponse.ok(data, 'Venta obtenida correctamente');
@@ -54,7 +52,6 @@ export class SalesController {
    * [OPERATIVO] Obtiene el detalle de una venta por ID para reimpresión de ticket.
    */
   @Get(':id')
-  @UseGuards(AuthGuard)
   async findOne(@Param('id', ParseIntPipe) id: number) {
     const data = await this.salesService.findOne(id);
     return ApiResponse.ok(data, 'Venta obtenida correctamente');

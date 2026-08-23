@@ -9,7 +9,7 @@ import { CategoryModule } from './category/category.module';
 import { ProductModule } from './product/product.module';
 import { SuppliersModule } from './suppliers/suppliers.module';
 import { PurchaseModule } from './purchase/purchase.module';
-// import { SalesModule } from './sales/sales.module';
+import { SalesModule } from './sales/sales.module';
 import { CashShiftModule } from './cash-shift/cash-shift.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { AnalyticsModule } from './analytics/analytics.module';
@@ -23,8 +23,8 @@ import { AnalyticsModule } from './analytics/analytics.module';
     CategoryModule, 
     ProductModule, 
     SuppliersModule, 
-    PurchaseModule, 
-    // SalesModule, 
+    PurchaseModule,
+    SalesModule,
     CashShiftModule, InventoryModule, AnalyticsModule],
   controllers: [AppController],
   providers: [AppService],
