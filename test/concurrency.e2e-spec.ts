@@ -23,6 +23,7 @@ import { SalesService } from '../src/sales/sales.service';
 import { PurchaseService } from '../src/purchase/purchase.service';
 import { InventoryService } from '../src/inventory/inventory.service';
 import { CashShiftService } from '../src/cash-shift/cash-shift.service';
+import { PaymentService } from '../src/payment/payment.service';
 
 jest.setTimeout(60_000);
 
@@ -37,7 +38,7 @@ describe('Concurrencia de inventario y ventas (integración)', () => {
 
   beforeAll(async () => {
     moduleRef = await Test.createTestingModule({
-      providers: [PrismaService, SalesService, PurchaseService, InventoryService, CashShiftService],
+      providers: [PrismaService, SalesService, PurchaseService, InventoryService, CashShiftService, PaymentService],
     }).compile();
 
     prisma = moduleRef.get(PrismaService);

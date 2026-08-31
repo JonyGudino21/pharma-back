@@ -5,6 +5,7 @@ import { SalesService } from './sales.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { CashShiftService } from '../cash-shift/cash-shift.service';
+import { PaymentService } from '../payment/payment.service';
 
 /**
  * Pruebas del contrato de CONCURRENCIA del cierre de venta (P0-1).
@@ -32,6 +33,7 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
   const mockPrisma = { $transaction: jest.fn((cb: any) => cb(tx)) };
   const mockInventory = { registerMovement: jest.fn(), lockProductRow: jest.fn() };
   const mockCashShift = { getCurrentShift: jest.fn() };
+  const mockPayment = { applyToSale: jest.fn(), decreaseClientDebt: jest.fn(), resolveCashShiftId: jest.fn() };
 
   const ventaBase = {
     id: 10,
@@ -56,6 +58,7 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
         { provide: PrismaService, useValue: mockPrisma },
         { provide: InventoryService, useValue: mockInventory },
         { provide: CashShiftService, useValue: mockCashShift },
+        { provide: PaymentService, useValue: mockPayment },
       ],
     }).compile();
 
