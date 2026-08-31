@@ -2,12 +2,13 @@ import { Injectable, BadRequestException, NotFoundException, Logger, ConflictExc
 import { CreateSaleDto } from './dto/create-sale.dto';
 import { AddPaymentDto } from './dto/add-payment.dto';
 import { PrismaService } from '../../prisma/prisma.service';
-import { PaymentMethod, SaleFlowStatus, SaleStatus, Sale, SaleItem, ClientProductPrice, PaymentStatus, MovementType, CashTransactionType, SaleRefund, Prisma } from '@prisma/client';
+import { PaymentMethod, SaleFlowStatus, SaleStatus, Sale, SaleItem, ClientProductPrice, MovementType, CashTransactionType, SaleRefund, Prisma } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { ReturnSaleDto } from './dto/return-sale.dto';
 import { SaleItemDto } from './dto/create-sale.dto';
 import { InventoryService } from 'src/inventory/inventory.service';
 import { CashShiftService } from 'src/cash-shift/cash-shift.service';
+import { PaymentService } from 'src/payment/payment.service';
 import { FindAllSalesQueryDto } from './dto/find-all-sales-query.dto';
 
 @Injectable()
@@ -17,7 +18,8 @@ export class SalesService {
   constructor(
     private prisma: PrismaService,
     private inventoryService: InventoryService,
-    private cashShiftService: CashShiftService
+    private cashShiftService: CashShiftService,
+    private paymentService: PaymentService,
   ){}
 
 
@@ -112,60 +114,37 @@ export class SalesService {
   }
 
   async addPayment(saleId: number, data: AddPaymentDto, userId: number) {
+    // Validación temprana (mejor mensaje para el cajero). La verificación
+    // autoritativa y atómica ocurre dentro de PaymentService.applyToSale.
     const sale = await this.validateSale(saleId);
 
     if(sale.status === SaleStatus.CANCELLED) {
-      throw new BadRequestException('VNo se puede cobrar una venta cancelada');
+      throw new BadRequestException('No se puede cobrar una venta cancelada');
     }
-    if(sale.status === SaleStatus.COMPLETED || sale.balance.lessThanOrEqualTo(0)) {
+    if(sale.balance.lessThanOrEqualTo(0)) {
       throw new BadRequestException('La venta ya está pagada completamente');
     }
 
+    // La caja se resuelve FUERA de la transacción: consultar el turno abierto es
+    // una lectura independiente y así la transacción es lo más corta posible.
+    const cashShiftId = await this.paymentService.resolveCashShiftId(data.method, userId);
+
     return await this.prisma.$transaction(async (tx) => {
-      // Validaciones de Caja (solo si es efectivo)
-      let cashShiftId: number | null = null;
-
-      if(data.method === PaymentMethod.CASH) {
-        const currentShift = await this.cashShiftService.getCurrentShift(userId);
-        if(!currentShift) throw new ConflictException('¡ALERTA! No tienes caja abierta. Abre turno para recibir efectivo.');
-        cashShiftId = currentShift.id;
-      }
-
-      // Registrar el pago
-      const payment = await tx.salePayment.create({
-        data: {
-          saleId,
-          method: data.method,
-          amount: data.amount,
-          references: data.references ?? undefined,
-          cashShiftId: cashShiftId, // Trazabilidad, ¿A qué caja entró?
-        }
+      // DELEGACIÓN: el invariante del dinero (sin sobrepago + deuda del cliente
+      // sincronizada) vive en un solo lugar, compartido con client.registerPayment.
+      const applied = await this.paymentService.applyToSale(tx, {
+        saleId,
+        amount: data.amount,
+        method: data.method,
+        references: data.references,
+        cashShiftId,
       });
 
-      // Recalcular saldos
-      const totalPaidAgg = await tx.salePayment.aggregate({ where: { saleId }, _sum: { amount: true } });
-      const totalPaid = new Decimal(totalPaidAgg._sum.amount ?? 0);
-      const saleTotal = new Decimal(sale.total);
-      const newBalance = sale.balance.sub(data.amount);
-
-      // Actualziar estados
-      let newStatus: SaleStatus = SaleStatus.PARTIAL;
-
-      if(totalPaid.gte(saleTotal)) {
-        newStatus = SaleStatus.COMPLETED;
-      }
-
-      await tx.sale.update({
-        where: { id: saleId },
-        data: {
-          paidAmount: totalPaid,
-          balance: newBalance,
-          status: newStatus,
-          paymentStatus: totalPaid.gte(saleTotal) ? PaymentStatus.PAID : PaymentStatus.PARTIAL,
-        }
-      });
-
-      return { payment, newBalance, newStatus };
+      return {
+        payment: applied.payment,
+        newBalance: applied.newBalance,
+        newStatus: applied.newStatus,
+      };
     });
   }
 
@@ -219,12 +198,11 @@ export class SalesService {
           );
         }
         
-        // Si era a crédito, revertir la deuda del cliente
+        // Si era a crédito, revertir la deuda del cliente.
+        // Se delega en PaymentService para heredar la misma red de seguridad contra
+        // deudas negativas que usan los cobros y las devoluciones.
         if (sale.balance.gt(0) && sale.clientId) {
-            await tx.client.update({
-                where: { id: sale.clientId },
-                data: { currentDebt: { decrement: sale.balance } }
-            });
+            await this.paymentService.decreaseClientDebt(tx, sale.clientId, sale.balance);
         }
       }
 
@@ -301,23 +279,88 @@ export class SalesService {
    * @returns la devolución creada
    */
   async createReturn(saleId: number, dto: ReturnSaleDto, userId: number) {
-    // Valia estado de la venta original
-    const sale = await this.prisma.sale.findUnique({ where: { id: saleId }, include: { client: true } });
-
-    if (!sale) throw new NotFoundException('Venta no encontrada');
-    if (sale.flowStatus !== SaleFlowStatus.COMPLETED) {
-      throw new BadRequestException('Solo se pueden hacer devoluciones sobre ventas FINALIZADAS');
+    if (!dto.items || dto.items.length === 0) {
+      throw new BadRequestException('La devolución debe tener al menos un producto');
     }
 
-    // 2. Traer items originales para validar cantidades
-    const saleItems = await this.prisma.saleItem.findMany({ where: { saleId } });
-    const itemsMap = new Map(saleItems.map(it => [it.id, it]));
-
-    // Validar que no estemos devolviendo más de lo vendido
-    // (Aquí podrías agregar lógica para restar lo que YA se ha devuelto antes en otros Returns)
-    
     return await this.prisma.$transaction(async (tx) => {
-      // A. Crear Cabecera de Devolución
+      // ─────────────────────────────────────────────────────────────────────────
+      // 1. BLOQUEO DE LA VENTA
+      // Serializa las devoluciones de una misma venta. Sin esto, dos devoluciones
+      // simultáneas leerían ambas "ya devuelto = 0" y cada una autorizaría la
+      // devolución completa: se reembolsaría y reingresaría el DOBLE de lo vendido.
+      // ─────────────────────────────────────────────────────────────────────────
+      await this.lockSaleRow(tx, saleId);
+
+      // 2. Estado de la venta, leído DENTRO de la transacción
+      const sale = await tx.sale.findUnique({
+        where: { id: saleId },
+        include: { client: true },
+      });
+
+      if (!sale) throw new NotFoundException('Venta no encontrada');
+      if (sale.flowStatus !== SaleFlowStatus.COMPLETED) {
+        throw new BadRequestException('Solo se pueden hacer devoluciones sobre ventas FINALIZADAS');
+      }
+      if (sale.status === SaleStatus.CANCELLED) {
+        throw new BadRequestException('No se puede devolver sobre una venta cancelada');
+      }
+
+      // 3. Items originales + CANTIDADES YA DEVUELTAS en devoluciones anteriores.
+      // Este es el corazón del arreglo: antes se validaba contra la cantidad
+      // vendida, no contra "lo que queda por devolver", así que la misma unidad
+      // podía devolverse una y otra vez.
+      const saleItems = await tx.saleItem.findMany({ where: { saleId } });
+      const itemsMap = new Map(saleItems.map(it => [it.id, it]));
+
+      const previousReturns = await tx.saleReturnItem.groupBy({
+        by: ['saleItemId'],
+        where: { saleItemId: { in: saleItems.map(it => it.id) } },
+        _sum: { quantity: true },
+      });
+      const returnedMap = new Map(
+        previousReturns.map(r => [r.saleItemId, r._sum.quantity ?? 0]),
+      );
+
+      // 4. Consolidar el DTO: si el mismo saleItemId viene repetido en la petición,
+      // se suman las cantidades antes de validar (si no, cada línea pasaría la
+      // validación por separado y en conjunto excederían lo disponible).
+      const consolidated = new Map<number, { quantity: number; reason?: string; restock: boolean }>();
+      for (const it of dto.items) {
+        const prev = consolidated.get(it.saleItemId);
+        if (prev) {
+          prev.quantity += it.quantity;
+          prev.reason = prev.reason ?? it.reason;
+          // Si cualquiera de las líneas indica merma, no se reingresa a stock.
+          prev.restock = prev.restock && it.restock;
+        } else {
+          consolidated.set(it.saleItemId, {
+            quantity: it.quantity,
+            reason: it.reason,
+            restock: it.restock,
+          });
+        }
+      }
+
+      // 5. VALIDAR TODO ANTES DE ESCRIBIR NADA (fallar sin efectos parciales)
+      for (const [saleItemId, req] of consolidated) {
+        const originalItem = itemsMap.get(saleItemId);
+        if (!originalItem) {
+          throw new BadRequestException(`El item ${saleItemId} no pertenece a esta venta`);
+        }
+
+        const yaDevuelto = returnedMap.get(saleItemId) ?? 0;
+        const disponible = originalItem.quantity - yaDevuelto;
+
+        if (req.quantity > disponible) {
+          throw new BadRequestException(
+            `Solo puedes devolver ${disponible} unidad(es) de este producto ` +
+            `(vendidas: ${originalItem.quantity}, ya devueltas: ${yaDevuelto})`,
+          );
+        }
+      }
+
+      // 6. Cabecera de la devolución
       const saleReturn = await tx.saleReturn.create({
         data: {
           saleId,
@@ -328,118 +371,184 @@ export class SalesService {
 
       let totalRefundAmount = new Decimal(0);
 
-      // B. Procesar cada item devuelto.
-      // Orden determinista por productId (previene deadlocks entre devoluciones
-      // concurrentes que toquen los mismos productos en distinto orden).
-      const orderedReturnItems = [...dto.items].sort((a, b) => {
-        const pa = itemsMap.get(a.saleItemId)?.productId ?? 0;
-        const pb = itemsMap.get(b.saleItemId)?.productId ?? 0;
+      // 7. Procesar cada item, en orden determinista por productId (anti-deadlock)
+      const orderedItems = [...consolidated.entries()].sort((a, b) => {
+        const pa = itemsMap.get(a[0])!.productId;
+        const pb = itemsMap.get(b[0])!.productId;
         return pa - pb;
       });
 
-      for (const itemDto of orderedReturnItems) {
-        const originalItem = itemsMap.get(itemDto.saleItemId);
-        if (!originalItem) throw new BadRequestException(`Item ${itemDto.saleItemId} no pertenece a esta venta`);
-
-        if (itemDto.quantity > originalItem.quantity) {
-             throw new BadRequestException(`No puedes devolver ${itemDto.quantity} cuando solo se vendieron ${originalItem.quantity}`);
-        }
+      for (const [saleItemId, req] of orderedItems) {
+        const originalItem = itemsMap.get(saleItemId)!;
 
         const unitPrice = new Decimal(originalItem.price);
-        const subtotal = unitPrice.mul(new Decimal(itemDto.quantity));
+        const subtotal = unitPrice.mul(new Decimal(req.quantity));
         totalRefundAmount = totalRefundAmount.add(subtotal);
 
-        // Registro de Item de Devolución
         await tx.saleReturnItem.create({
           data: {
             saleReturnId: saleReturn.id,
             saleItemId: originalItem.id,
             productId: originalItem.productId,
-            quantity: itemDto.quantity,
-            unitPrice: unitPrice,
-            subtotal: subtotal,
-            reason: itemDto.reason,
+            quantity: req.quantity,
+            unitPrice,
+            subtotal,
+            reason: req.reason,
           },
         });
 
-        // C. IMPACTO EN INVENTARIO (Kardex)
-        // Solo si restock es true (está en buen estado). 
-        // Si es false (merma), no lo metemos a stock de venta (o podrías meterlo directo a LOSS)
-        if (itemDto.restock) {
-            await this.inventoryService.registerMovement(
-                {
-                    productId: originalItem.productId,
-                    type: MovementType.RETURN_IN, // Entrada por devolución
-                    quantity: itemDto.quantity,
-                    reason: `Devolución Venta #${saleId} - Return #${saleReturn.id}`,
-                    referenceId: saleReturn.id
-                },
-                userId,
-                tx
-            );
-        } else {
-            // Si no es restock (está roto), registramos como LOSS
-            await this.inventoryService.registerMovement(
-              {
-                productId: originalItem.productId,
-                type: MovementType.LOSS,
-                quantity: itemDto.quantity,
-                reason: `Devolución Venta #${saleId} - Return #${saleReturn.id}`,
-                referenceId: saleReturn.id
-              },
-              userId,
-              tx
-            );
+        // ─── IMPACTO EN INVENTARIO ───
+        // La mercancía SIEMPRE reingresa primero: físicamente volvió a la farmacia
+        // y el Kardex debe reflejarlo.
+        await this.inventoryService.registerMovement(
+          {
+            productId: originalItem.productId,
+            type: MovementType.RETURN_IN,
+            quantity: req.quantity,
+            reason: `Devolución Venta #${saleId} - Return #${saleReturn.id}`,
+            referenceId: saleReturn.id,
+          },
+          userId,
+          tx,
+        );
+
+        // Si viene dañada, abierta o caducada, se da de baja acto seguido.
+        // Efecto NETO sobre el stock: cero, pero quedan los DOS asientos, que es lo
+        // contablemente correcto y hace visible la merma en los reportes.
+        //
+        // Antes se registraba SOLO el LOSS: como la mercancía ya había salido con la
+        // venta, eso descontaba el stock por SEGUNDA vez (pérdida fantasma) y, si el
+        // stock estaba bajo, la devolución fallaba con un absurdo "stock insuficiente".
+        if (!req.restock) {
+          await this.inventoryService.registerMovement(
+            {
+              productId: originalItem.productId,
+              type: MovementType.LOSS,
+              quantity: req.quantity,
+              reason: `Merma por devolución en mal estado - Return #${saleReturn.id}`,
+              referenceId: saleReturn.id,
+            },
+            userId,
+            tx,
+          );
         }
       }
 
-      // D. IMPACTO FINANCIERO (Reembolso)
+      // Si TODAS las unidades de la venta quedaron devueltas, la venta pasa a
+      // REFUNDED (el estado existía en el enum pero nunca se usaba).
+      const totalmenteDevuelta = saleItems.every((it) => {
+        const acumulado = (returnedMap.get(it.id) ?? 0) + (consolidated.get(it.id)?.quantity ?? 0);
+        return acumulado >= it.quantity;
+      });
+
+      if (totalmenteDevuelta) {
+        await tx.sale.update({
+          where: { id: saleId },
+          data: { status: SaleStatus.REFUNDED },
+        });
+      }
+
+      // ─────────────────────────────────────────────────────────────────────────
+      // 8. IMPACTO FINANCIERO
+      //
+      // El reembolso se reparte en DOS tramos, en este orden:
+      //   a) Cancelar el saldo que el cliente aún debe por esta venta.
+      //   b) Lo que exceda ese saldo es dinero que el cliente YA pagó → efectivo.
+      //
+      // Antes se elegía UNO de los dos caminos: si la venta tenía saldo, se bajaba
+      // la deuda por el importe COMPLETO de la devolución, aunque éste superara el
+      // saldo. Eso dejaba el balance de la venta en negativo y regalaba deuda.
+      // ─────────────────────────────────────────────────────────────────────────
       let refundData: SaleRefund | null = null;
-      
+      let debtApplied = new Decimal(0);
+      let cashRefunded = new Decimal(0);
+
       if (dto.refundToCustomer) {
-        // Opción 1: Era venta a Crédito -> Bajamos la deuda
-        if (sale.client && sale.balance.gt(0)) {
-            // Lógica: Si debe dinero, no le damos efectivo, le bajamos la deuda.
-            const newDebt = new Decimal(sale.client.currentDebt).sub(totalRefundAmount);
-            await tx.client.update({
-                where: { id: sale.client.id },
-                data: { currentDebt: newDebt.lessThan(0) ? 0 : newDebt } // No deuda negativa
-            });
-            // Ajustamos el balance de la venta
-            await tx.sale.update({
-                where: { id: saleId },
-                data: { balance: sale.balance.sub(totalRefundAmount) }
-            });
-        } 
-        // Opción 2: Era venta Contado -> Reembolso de Efectivo (Requiere Caja Abierta)
-        else {
-             const currentShift = await this.cashShiftService.getCurrentShift(userId);
-             if (!currentShift) {
-                 throw new ConflictException('Se requiere caja abierta para realizar reembolso en efectivo');
-             }
+        const saleBalance = new Decimal(sale.balance);
 
-             // Registramos Salida de Dinero en Caja
-             await this.cashShiftService.registerOperation(userId, {
-                 type: CashTransactionType.EXPENSE, // O un tipo específico REFUND
-                 amount: totalRefundAmount.toNumber(), // Convertir a number para el servicio
-                 reason: `Reembolso por Devolución #${saleReturn.id}`
-             });
+        // (a) Tramo contra la deuda pendiente de la venta
+        debtApplied = totalRefundAmount.gt(saleBalance) ? saleBalance : totalRefundAmount;
 
-             // Registro contable del reembolso
-             refundData = await tx.saleRefund.create({
-                data: {
-                    saleReturnId: saleReturn.id,
-                    saleId: saleId,
-                    amount: totalRefundAmount,
-                    method: PaymentMethod.CASH // O el método que se usó
-                }
-             });
+        if (debtApplied.gt(0)) {
+          await tx.sale.update({
+            where: { id: saleId },
+            data: { balance: { decrement: debtApplied } },
+          });
+
+          if (sale.clientId) {
+            // Reutilizamos el dueño único de la deuda (misma red de seguridad
+            // contra deudas negativas que en los cobros).
+            await this.paymentService.decreaseClientDebt(tx, sale.clientId, debtApplied);
+          }
+        }
+
+        // (b) Tramo en efectivo: lo que el cliente ya había pagado
+        cashRefunded = totalRefundAmount.sub(debtApplied);
+
+        // Salvaguarda: nunca devolver más efectivo del que realmente entró.
+        const paidAmount = new Decimal(sale.paidAmount);
+        if (cashRefunded.gt(paidAmount)) {
+          this.logger.warn(
+            `Devolución #${saleReturn.id}: el reembolso en efectivo ($${cashRefunded}) supera lo pagado ` +
+            `($${paidAmount}) en la venta #${saleId}. Se limita a lo pagado. REVISAR consistencia.`,
+          );
+          cashRefunded = paidAmount;
+        }
+
+        if (cashRefunded.gt(0)) {
+          const currentShift = await this.cashShiftService.getCurrentShift(userId);
+          if (!currentShift) {
+            throw new ConflictException('Se requiere caja abierta para realizar reembolso en efectivo');
+          }
+
+          // Salida de dinero de la caja, dentro de la MISMA transacción para que
+          // un fallo posterior no deje el movimiento de caja huérfano.
+          await tx.cashTransaction.create({
+            data: {
+              shiftId: currentShift.id,
+              type: CashTransactionType.REFUND_OUT,
+              amount: cashRefunded,
+              reason: `Reembolso por Devolución #${saleReturn.id}`,
+              relatedTable: 'SaleReturn',
+              referenceId: saleReturn.id,
+              createdBy: userId,
+            },
+          });
+
+          refundData = await tx.saleRefund.create({
+            data: {
+              saleReturnId: saleReturn.id,
+              saleId: saleId,
+              amount: cashRefunded,
+              method: PaymentMethod.CASH,
+              reference: `Reembolso por Devolución #${saleReturn.id}`,
+            },
+          });
         }
       }
 
-      this.logger.log(`Devolución #${saleReturn.id} procesada por $${totalRefundAmount}`);
-      return { saleReturn, refund: refundData };
+      this.logger.log(
+        `Devolución #${saleReturn.id} de la venta #${saleId}: total $${totalRefundAmount} ` +
+        `(deuda cancelada $${debtApplied}, efectivo devuelto $${cashRefunded})`,
+      );
+
+      return {
+        saleReturn,
+        refund: refundData,
+        totalReturned: totalRefundAmount,
+        debtApplied,
+        cashRefunded,
+      };
     });
+  }
+
+  /**
+   * Bloquea la fila de la venta (SELECT ... FOR UPDATE) dentro de una transacción.
+   * Se usa para serializar operaciones que deben leer el histórico acumulado de la
+   * venta antes de decidir (ej. cuánto queda por devolver).
+   */
+  private async lockSaleRow(tx: Prisma.TransactionClient, saleId: number): Promise<void> {
+    await tx.$queryRaw`SELECT id FROM "public"."Sale" WHERE id = ${saleId} FOR UPDATE`;
   }
 
   /**
