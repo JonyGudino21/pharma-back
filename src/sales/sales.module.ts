@@ -4,11 +4,12 @@ import { SalesController } from './sales.controller';
 import { PrismaModule } from 'prisma/prisma.module';
 import { InventoryModule } from 'src/inventory/inventory.module';
 import { CashShiftModule } from 'src/cash-shift/cash-shift.module';
+import { PaymentModule } from 'src/payment/payment.module';
 
 @Module({
   controllers: [SalesController],
   providers: [SalesService],
-  imports: [PrismaModule, InventoryModule, CashShiftModule],
+  imports: [PrismaModule, InventoryModule, CashShiftModule, PaymentModule],
   exports: [SalesService]
 })
 export class SalesModule {}

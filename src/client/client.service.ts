@@ -7,7 +7,8 @@ import { UpdateCreditConfigDto } from './dto/credit-config.dto';
 import { RegisterClientPaymentDto } from './dto/register-payment.dto';
 import { AccountStatementQueryDto } from './dto/account-statement-query.dto';
 import { CashShiftService } from 'src/cash-shift/cash-shift.service';
-import { PaymentMethod, PaymentStatus, SaleStatus, SaleFlowStatus, CashTransactionType, SalePayment, ShiftStatus } from '@prisma/client';
+import { PaymentService } from 'src/payment/payment.service';
+import { PaymentMethod, SaleStatus, SaleFlowStatus, CashTransactionType, SalePayment, ShiftStatus } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 
 @Injectable()
@@ -16,7 +17,8 @@ export class ClientService {
 
   constructor (
     private prisma: PrismaService,
-    private cashShiftService: CashShiftService
+    private cashShiftService: CashShiftService,
+    private paymentService: PaymentService,
   ){}
 
   /**
@@ -409,55 +411,45 @@ async update(id: number, updateClientDto: UpdateClientDto) {
       const paymentsCreated: SalePayment[] = [];
       const appliedBySale: { saleId: number; invoiceNumber: string | null; amount: number }[] = [];
 
+      // Aplicación FIFO: la venta más antigua se salda primero.
       for (const sale of pendingSales) {
         if (remainingPayment.lte(0)) break;
 
-          const saleBalance = new Decimal(sale.balance);
-          // ¿Cuánto pagamos de esta venta? Lo que alcance o lo que se deba.
-          const amountToPay = remainingPayment.gte(saleBalance) ? saleBalance : remainingPayment;
+        const saleBalance = new Decimal(sale.balance);
+        // ¿Cuánto pagamos de esta venta? Lo que alcance o lo que se deba.
+        const amountToPay = remainingPayment.gte(saleBalance) ? saleBalance : remainingPayment;
 
-        const payment = await tx.salePayment.create({
-          data: {
-            saleId: sale.id,
-            method: dto.method,
-            amount: amountToPay,
-            references: dto.reference ?? 'Abono a Cuenta General',
-            cashShiftId,
-          },
+        // DELEGACIÓN al dueño único del dinero: crea el asiento, actualiza saldos y
+        // estados, y descuenta la deuda del cliente de forma atómica.
+        // Ya NO se actualiza `currentDebt` al final de este método: hacerlo
+        // descontaría el abono DOS VECES.
+        const applied = await this.paymentService.applyToSale(tx, {
+          saleId: sale.id,
+          amount: amountToPay,
+          method: dto.method,
+          references: dto.reference ?? 'Abono a Cuenta General',
+          cashShiftId,
         });
-        paymentsCreated.push(payment);
+
+        paymentsCreated.push(applied.payment);
         appliedBySale.push({
           saleId: sale.id,
           invoiceNumber: sale.invoiceNumber,
           amount: amountToPay.toNumber(),
         });
 
-          // Actualizar Venta
-          const newPaidAmount = new Decimal(sale.paidAmount).add(amountToPay);
-          const newBalance = saleBalance.sub(amountToPay);
-          const isPaid = newBalance.lte(0);
-
-          await tx.sale.update({
-              where: { id: sale.id },
-              data: {
-                  paidAmount: newPaidAmount,
-                  balance: newBalance,
-                  status: isPaid ? SaleStatus.COMPLETED : SaleStatus.PARTIAL,
-                  paymentStatus: isPaid ? PaymentStatus.PAID : PaymentStatus.PARTIAL
-              }
-          });
-
         remainingPayment = remainingPayment.sub(amountToPay);
       }
 
       const amountApplied = totalPayment.sub(remainingPayment);
-      const newClientDebt = new Decimal(client.currentDebt).sub(amountApplied);
-      const debtCapped = newClientDebt.lt(0) ? new Decimal(0) : newClientDebt;
 
-      await tx.client.update({
+      // La deuda ya fue descontada venta por venta por PaymentService.
+      // Aquí solo la leemos para informarla al cliente de la API.
+      const clientAfter = await tx.client.findUniqueOrThrow({
         where: { id: clientId },
-        data: { currentDebt: debtCapped },
+        select: { currentDebt: true },
       });
+      const debtCapped = clientAfter.currentDebt;
 
       const overpaidAmount = remainingPayment.gt(0) ? remainingPayment : new Decimal(0);
       if (overpaidAmount.gt(0)) {
