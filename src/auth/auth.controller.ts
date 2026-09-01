@@ -1,4 +1,5 @@
 import { Controller, Get, Post, Body, Delete, UseGuards, Req } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
@@ -20,6 +21,10 @@ export class AuthController {
    * Público: No requiere token.
    * @param data Credenciales (email, password)
    */
+  // Limite estricto y propio: 5 intentos por minuto y por IP. El limite global
+  // (cientos de peticiones) es adecuado para el POS pero inutil contra fuerza
+  // bruta, donde bastan unos pocos miles de intentos para probar un diccionario.
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('login')
   async login(@Body() data: LoginDto, @Req() req : Request){
     const ua = req.get('user-agent');
@@ -33,6 +38,9 @@ export class AuthController {
    * Público: Se usa cuando el JWT expira.
    * @param data Refresh token actual
    */
+  // Mas holgado que el login (una sesion legitima renueva cada ~15 min) pero
+  // acotado: este endpoint entrega tokens y no debe poder sondearse en bucle.
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
   @Post('refresh')
   async refresh(@Body() data: RefreshTokenDto, @Req() req : Request){
     const res = await this.authService.refresh(data.refreshToken, req.ip, req.get('user-agent'));
@@ -61,6 +69,7 @@ export class AuthController {
       req.ip,
       req.get('user-agent')
     )
+    return ApiResponse.ok(res, 'Todas las sesiones fueron cerradas');
   }
 
   /**
