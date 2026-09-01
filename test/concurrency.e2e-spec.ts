@@ -34,6 +34,7 @@ describe('Concurrencia de inventario y ventas (integración)', () => {
   let purchases: PurchaseService;
 
   let userId: number;
+  let cashShiftId: number;
   const creados = { products: [] as number[], sales: [] as number[], clients: [] as number[], suppliers: [] as number[], purchases: [] as number[] };
 
   beforeAll(async () => {
@@ -57,10 +58,20 @@ describe('Concurrencia de inventario y ventas (integración)', () => {
       },
     });
     userId = user.id;
+
+    // El cobro en efectivo exige un turno de caja abierto (PaymentService.resolveCashShiftId).
+    // Sin él, las ventas de contado quedan con saldo pendiente y NINGÚN cierre prospera,
+    // con lo que la prueba de sobreventa dejaría de probar lo que dice probar.
+    const shift = await prisma.cashShift.create({
+      data: { userId, initialAmount: new Decimal(1000) },
+    });
+    cashShiftId = shift.id;
   });
 
   afterAll(async () => {
-    // Limpieza respetando las llaves foráneas
+    // Limpieza respetando las llaves foráneas. El orden importa: primero las tablas
+    // hijas, después las padres. Sale referencia a CashShift, así que el turno se
+    // borra al final.
     await prisma.inventoryMovement.deleteMany({ where: { productId: { in: creados.products } } });
     await prisma.saleItem.deleteMany({ where: { saleId: { in: creados.sales } } });
     await prisma.salePayment.deleteMany({ where: { saleId: { in: creados.sales } } });
@@ -68,9 +79,14 @@ describe('Concurrencia de inventario y ventas (integración)', () => {
     await prisma.purchaseItem.deleteMany({ where: { purchaseId: { in: creados.purchases } } });
     await prisma.purchase.deleteMany({ where: { id: { in: creados.purchases } } });
     await prisma.productPriceHistory.deleteMany({ where: { productId: { in: creados.products } } });
+    // Asignar un cliente a una venta genera precio especial e historial para ese cliente.
+    await prisma.clientProductPriceHistory.deleteMany({ where: { productId: { in: creados.products } } });
+    await prisma.clientProductPrice.deleteMany({ where: { productId: { in: creados.products } } });
     await prisma.product.deleteMany({ where: { id: { in: creados.products } } });
     await prisma.client.deleteMany({ where: { id: { in: creados.clients } } });
     await prisma.supplier.deleteMany({ where: { id: { in: creados.suppliers } } });
+    await prisma.cashTransaction.deleteMany({ where: { shiftId: cashShiftId } });
+    await prisma.cashShift.delete({ where: { id: cashShiftId } });
     await prisma.user.delete({ where: { id: userId } });
     await moduleRef.close();
   });
@@ -103,10 +119,10 @@ describe('Concurrencia de inventario y ventas (integración)', () => {
     );
     borradores.forEach((s) => creados.sales.push(s.id));
 
-    // Pagamos cada venta para que sea de contado (balance 0)
+    // Pagamos cada venta para que sea de contado (balance 0). Si el cobro fallara,
+    // la prueba debe romperse aquí y no disfrazar el fallo como "no hubo sobreventa".
     for (const s of borradores) {
-      await sales.addPayment(s.id, { method: 'CASH', amount: Number(s.total) } as any, userId)
-        .catch(() => undefined); // si requiere caja abierta, seguimos: el cierre valida crédito
+      await sales.addPayment(s.id, { method: 'CASH', amount: Number(s.total) } as any, userId);
     }
 
     // CIERRE SIMULTÁNEO
@@ -135,8 +151,7 @@ describe('Concurrencia de inventario y ventas (integración)', () => {
     const producto = await nuevoProducto(50);
     const venta = await sales.create({ items: [{ productId: producto.id, quantity: 3 }] }, userId);
     creados.sales.push(venta.id);
-    await sales.addPayment(venta.id, { method: 'CASH', amount: Number(venta.total) } as any, userId)
-      .catch(() => undefined);
+    await sales.addPayment(venta.id, { method: 'CASH', amount: Number(venta.total) } as any, userId);
 
     const [a, b] = await Promise.allSettled([
       sales.completeSale(venta.id, userId),
