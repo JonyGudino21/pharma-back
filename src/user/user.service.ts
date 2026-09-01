@@ -4,6 +4,7 @@ import { CreateUserDto } from './dto/create-user.dto';
 import * as bcrypt from 'bcrypt';
 import { EditUserDto } from './dto/edit-user.dto';
 import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
+import { USER_PUBLIC_SELECT } from './user.select';
 
 @Injectable()
 export class UserService {
@@ -28,7 +29,8 @@ export class UserService {
         email: data.email,
         password: hashedPassword,
         role: data.role
-      }
+      },
+      select: USER_PUBLIC_SELECT,
     })
 	}
 
@@ -57,7 +59,8 @@ export class UserService {
 		if (!hasPagination) {
 			const users = await this.prisma.user.findMany({
 				where: whereClause,
-				orderBy: { userName: 'desc' }
+				orderBy: { userName: 'desc' },
+				select: USER_PUBLIC_SELECT,
 			});
 			return { users: users };
 		}
@@ -67,7 +70,8 @@ export class UserService {
 				where: whereClause,
 				skip: skip,
 				take: limit,
-				orderBy: { userName: 'desc' }
+				orderBy: { userName: 'desc' },
+				select: USER_PUBLIC_SELECT,
 			}),
 			this.prisma.user.count({ where: whereClause})
 		])
@@ -91,18 +95,7 @@ export class UserService {
 	async getUserById(id: number) {
 		const user = await this.prisma.user.findUnique({
 			where: {id},
-			select: {
-				id: true,
-				email: true,
-				userName: true,
-				firstName: true,
-				lastName: true,
-				role: true,
-				isActive: true,
-				createdAt: true,
-				updatedAt: true,
-				password: false
-			}
+			select: USER_PUBLIC_SELECT,
 		})
 		if(!user){
 			throw new NotFoundException('Usuario no existente')
@@ -149,13 +142,13 @@ export class UserService {
 		}
 
 		// Si no hay condiciones, where será un objeto vacío {}
-		console.log('Where clause:', JSON.stringify(where, null, 2));
 
 		// Si NO hay paginación, devolver todos sin paginar
 		if (!hasPagination) {
 			const users = await this.prisma.user.findMany({
 				where,
-				orderBy: { userName: 'desc' }
+				orderBy: { userName: 'desc' },
+				select: USER_PUBLIC_SELECT,
 			});
 			return { users };
 		}
@@ -166,7 +159,8 @@ export class UserService {
 				where,
 				skip: skip,
 				take: limit,
-				orderBy: { userName: 'desc' }  
+				orderBy: { userName: 'desc' },
+				select: USER_PUBLIC_SELECT,
 			}),
 			this.prisma.user.count({ where })
 		]);
@@ -211,7 +205,8 @@ export class UserService {
 				role: data.role,
 				isActive: data.isActive,
 				password: hashedPassword ? hashedPassword : undefined
-			}
+			},
+			select: USER_PUBLIC_SELECT,
 		})
 	}
 
@@ -232,7 +227,8 @@ export class UserService {
 			where: { id },
 			data: {
 				isActive: false
-			}
+			},
+			select: USER_PUBLIC_SELECT,
 		})
 	}
 }
