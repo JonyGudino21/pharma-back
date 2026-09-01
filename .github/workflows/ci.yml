@@ -80,7 +80,7 @@ jobs:
           --health-retries 10
 
     env:
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/pharma_test
+      DATABASE_URL: postgresql://postgres:123456@localhost:5432/farmacia_db?schema=public
       NODE_ENV: test
       # Valores desechables, validos solo dentro del runner. No corresponden a ningun entorno real.
       JWT_SECRET: ci_throwaway_secret_used_only_inside_the_runner
