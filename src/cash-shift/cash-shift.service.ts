@@ -1,15 +1,25 @@
-import { Injectable , BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { CashTransactionType, PaymentMethod, ShiftStatus } from '@prisma/client';
+import {
+  CashTransactionType,
+  PaymentMethod,
+  ShiftStatus,
+} from '@prisma/client';
 import { PerformOperationDto } from './dto/perform-operation.dto';
 import { OpenShiftDto } from './dto/open-shift.dto';
 import { CloseShiftDto } from './dto/close-shift.dto';
 import { Decimal } from '@prisma/client/runtime/library';
+import { Prisma } from '@prisma/client';
 import { GetShiftsFilterDto } from './dto/get-shifts-filter.dto';
 
 @Injectable()
 export class CashShiftService {
-  constructor(private prisma: PrismaService){}
+  constructor(private prisma: PrismaService) {}
 
   /**
    * Abre un turno de caja
@@ -24,7 +34,9 @@ export class CashShiftService {
     });
 
     if (activeShift) {
-      throw new ConflictException('Ya tienes un turno abierto. Debes cerrarlo antes de abrir uno nuevo.');
+      throw new ConflictException(
+        'Ya tienes un turno abierto. Debes cerrarlo antes de abrir uno nuevo.',
+      );
     }
 
     // Crear el turno
@@ -54,10 +66,10 @@ export class CashShiftService {
     const shift = await this.prisma.cashShift.findFirst({
       where: { userId, status: ShiftStatus.OPEN },
     });
-    
+
     // Si no hay turno, no es un error 500, simplemente retornamos null o un 404 controlado
     // Dependiendo de cómo lo quiera el frontend.
-    if (!shift) return null; 
+    if (!shift) return null;
     return shift;
   }
 
@@ -69,11 +81,19 @@ export class CashShiftService {
    */
   async registerOperation(userId: number, dto: PerformOperationDto) {
     const shift = await this.getCurrentShift(userId);
-    if (!shift) throw new BadRequestException('No hay turno abierto para realizar operaciones.');
+    if (!shift)
+      throw new BadRequestException(
+        'No hay turno abierto para realizar operaciones.',
+      );
 
     // Validaciones extra para Enterprise
-    if (dto.type === CashTransactionType.SALE_INCOME || dto.type === CashTransactionType.CREDIT_PAYMENT) {
-       throw new BadRequestException('Este endpoint es solo para movimientos manuales de caja (Sangrías/Gastos).');
+    if (
+      dto.type === CashTransactionType.SALE_INCOME ||
+      dto.type === CashTransactionType.CREDIT_PAYMENT
+    ) {
+      throw new BadRequestException(
+        'Este endpoint es solo para movimientos manuales de caja (Sangrías/Gastos).',
+      );
     }
 
     const transaction = await this.prisma.cashTransaction.create({
@@ -97,11 +117,11 @@ export class CashShiftService {
    */
   async closeShift(userId: number, dto: CloseShiftDto) {
     const shift = await this.getCurrentShift(userId);
-    if (!shift) throw new BadRequestException('No tienes un turno abierto para cerrar.');
+    if (!shift)
+      throw new BadRequestException('No tienes un turno abierto para cerrar.');
 
     // TRANSACCIÓN DE PRISMA: Aseguramos consistencia de datos
     return await this.prisma.$transaction(async (tx) => {
-      
       // A. Sumar todas las ventas en EFECTIVO asociadas a este turno
       const salesAggregate = await tx.salePayment.aggregate({
         where: { cashShiftId: shift.id, method: PaymentMethod.CASH },
@@ -139,12 +159,15 @@ export class CashShiftService {
       // E. Determinar estado final (Si falta mucho dinero, marcamos AUDIT_REQUIRED)
       // Umbral de tolerancia: Ejemplo $10 pesos
       let finalStatus: ShiftStatus = ShiftStatus.CLOSED;
-      if (Math.abs(difference.toNumber()) > Number(process.env.TOLERANCE_THRESHOLD)) {
+      if (
+        Math.abs(difference.toNumber()) >
+        Number(process.env.TOLERANCE_THRESHOLD)
+      ) {
         finalStatus = ShiftStatus.AUDIT_REQUIRED;
       }
 
       // F. Cerrar
-      const closedShift = await tx.cashShift.update({
+      await tx.cashShift.update({
         where: { id: shift.id },
         data: {
           closedAt: new Date(),
@@ -152,7 +175,9 @@ export class CashShiftService {
           expectedAmount: expectedAmount,
           realAmount: dto.realAmount,
           difference: difference,
-          notes: dto.notes ? `${shift.notes || ''} | Cierre: ${dto.notes}` : shift.notes,
+          notes: dto.notes
+            ? `${shift.notes || ''} | Cierre: ${dto.notes}`
+            : shift.notes,
         },
       });
 
@@ -166,41 +191,52 @@ export class CashShiftService {
           expected: expectedAmount,
           real: dto.realAmount,
           difference: difference, // Frontend mostrará esto en Rojo o Verde
-          status: finalStatus
-        }
+          status: finalStatus,
+        },
       };
     });
   }
 
-/**
- * Obtiene todos los turnos de caja
- * @param filters filtros de búsqueda
- * @returns todos los turnos de caja
- */
+  /**
+   * Obtiene todos los turnos de caja
+   * @param filters filtros de búsqueda
+   * @returns todos los turnos de caja
+   */
   async findAll(filters?: GetShiftsFilterDto) {
-    const hasPagination = filters && (filters.page !== undefined || filters.limit !== undefined);
-    const page = hasPagination ? filters?.page ?? 1 : 1;
-    const limit = hasPagination ? filters?.limit ?? 20 : 20;
+    const hasPagination =
+      filters && (filters.page !== undefined || filters.limit !== undefined);
+    const page = hasPagination ? (filters?.page ?? 1) : 1;
+    const limit = hasPagination ? (filters?.limit ?? 20) : 20;
     const skip = (page - 1) * limit;
 
-    const where: any = {};
-    if(filters?.userId) {
+    const where: Prisma.CashShiftWhereInput = {};
+    if (filters?.userId) {
       where.userId = filters.userId;
     }
-    if(filters?.status) {
+    if (filters?.status) {
       where.status = filters.status;
     }
-    if(filters?.startDate) {
-      where.openedAt = { gte: new Date(filters.startDate) };
+
+    // Ambos limites viven en el mismo objeto. Asignarlos por separado hacia que
+    // `endDate` sobreescribiera a `startDate` y el rango perdiera el extremo
+    // inferior: al pedir "del 1 al 31" se devolvia todo lo anterior al 31.
+    const openedAt: Prisma.DateTimeFilter = {};
+    if (filters?.startDate) {
+      openedAt.gte = new Date(filters.startDate);
     }
-    if(filters?.endDate) {
-      where.openedAt = { lte: new Date(new Date(filters.endDate).setHours(23, 59, 59, 999)) };
+    if (filters?.endDate) {
+      openedAt.lte = new Date(
+        new Date(filters.endDate).setHours(23, 59, 59, 999),
+      );
+    }
+    if (openedAt.gte || openedAt.lte) {
+      where.openedAt = openedAt;
     }
 
-    if(!hasPagination){
+    if (!hasPagination) {
       const shifts = await this.prisma.cashShift.findMany({
         where,
-        orderBy: { openedAt: 'desc' }
+        orderBy: { openedAt: 'desc' },
       });
       return { shifts: shifts };
     }
@@ -212,7 +248,7 @@ export class CashShiftService {
         take: limit,
         orderBy: { openedAt: 'desc' },
       }),
-      this.prisma.cashShift.count({ where })
+      this.prisma.cashShift.count({ where }),
     ]);
 
     return {
@@ -221,23 +257,31 @@ export class CashShiftService {
         total,
         page,
         limit,
-        totalPages: Math.ceil(total / limit)
-      }
-    }
+        totalPages: Math.ceil(total / limit),
+      },
+    };
   }
 
   async findOne(id: number) {
     const shift = await this.prisma.cashShift.findUnique({
       where: { id },
       include: {
-        user: { select: { id: true, userName: true, firstName: true, lastName: true } },
+        user: {
+          select: { id: true, userName: true, firstName: true, lastName: true },
+        },
         transactions: true, // Movimientos de dinero manuales
         sales: {
-          select: { id: true, total: true, status: true, paymentMethod: true, createdAt: true }
-        }
-      }
+          select: {
+            id: true,
+            total: true,
+            status: true,
+            paymentMethod: true,
+            createdAt: true,
+          },
+        },
+      },
     });
-    if(!shift) throw new NotFoundException('Turno de caja no encontrado');
+    if (!shift) throw new NotFoundException('Turno de caja no encontrado');
     return shift;
   }
 }

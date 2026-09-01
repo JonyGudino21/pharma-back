@@ -1,4 +1,14 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Query } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Patch,
+  Param,
+  Delete,
+  UseGuards,
+  Query,
+} from '@nestjs/common';
 import { PurchaseService } from './purchase.service';
 import { CreatePurchaseDto } from './dto/create-purchase.dto';
 import { UpdatePurchaseDto } from './dto/update-purchase.dto';
@@ -12,6 +22,7 @@ import { GetUser } from 'src/common/decorators/get-user.decorator';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
+import type { AuthenticatedUser } from 'src/auth/types/authenticated-user.type';
 
 @Controller('purchase')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -23,8 +34,14 @@ export class PurchaseController {
    * [COMPRAS] Crea una nueva Orden de Compra (Draft).
    */
   @Post()
-  async create(@Body() createPurchaseDto: CreatePurchaseDto, @GetUser() user: any) {
-    const data = await this.purchaseService.create(createPurchaseDto, user.userId);
+  async create(
+    @Body() createPurchaseDto: CreatePurchaseDto,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    const data = await this.purchaseService.create(
+      createPurchaseDto,
+      user.userId,
+    );
     return ApiResponse.ok(data, 'Compra creada correctamente');
   }
 
@@ -33,7 +50,11 @@ export class PurchaseController {
    */
   @Get()
   async findAll(@Query() findAllPurchaseDto: FindAllPurchaseDto) {
-    const data = await this.purchaseService.findAll(findAllPurchaseDto.supplierId, findAllPurchaseDto.status, {page: findAllPurchaseDto.page, limit: findAllPurchaseDto.limit});
+    const data = await this.purchaseService.findAll(
+      findAllPurchaseDto.supplierId,
+      findAllPurchaseDto.status,
+      { page: findAllPurchaseDto.page, limit: findAllPurchaseDto.limit },
+    );
     return ApiResponse.ok(data, 'Compras encontradas correctamente');
   }
 
@@ -50,7 +71,10 @@ export class PurchaseController {
    * [COMPRAS] Edita cabecera de la compra (Proveedor, Folio).
    */
   @Patch(':id')
-  async update(@Param('id') id: number, @Body() updatePurchaseDto: UpdatePurchaseDto) {
+  async update(
+    @Param('id') id: number,
+    @Body() updatePurchaseDto: UpdatePurchaseDto,
+  ) {
     const data = await this.purchaseService.update(id, updatePurchaseDto);
     return ApiResponse.ok(data, 'Compra actualizada correctamente');
   }
@@ -59,7 +83,7 @@ export class PurchaseController {
    * [COMPRAS] Cancela una compra (Devuelve inventario si ya se recibió).
    */
   @Post(':id/cancel')
-  async cancel(@Param('id') id: number, @GetUser() user: any) {
+  async cancel(@Param('id') id: number, @GetUser() user: AuthenticatedUser) {
     const data = await this.purchaseService.cancel(id, user.userId);
     return ApiResponse.ok(data, 'Compra cancelada correctamente');
   }
@@ -68,7 +92,10 @@ export class PurchaseController {
    * [COMPRAS] Agrega producto a una compra PENDING.
    */
   @Post(':id/add-product')
-  async addItem(@Param('id') id: number, @Body() addItemDto: CreatePurchaseItemDto) {
+  async addItem(
+    @Param('id') id: number,
+    @Body() addItemDto: CreatePurchaseItemDto,
+  ) {
     const data = await this.purchaseService.addItem(id, addItemDto);
     return ApiResponse.ok(data, 'Producto agregado correctamente');
   }
@@ -77,8 +104,16 @@ export class PurchaseController {
    * [COMPRAS] Modifica cantidad/costo de un producto en compra PENDING.
    */
   @Patch(':id/update-product/:itemId')
-  async updateItem(@Param('id') id: number, @Param('itemId') itemId: number, @Body() updateItemDto: UpdatePurchaseItemDto) {
-    const data = await this.purchaseService.updateItem(id, itemId, updateItemDto);
+  async updateItem(
+    @Param('id') id: number,
+    @Param('itemId') itemId: number,
+    @Body() updateItemDto: UpdatePurchaseItemDto,
+  ) {
+    const data = await this.purchaseService.updateItem(
+      id,
+      itemId,
+      updateItemDto,
+    );
     return ApiResponse.ok(data, 'Producto actualizado correctamente');
   }
 
@@ -95,8 +130,16 @@ export class PurchaseController {
    * [FINANZAS] Registra un pago a proveedor (Saca dinero de caja).
    */
   @Post(':id/add-payment')
-  async addPayment(@Param('id') id: number, @Body() addPaymentDto: AddPaymentDto, @GetUser() user: any) {
-    const data = await this.purchaseService.addPayment(id, addPaymentDto, user.userId);
+  async addPayment(
+    @Param('id') id: number,
+    @Body() addPaymentDto: AddPaymentDto,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    const data = await this.purchaseService.addPayment(
+      id,
+      addPaymentDto,
+      user.userId,
+    );
     return ApiResponse.ok(data, 'Pago agregado correctamente');
   }
 
@@ -104,17 +147,28 @@ export class PurchaseController {
    * [FINANZAS] Elimina un pago erróneo (Devuelve dinero a caja).
    */
   @Delete(':id/remove-payment/:paymentId')
-  async removePayment(@Param('id') id: number, @Param('paymentId') paymentId: number, @GetUser() user: any) {
-    const data = await this.purchaseService.removePayment(id, paymentId, user.userId);
+  async removePayment(
+    @Param('id') id: number,
+    @Param('paymentId') paymentId: number,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    const data = await this.purchaseService.removePayment(
+      id,
+      paymentId,
+      user.userId,
+    );
     return ApiResponse.ok(data, 'Pago eliminado correctamente');
   }
-  
+
   /**
    * [ALMACÉN] Recepción física de mercancía. Impacta Kardex y Costo Promedio.
    */
   @Post(':id/receive')
-  async receivePurchase(@Param('id') id: number, @GetUser() user: any) {
-      const data = await this.purchaseService.receive(id, user.userId);
-      return ApiResponse.ok(data, 'Mercancía recibida. Inventario actualizado.');
+  async receivePurchase(
+    @Param('id') id: number,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    const data = await this.purchaseService.receive(id, user.userId);
+    return ApiResponse.ok(data, 'Mercancía recibida. Inventario actualizado.');
   }
 }

@@ -1,4 +1,14 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, Query, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Patch,
+  Param,
+  Delete,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { ProductService } from './product.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
@@ -24,13 +34,16 @@ export class ProductController {
    */
   @Post()
   @Roles(UserRole.MANAGER, UserRole.PHARMACIST)
-  async create(@Body() createProductDto: CreateProductDto, @GetUser('id') userId: number) {
+  async create(
+    @Body() createProductDto: CreateProductDto,
+    @GetUser('id') userId: number,
+  ) {
     const res = await this.productService.create(createProductDto, userId);
-    return ApiResponse.ok(res,'Producto creado correctamente');
+    return ApiResponse.ok(res, 'Producto creado correctamente');
   }
 
   /**
-   * [OPERATIVO] Obtiene lista de productos. 
+   * [OPERATIVO] Obtiene lista de productos.
    * Sin @Roles porque el Cajero necesita ver el catálogo.
    */
   @Get()
@@ -59,7 +72,7 @@ export class ProductController {
     const res = await this.productService.findBySku(sku);
     return ApiResponse.ok(res, 'Producto encontrado exitosamente');
   }
-  
+
   /**
    * [OPERATIVO/POS] Escáner de código de barras.
    */
@@ -80,7 +93,11 @@ export class ProductController {
    */
   @Patch(':id')
   @Roles(UserRole.MANAGER, UserRole.PHARMACIST)
-  async update(@Param('id') id: number, @Body() updateProductDto: UpdateProductDto, @GetUser('id') userId: number) {
+  async update(
+    @Param('id') id: number,
+    @Body() updateProductDto: UpdateProductDto,
+    @GetUser('id') userId: number,
+  ) {
     const res = await this.productService.update(id, updateProductDto, userId);
     return ApiResponse.ok(res, 'Producto actualizado exitosamente');
   }

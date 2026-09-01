@@ -1,4 +1,14 @@
-import { Controller, Get, Post, Patch, Body, Param, Delete, Query, UseGuards, ParseIntPipe } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Patch,
+  Body,
+  Param,
+  Query,
+  UseGuards,
+  ParseIntPipe,
+} from '@nestjs/common';
 import { SalesService } from './sales.service';
 import { CreateSaleDto, SaleItemDto } from './dto/create-sale.dto';
 import { SetClientDto } from './dto/set-client.dto';
@@ -12,6 +22,7 @@ import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
+import type { AuthenticatedUser } from 'src/auth/types/authenticated-user.type';
 
 @Controller('sales')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -63,7 +74,10 @@ export class SalesController {
    * [OPERATIVO/POS] Crea un carrito de venta (Draft).
    */
   @Post()
-  async create(@Body() createSaleDto: CreateSaleDto, @GetUser() user: any) {
+  async create(
+    @Body() createSaleDto: CreateSaleDto,
+    @GetUser() user: AuthenticatedUser,
+  ) {
     const data = await this.salesService.create(createSaleDto, user.userId);
     return ApiResponse.ok(data, 'Venta creada correctamente');
   }
@@ -72,7 +86,10 @@ export class SalesController {
    * [OPERATIVO/POS] Agrega producto a la venta abierta.
    */
   @Post(':id/add-product')
-  async addProduct(@Param('id') id: number, @Body() addProductDto: SaleItemDto) {
+  async addProduct(
+    @Param('id') id: number,
+    @Body() addProductDto: SaleItemDto,
+  ) {
     const data = await this.salesService.addItem(id, addProductDto);
     return ApiResponse.ok(data, 'Producto agregado correctamente');
   }
@@ -81,7 +98,10 @@ export class SalesController {
    * [OPERATIVO/POS] Quita producto de la venta abierta.
    */
   @Post(':id/remove-product/:itemId')
-  async removeProduct(@Param('id') id: number, @Param('itemId') itemId: number) {
+  async removeProduct(
+    @Param('id') id: number,
+    @Param('itemId') itemId: number,
+  ) {
     const data = await this.salesService.deleteItem(id, itemId);
     return ApiResponse.ok(data, 'Producto eliminado correctamente');
   }
@@ -116,8 +136,16 @@ export class SalesController {
    * [OPERATIVO/FINANZAS] Registra un pago de cliente (Ingreso a caja).
    */
   @Post(':id/add-payment')
-  async addPayment(@Param('id') id: number, @Body() addPaymentDto: AddPaymentDto, @GetUser() user: any) {
-    const data = await this.salesService.addPayment(id, addPaymentDto, user.userId);
+  async addPayment(
+    @Param('id') id: number,
+    @Body() addPaymentDto: AddPaymentDto,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    const data = await this.salesService.addPayment(
+      id,
+      addPaymentDto,
+      user.userId,
+    );
     return ApiResponse.ok(data, 'Pago agregado correctamente');
   }
 
@@ -125,7 +153,10 @@ export class SalesController {
    * [OPERATIVO/INVENTARIO] Cierra la venta y descuenta stock oficial.
    */
   @Post(':id/complete')
-  async completeSale(@Param('id') id: number, @GetUser() user: any) {
+  async completeSale(
+    @Param('id') id: number,
+    @GetUser() user: AuthenticatedUser,
+  ) {
     const data = await this.salesService.completeSale(id, user.userId);
     return ApiResponse.ok(data, 'Venta completada correctamente');
   }
@@ -134,7 +165,7 @@ export class SalesController {
    * [GERENCIAL] Anula una venta completa (Devuelve stock y dinero).
    */
   @Post(':id/cancel')
-  async cancel(@Param('id') id: number, @GetUser() user: any) {
+  async cancel(@Param('id') id: number, @GetUser() user: AuthenticatedUser) {
     const data = await this.salesService.cancel(id, user.userId);
     return ApiResponse.ok(data, 'Venta cancelada correctamente');
   }
@@ -143,9 +174,16 @@ export class SalesController {
    * [GERENCIAL] Procesa devolución parcial o total.
    */
   @Post(':id/return')
-  async createReturn(@Param('id') id: number, @Body() returnSaleDto: ReturnSaleDto, @GetUser() user: any) {
-    const data = await this.salesService.createReturn(id, returnSaleDto, user.userId);
+  async createReturn(
+    @Param('id') id: number,
+    @Body() returnSaleDto: ReturnSaleDto,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    const data = await this.salesService.createReturn(
+      id,
+      returnSaleDto,
+      user.userId,
+    );
     return ApiResponse.ok(data, 'Devolución creada correctamente');
   }
-
 }

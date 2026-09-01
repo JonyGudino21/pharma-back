@@ -1,28 +1,28 @@
-import { IsString, IsEmail} from 'class-validator'
+import { IsString, IsEmail } from 'class-validator';
 
 export enum UserRole {
-	MANAGER = 'MANAGER',
-	ADMIN = 'ADMIN',
-	PHARMACIST = 'PHARMACIST',
-	CASHIER = 'CASHIER'
+  MANAGER = 'MANAGER',
+  ADMIN = 'ADMIN',
+  PHARMACIST = 'PHARMACIST',
+  CASHIER = 'CASHIER',
 }
 
 export class CreateUserDto {
-	@IsString()
-	firstName: string;
+  @IsString()
+  firstName: string;
 
-	@IsString()
-	lastName: string;
+  @IsString()
+  lastName: string;
 
-	@IsString()
-	userName: string;
+  @IsString()
+  userName: string;
 
-	@IsEmail()
-	email: string;
+  @IsEmail()
+  email: string;
 
-	@IsString()
-	password: string;
+  @IsString()
+  password: string;
 
-	@IsString()
-	role: UserRole;
+  @IsString()
+  role: UserRole;
 }

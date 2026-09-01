@@ -1,6 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { ConflictException, BadRequestException, NotFoundException } from '@nestjs/common';
-import { MovementType } from '@prisma/client';
+import {
+  ConflictException,
+  BadRequestException,
+  NotFoundException,
+} from '@nestjs/common';
+import { MovementType, Prisma } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { InventoryService } from './inventory.service';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -28,16 +32,42 @@ describe('InventoryService — mutación atómica de stock', () => {
   };
 
   const mockPrisma = {
-    $transaction: jest.fn((cb: any) => cb(tx)),
+    $transaction: jest.fn((cb: (client: typeof tx) => unknown) => cb(tx)),
     product: tx.product,
     inventoryMovement: tx.inventoryMovement,
   };
 
-  const producto = { id: 1, name: 'Paracetamol 500mg', stock: 10, cost: new Decimal(25) };
+  // El doble solo implementa los modelos que toca `registerMovement`. El cast
+  // declara esa intencion una vez, en lugar de repetir `as any` en cada llamada.
+  const txClient = tx as unknown as Prisma.TransactionClient;
+
+  /** Fila que `registerMovement` escribe en InventoryMovement. */
+  type MovementRow = {
+    quantity: number;
+    unitCost: Decimal;
+    totalCost: Decimal;
+  };
+
+  const movimientoRegistrado = (): MovementRow => {
+    const llamadas = tx.inventoryMovement.create.mock.calls as Array<
+      [{ data: MovementRow }]
+    >;
+    return llamadas[0][0].data;
+  };
+
+  const producto = {
+    id: 1,
+    name: 'Paracetamol 500mg',
+    stock: 10,
+    cost: new Decimal(25),
+  };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [InventoryService, { provide: PrismaService, useValue: mockPrisma }],
+      providers: [
+        InventoryService,
+        { provide: PrismaService, useValue: mockPrisma },
+      ],
     }).compile();
 
     service = module.get<InventoryService>(InventoryService);
@@ -46,17 +76,23 @@ describe('InventoryService — mutación atómica de stock', () => {
     tx.product.findUnique.mockResolvedValue(producto);
     tx.product.updateMany.mockResolvedValue({ count: 1 });
     tx.product.update.mockResolvedValue(producto);
-    tx.inventoryMovement.create.mockImplementation(({ data }: any) =>
-      Promise.resolve({ id: 1, ...data }),
+    tx.inventoryMovement.create.mockImplementation(
+      ({ data }: { data: Record<string, unknown> }) =>
+        Promise.resolve({ id: 1, ...data }),
     );
   });
 
   describe('salidas (SALE / RETURN_OUT / LOSS)', () => {
     it('descuenta con UPDATE condicional atómico (nunca read-modify-write)', async () => {
       await service.registerMovement(
-        { productId: 1, type: MovementType.SALE, quantity: 3, reason: 'Venta #1' },
+        {
+          productId: 1,
+          type: MovementType.SALE,
+          quantity: 3,
+          reason: 'Venta #1',
+        },
         99,
-        tx as any,
+        txClient,
       );
 
       // La guardia `stock >= cantidad` es lo que impide la sobreventa.
@@ -71,14 +107,19 @@ describe('InventoryService — mutación atómica de stock', () => {
     it('lanza ConflictException cuando la BD reporta 0 filas afectadas (sin stock)', async () => {
       tx.product.updateMany.mockResolvedValue({ count: 0 });
       tx.product.findUnique
-        .mockResolvedValueOnce(producto)      // lectura inicial
+        .mockResolvedValueOnce(producto) // lectura inicial
         .mockResolvedValueOnce({ stock: 1 }); // relectura para el mensaje
 
       await expect(
         service.registerMovement(
-          { productId: 1, type: MovementType.SALE, quantity: 5, reason: 'Venta #2' },
+          {
+            productId: 1,
+            type: MovementType.SALE,
+            quantity: 5,
+            reason: 'Venta #2',
+          },
           99,
-          tx as any,
+          txClient,
         ),
       ).rejects.toThrow(ConflictException);
 
@@ -88,12 +129,17 @@ describe('InventoryService — mutación atómica de stock', () => {
 
     it('registra el movimiento con cantidad negativa y valuado al costo vigente', async () => {
       await service.registerMovement(
-        { productId: 1, type: MovementType.SALE, quantity: 2, reason: 'Venta #3' },
+        {
+          productId: 1,
+          type: MovementType.SALE,
+          quantity: 2,
+          reason: 'Venta #3',
+        },
         99,
-        tx as any,
+        txClient,
       );
 
-      const arg = tx.inventoryMovement.create.mock.calls[0][0].data;
+      const arg = movimientoRegistrado();
       expect(arg.quantity).toBe(-2);
       expect(arg.unitCost.toString()).toBe('25');
       expect(arg.totalCost.toString()).toBe('50');
@@ -103,9 +149,14 @@ describe('InventoryService — mutación atómica de stock', () => {
   describe('entradas (PURCHASE / RETURN_IN / INITIAL)', () => {
     it('incrementa de forma atómica delegando a la BD', async () => {
       await service.registerMovement(
-        { productId: 1, type: MovementType.PURCHASE, quantity: 7, reason: 'Compra #1' },
+        {
+          productId: 1,
+          type: MovementType.PURCHASE,
+          quantity: 7,
+          reason: 'Compra #1',
+        },
         99,
-        tx as any,
+        txClient,
       );
 
       expect(tx.product.update).toHaveBeenCalledWith({
@@ -119,13 +170,18 @@ describe('InventoryService — mutación atómica de stock', () => {
   describe('valuación explícita (reversiones)', () => {
     it('respeta unitCostOverride en lugar del costo promedio vigente', async () => {
       await service.registerMovement(
-        { productId: 1, type: MovementType.RETURN_OUT, quantity: 4, reason: 'Cancelación compra' },
+        {
+          productId: 1,
+          type: MovementType.RETURN_OUT,
+          quantity: 4,
+          reason: 'Cancelación compra',
+        },
         99,
-        tx as any,
+        txClient,
         new Decimal(200), // costo REAL al que entró la mercancía
       );
 
-      const arg = tx.inventoryMovement.create.mock.calls[0][0].data;
+      const arg = movimientoRegistrado();
       expect(arg.unitCost.toString()).toBe('200'); // no 25
       expect(arg.totalCost.toString()).toBe('800');
     });
@@ -134,7 +190,12 @@ describe('InventoryService — mutación atómica de stock', () => {
   describe('garantías generales', () => {
     it('abre su propia transacción si el llamador no aporta una', async () => {
       await service.registerMovement(
-        { productId: 1, type: MovementType.SALE, quantity: 1, reason: 'Venta suelta' },
+        {
+          productId: 1,
+          type: MovementType.SALE,
+          quantity: 1,
+          reason: 'Venta suelta',
+        },
         99,
       );
       // Sin transacción, un fallo dejaría Kardex y stock desalineados.
@@ -144,9 +205,14 @@ describe('InventoryService — mutación atómica de stock', () => {
     it('rechaza un movimiento de cantidad 0', async () => {
       await expect(
         service.registerMovement(
-          { productId: 1, type: MovementType.ADJUSTMENT, quantity: 0, reason: 'Ajuste vacío' },
+          {
+            productId: 1,
+            type: MovementType.ADJUSTMENT,
+            quantity: 0,
+            reason: 'Ajuste vacío',
+          },
           99,
-          tx as any,
+          txClient,
         ),
       ).rejects.toThrow(BadRequestException);
     });
@@ -157,7 +223,7 @@ describe('InventoryService — mutación atómica de stock', () => {
         service.registerMovement(
           { productId: 404, type: MovementType.SALE, quantity: 1, reason: 'x' },
           99,
-          tx as any,
+          txClient,
         ),
       ).rejects.toThrow(NotFoundException);
     });

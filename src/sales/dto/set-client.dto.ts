@@ -5,7 +5,7 @@ import { IsInt, IsOptional, IsPositive, ValidateIf } from 'class-validator';
  * `clientId: null` = Público General (venta de contado sin cliente).
  */
 export class SetClientDto {
-  @ValidateIf((o) => o.clientId !== null)
+  @ValidateIf((o: SetClientDto) => o.clientId !== null)
   @IsInt()
   @IsPositive()
   @IsOptional()

@@ -1,9 +1,14 @@
-import { IsString, IsOptional, IsNumber, IsBoolean, IsPositive } from 'class-validator';
+import {
+  IsString,
+  IsOptional,
+  IsNumber,
+  IsBoolean,
+  IsPositive,
+} from 'class-validator';
 
 export class CreateProductDto {
-
   @IsString()
-  name: string
+  name: string;
 
   @IsString()
   @IsOptional()
@@ -11,11 +16,11 @@ export class CreateProductDto {
 
   @IsString()
   @IsOptional()
-  strength?: string;  // 500mg, 1000mg, etc.
+  strength?: string; // 500mg, 1000mg, etc.
 
   @IsString()
   @IsOptional()
-  format?: string;   //Tableta, capsula, etc.
+  format?: string; //Tableta, capsula, etc.
 
   @IsString()
   @IsOptional()

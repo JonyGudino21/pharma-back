@@ -1,5 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { PaymentService } from './payment.service';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -17,13 +22,30 @@ describe('PaymentService — aplicación de dinero a una venta', () => {
   let service: PaymentService;
 
   const tx = {
-    sale: { updateMany: jest.fn(), findUnique: jest.fn(), findUniqueOrThrow: jest.fn(), update: jest.fn() },
+    sale: {
+      updateMany: jest.fn(),
+      findUnique: jest.fn(),
+      findUniqueOrThrow: jest.fn(),
+      update: jest.fn(),
+    },
     salePayment: { create: jest.fn() },
     client: { update: jest.fn() },
   };
 
-  const mockPrisma = { $transaction: jest.fn((cb: any) => cb(tx)) };
+  const mockPrisma = {
+    $transaction: jest.fn((cb: (client: typeof tx) => unknown) => cb(tx)),
+  };
   const mockCashShift = { getCurrentShift: jest.fn() };
+
+  // El doble solo implementa los modelos que toca `applyToSale`. El cast declara
+  // esa intencion una vez, en lugar de repetir `as any` en cada llamada.
+  const txClient = tx as unknown as Prisma.TransactionClient;
+
+  // @types/jest declara los matchers asimetricos como `any`. Acotarlos a
+  // `unknown` mantiene la comprobacion de tipos en el resto de la asercion.
+  const cualquierValor = (): unknown => expect.anything();
+  const conteniendo = (forma: Record<string, unknown>): unknown =>
+    expect.objectContaining(forma);
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -39,34 +61,51 @@ describe('PaymentService — aplicación de dinero a una venta', () => {
 
     tx.sale.updateMany.mockResolvedValue({ count: 1 });
     tx.sale.findUniqueOrThrow.mockResolvedValue({
-      id: 1, clientId: null, balance: new Decimal(0), flowStatus: 'COMPLETED',
+      id: 1,
+      clientId: null,
+      balance: new Decimal(0),
+      flowStatus: 'COMPLETED',
     });
-    tx.salePayment.create.mockImplementation(({ data }: any) => Promise.resolve({ id: 77, ...data }));
+    tx.salePayment.create.mockImplementation(
+      ({ data }: { data: Record<string, unknown> }) =>
+        Promise.resolve({ id: 77, ...data }),
+    );
     tx.client.update.mockResolvedValue({ currentDebt: new Decimal(0) });
   });
 
   describe('prevención de sobrepago', () => {
     it('aplica el dinero con una sentencia atómica guardada por el saldo', async () => {
-      await service.applyToSale(tx as any, { saleId: 1, amount: 100, method: 'CASH' });
+      await service.applyToSale(txClient, {
+        saleId: 1,
+        amount: 100,
+        method: 'CASH',
+      });
 
       expect(tx.sale.updateMany).toHaveBeenCalledWith({
-        where: expect.objectContaining({
+        where: conteniendo({
           id: 1,
-          balance: { gte: expect.anything() },
+          balance: { gte: cualquierValor() },
         }),
         data: {
-          paidAmount: { increment: expect.anything() },
-          balance: { decrement: expect.anything() },
+          paidAmount: { increment: cualquierValor() },
+          balance: { decrement: cualquierValor() },
         },
       });
     });
 
     it('rechaza el pago cuando excede el saldo (0 filas afectadas)', async () => {
       tx.sale.updateMany.mockResolvedValue({ count: 0 });
-      tx.sale.findUnique.mockResolvedValue({ balance: new Decimal(30), status: 'PARTIAL' });
+      tx.sale.findUnique.mockResolvedValue({
+        balance: new Decimal(30),
+        status: 'PARTIAL',
+      });
 
       await expect(
-        service.applyToSale(tx as any, { saleId: 1, amount: 50, method: 'CASH' }),
+        service.applyToSale(txClient, {
+          saleId: 1,
+          amount: 50,
+          method: 'CASH',
+        }),
       ).rejects.toThrow(BadRequestException);
 
       // Sin cobro válido no debe quedar asiento de pago.
@@ -75,10 +114,17 @@ describe('PaymentService — aplicación de dinero a una venta', () => {
 
     it('rechaza cobrar una venta cancelada', async () => {
       tx.sale.updateMany.mockResolvedValue({ count: 0 });
-      tx.sale.findUnique.mockResolvedValue({ balance: new Decimal(100), status: 'CANCELLED' });
+      tx.sale.findUnique.mockResolvedValue({
+        balance: new Decimal(100),
+        status: 'CANCELLED',
+      });
 
       await expect(
-        service.applyToSale(tx as any, { saleId: 1, amount: 10, method: 'CASH' }),
+        service.applyToSale(txClient, {
+          saleId: 1,
+          amount: 10,
+          method: 'CASH',
+        }),
       ).rejects.toThrow(BadRequestException);
     });
 
@@ -87,16 +133,28 @@ describe('PaymentService — aplicación de dinero a una venta', () => {
       tx.sale.findUnique.mockResolvedValue(null);
 
       await expect(
-        service.applyToSale(tx as any, { saleId: 999, amount: 10, method: 'CASH' }),
+        service.applyToSale(txClient, {
+          saleId: 999,
+          amount: 10,
+          method: 'CASH',
+        }),
       ).rejects.toThrow(NotFoundException);
     });
 
     it('rechaza montos cero o negativos', async () => {
       await expect(
-        service.applyToSale(tx as any, { saleId: 1, amount: 0, method: 'CASH' }),
+        service.applyToSale(txClient, {
+          saleId: 1,
+          amount: 0,
+          method: 'CASH',
+        }),
       ).rejects.toThrow(BadRequestException);
       await expect(
-        service.applyToSale(tx as any, { saleId: 1, amount: -5, method: 'CASH' }),
+        service.applyToSale(txClient, {
+          saleId: 1,
+          amount: -5,
+          method: 'CASH',
+        }),
       ).rejects.toThrow(BadRequestException);
       expect(tx.sale.updateMany).not.toHaveBeenCalled();
     });
@@ -105,16 +163,23 @@ describe('PaymentService — aplicación de dinero a una venta', () => {
   describe('sincronización de la deuda del cliente', () => {
     it('descuenta la deuda cuando la venta YA está cerrada', async () => {
       tx.sale.findUniqueOrThrow.mockResolvedValue({
-        id: 1, clientId: 7, balance: new Decimal(200), flowStatus: 'COMPLETED',
+        id: 1,
+        clientId: 7,
+        balance: new Decimal(200),
+        flowStatus: 'COMPLETED',
       });
       tx.client.update.mockResolvedValue({ currentDebt: new Decimal(200) });
 
-      const res = await service.applyToSale(tx as any, { saleId: 1, amount: 300, method: 'CASH' });
+      const res = await service.applyToSale(txClient, {
+        saleId: 1,
+        amount: 300,
+        method: 'CASH',
+      });
 
       expect(tx.client.update).toHaveBeenCalledWith(
-        expect.objectContaining({
+        conteniendo({
           where: { id: 7 },
-          data: { currentDebt: { decrement: expect.anything() } },
+          data: { currentDebt: { decrement: cualquierValor() } },
         }),
       );
       expect(res.clientDebtDecremented.toString()).toBe('300');
@@ -122,10 +187,17 @@ describe('PaymentService — aplicación de dinero a una venta', () => {
 
     it('NO toca la deuda si la venta sigue en borrador (POS)', async () => {
       tx.sale.findUniqueOrThrow.mockResolvedValue({
-        id: 1, clientId: 7, balance: new Decimal(200), flowStatus: 'DRAFT',
+        id: 1,
+        clientId: 7,
+        balance: new Decimal(200),
+        flowStatus: 'DRAFT',
       });
 
-      const res = await service.applyToSale(tx as any, { saleId: 1, amount: 100, method: 'CASH' });
+      const res = await service.applyToSale(txClient, {
+        saleId: 1,
+        amount: 100,
+        method: 'CASH',
+      });
 
       // La deuda todavía no existe: la crea completeSale con el saldo final.
       expect(tx.client.update).not.toHaveBeenCalled();
@@ -134,21 +206,35 @@ describe('PaymentService — aplicación de dinero a una venta', () => {
 
     it('NO toca la deuda en ventas sin cliente (público general)', async () => {
       tx.sale.findUniqueOrThrow.mockResolvedValue({
-        id: 1, clientId: null, balance: new Decimal(0), flowStatus: 'COMPLETED',
+        id: 1,
+        clientId: null,
+        balance: new Decimal(0),
+        flowStatus: 'COMPLETED',
       });
 
-      await service.applyToSale(tx as any, { saleId: 1, amount: 100, method: 'CASH' });
+      await service.applyToSale(txClient, {
+        saleId: 1,
+        amount: 100,
+        method: 'CASH',
+      });
       expect(tx.client.update).not.toHaveBeenCalled();
     });
 
     it('corrige a 0 una deuda que quedaría negativa y reporta lo realmente aplicado', async () => {
       tx.sale.findUniqueOrThrow.mockResolvedValue({
-        id: 1, clientId: 7, balance: new Decimal(0), flowStatus: 'COMPLETED',
+        id: 1,
+        clientId: 7,
+        balance: new Decimal(0),
+        flowStatus: 'COMPLETED',
       });
       // Cartera desincronizada: debía 80 pero se aplican 100
       tx.client.update.mockResolvedValueOnce({ currentDebt: new Decimal(-20) });
 
-      const res = await service.applyToSale(tx as any, { saleId: 1, amount: 100, method: 'CASH' });
+      const res = await service.applyToSale(txClient, {
+        saleId: 1,
+        amount: 100,
+        method: 'CASH',
+      });
 
       expect(tx.client.update).toHaveBeenCalledTimes(2); // decremento + corrección a 0
       expect(res.clientDebtDecremented.toString()).toBe('80');
@@ -158,10 +244,17 @@ describe('PaymentService — aplicación de dinero a una venta', () => {
   describe('estados de la venta', () => {
     it('marca COMPLETED/PAID cuando el saldo llega a cero', async () => {
       tx.sale.findUniqueOrThrow.mockResolvedValue({
-        id: 1, clientId: null, balance: new Decimal(0), flowStatus: 'COMPLETED',
+        id: 1,
+        clientId: null,
+        balance: new Decimal(0),
+        flowStatus: 'COMPLETED',
       });
 
-      const res = await service.applyToSale(tx as any, { saleId: 1, amount: 100, method: 'CARD' });
+      const res = await service.applyToSale(txClient, {
+        saleId: 1,
+        amount: 100,
+        method: 'CARD',
+      });
 
       expect(res.isFullyPaid).toBe(true);
       expect(tx.sale.update).toHaveBeenCalledWith({
@@ -172,10 +265,17 @@ describe('PaymentService — aplicación de dinero a una venta', () => {
 
     it('marca PARTIAL cuando queda saldo', async () => {
       tx.sale.findUniqueOrThrow.mockResolvedValue({
-        id: 1, clientId: null, balance: new Decimal(50), flowStatus: 'COMPLETED',
+        id: 1,
+        clientId: null,
+        balance: new Decimal(50),
+        flowStatus: 'COMPLETED',
       });
 
-      const res = await service.applyToSale(tx as any, { saleId: 1, amount: 50, method: 'TRANSFER' });
+      const res = await service.applyToSale(txClient, {
+        saleId: 1,
+        amount: 50,
+        method: 'TRANSFER',
+      });
 
       expect(res.isFullyPaid).toBe(false);
       expect(tx.sale.update).toHaveBeenCalledWith({
@@ -185,12 +285,21 @@ describe('PaymentService — aplicación de dinero a una venta', () => {
     });
 
     it('deja trazabilidad de la caja en el asiento del pago', async () => {
-      await service.applyToSale(tx as any, {
-        saleId: 1, amount: 100, method: 'CASH', cashShiftId: 42, references: 'ticket-9',
+      await service.applyToSale(txClient, {
+        saleId: 1,
+        amount: 100,
+        method: 'CASH',
+        cashShiftId: 42,
+        references: 'ticket-9',
       });
 
       expect(tx.salePayment.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({ saleId: 1, method: 'CASH', cashShiftId: 42, references: 'ticket-9' }),
+        data: conteniendo({
+          saleId: 1,
+          method: 'CASH',
+          cashShiftId: 42,
+          references: 'ticket-9',
+        }),
       });
     });
   });
@@ -198,7 +307,9 @@ describe('PaymentService — aplicación de dinero a una venta', () => {
   describe('resolución de caja', () => {
     it('exige turno abierto para efectivo', async () => {
       mockCashShift.getCurrentShift.mockResolvedValue(null);
-      await expect(service.resolveCashShiftId('CASH', 99)).rejects.toThrow(ConflictException);
+      await expect(service.resolveCashShiftId('CASH', 99)).rejects.toThrow(
+        ConflictException,
+      );
     });
 
     it('devuelve el id del turno abierto para efectivo', async () => {
@@ -208,7 +319,9 @@ describe('PaymentService — aplicación de dinero a una venta', () => {
 
     it('no exige caja para tarjeta ni transferencia', async () => {
       await expect(service.resolveCashShiftId('CARD', 99)).resolves.toBeNull();
-      await expect(service.resolveCashShiftId('TRANSFER', 99)).resolves.toBeNull();
+      await expect(
+        service.resolveCashShiftId('TRANSFER', 99),
+      ).resolves.toBeNull();
       expect(mockCashShift.getCurrentShift).not.toHaveBeenCalled();
     });
   });

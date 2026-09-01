@@ -1,10 +1,22 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, Query } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Patch,
+  Param,
+  Delete,
+  Query,
+} from '@nestjs/common';
 import { ClientService } from './client.service';
 import { CreateClientDto } from './dto/create-client.dto';
 import { UpdateClientDto } from './dto/update-client.dto';
 import { ApiResponse } from 'src/common/dto/response.dto';
 import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
-import { PaginationWithActiveQueryDto, parseQueryActiveFilter } from 'src/common/dto/pagination-with-active-query.dto';
+import {
+  PaginationWithActiveQueryDto,
+  parseQueryActiveFilter,
+} from 'src/common/dto/pagination-with-active-query.dto';
 import { AccountStatementQueryDto } from './dto/account-statement-query.dto';
 import { UpdateCreditConfigDto } from './dto/credit-config.dto';
 import { GetUser } from 'src/common/decorators/get-user.decorator';
@@ -15,6 +27,7 @@ import { Roles } from 'src/common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
 import { UseGuards } from '@nestjs/common';
 import { SearchClientDto } from './dto/search.dto';
+import type { AuthenticatedUser } from 'src/auth/types/authenticated-user.type';
 
 @Controller('client')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -48,7 +61,12 @@ export class ClientController {
   @Get('search')
   async search(@Query() query: SearchClientDto) {
     const { name, email, phone, pagination } = query;
-    const res = await this.clientService.findClient(name, email, phone, pagination);
+    const res = await this.clientService.findClient(
+      name,
+      email,
+      phone,
+      pagination,
+    );
     return ApiResponse.ok(res, 'Clientes encontrados exitosamente');
   }
 
@@ -91,7 +109,10 @@ export class ClientController {
    */
   @Patch(':id/credit-config')
   @Roles(UserRole.MANAGER)
-  async updateCreditConfiguration(@Param('id') id: number, @Body() dto: UpdateCreditConfigDto) {
+  async updateCreditConfiguration(
+    @Param('id') id: number,
+    @Body() dto: UpdateCreditConfigDto,
+  ) {
     const res = await this.clientService.updateCreditConfiguration(id, dto);
     return ApiResponse.ok(res, 'Configuración de crédito actualizada');
   }
@@ -102,20 +123,23 @@ export class ClientController {
    */
   @Post(':id/payment')
   async registerPayment(
-    @Param('id') id: number, 
+    @Param('id') id: number,
     @Body() dto: RegisterClientPaymentDto,
-    @GetUser() user: any
+    @GetUser() user: AuthenticatedUser,
   ) {
     const res = await this.clientService.registerPayment(id, dto, user.userId);
     return ApiResponse.ok(res, 'Abono registrado correctamente');
   }
-  
+
   /**
    * [CRM] Actualiza datos generales del cliente.
    */
   @Patch(':id')
   @Roles(UserRole.MANAGER)
-  async update(@Param('id') id: number, @Body() updateClientDto: UpdateClientDto) {
+  async update(
+    @Param('id') id: number,
+    @Body() updateClientDto: UpdateClientDto,
+  ) {
     const res = await this.clientService.update(id, updateClientDto);
     return ApiResponse.ok(res, 'Client updated successfully');
   }
@@ -129,5 +153,4 @@ export class ClientController {
     const res = await this.clientService.remove(id);
     return ApiResponse.ok(res, 'Client removed successfully');
   }
-  
 }

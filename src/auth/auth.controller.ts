@@ -1,15 +1,14 @@
-import { Controller, Get, Post, Body, Delete, UseGuards, Req } from '@nestjs/common';
+import { Controller, Get, Post, Body, UseGuards, Req } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { LogoutDto } from './dto/logout.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
-import { RolesGuard } from 'src/common/guards/roles.guard';
-import { Roles } from 'src/common/decorators/roles.decorator';
-import { UserRole } from '@prisma/client';
 import type { Request } from 'express';
 import { ApiResponse } from 'src/common/dto/response.dto';
 import { GetUser } from 'src/common/decorators/get-user.decorator';
+import type { AuthenticatedUser } from 'src/auth/types/authenticated-user.type';
 
 @Controller('auth')
 export class AuthController {
@@ -20,8 +19,12 @@ export class AuthController {
    * Público: No requiere token.
    * @param data Credenciales (email, password)
    */
+  // Limite estricto y propio: 5 intentos por minuto y por IP. El limite global
+  // (cientos de peticiones) es adecuado para el POS pero inutil contra fuerza
+  // bruta, donde bastan unos pocos miles de intentos para probar un diccionario.
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('login')
-  async login(@Body() data: LoginDto, @Req() req : Request){
+  async login(@Body() data: LoginDto, @Req() req: Request) {
     const ua = req.get('user-agent');
     const ip = req.ip;
     const res = await this.authService.login(data, ip, ua);
@@ -33,9 +36,16 @@ export class AuthController {
    * Público: Se usa cuando el JWT expira.
    * @param data Refresh token actual
    */
+  // Mas holgado que el login (una sesion legitima renueva cada ~15 min) pero
+  // acotado: este endpoint entrega tokens y no debe poder sondearse en bucle.
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
   @Post('refresh')
-  async refresh(@Body() data: RefreshTokenDto, @Req() req : Request){
-    const res = await this.authService.refresh(data.refreshToken, req.ip, req.get('user-agent'));
+  async refresh(@Body() data: RefreshTokenDto, @Req() req: Request) {
+    const res = await this.authService.refresh(
+      data.refreshToken,
+      req.ip,
+      req.get('user-agent'),
+    );
     return ApiResponse.ok(res, 'Token actualizado exitosamente');
   }
 
@@ -44,8 +54,12 @@ export class AuthController {
    * Público/Opcional Privado: No necesita estrictamente JWT, solo revoca el token enviado.
    */
   @Post('logout')
-  async logout(@Body() data: LogoutDto, @Req() req: Request){
-    const res = await this.authService.logout(data.refreshToken, req.ip, req.get('user-agent'));
+  async logout(@Body() data: LogoutDto, @Req() req: Request) {
+    const res = await this.authService.logout(
+      data.refreshToken,
+      req.ip,
+      req.get('user-agent'),
+    );
     return ApiResponse.ok(res, 'Cierre de sesión exitoso');
   }
 
@@ -55,12 +69,13 @@ export class AuthController {
    */
   @UseGuards(JwtAuthGuard)
   @Post('logout-all')
-  async logoutAll(@GetUser() user: any, @Req() req: Request){
+  async logoutAll(@GetUser() user: AuthenticatedUser, @Req() req: Request) {
     const res = await this.authService.logoutAll(
       user.userId,
       req.ip,
-      req.get('user-agent')
-    )
+      req.get('user-agent'),
+    );
+    return ApiResponse.ok(res, 'Todas las sesiones fueron cerradas');
   }
 
   /**
@@ -69,15 +84,18 @@ export class AuthController {
    */
   @UseGuards(JwtAuthGuard)
   @Get('me')
-  async me(@GetUser() user: any){
+  me(@GetUser() user: AuthenticatedUser) {
     // 1. Obtener la configuración de permisos del usuario (Nuevo método en el servicio)
     const permissions = this.authService.getUserPermissions(user.role);
-    
+
     // 2. Retornar el usuario + sus permisos
-    return ApiResponse.ok({
-      user,
-      permissions
-    }, 'Usuario encontrado exitosamente');
+    return ApiResponse.ok(
+      {
+        user,
+        permissions,
+      },
+      'Usuario encontrado exitosamente',
+    );
   }
 
   // === EJEMPLO DE USO DE ROLES ===
@@ -87,5 +105,4 @@ export class AuthController {
   // async testRoles() {
   //   return "Si ves esto, eres Manager o Admin";
   // }
-  
 }

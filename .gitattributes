@@ -1,0 +1,14 @@
+# Normaliza los finales de linea: en el repositorio siempre se guarda LF.
+# Sin esto, cada maquina Windows reintroduce CRLF y Prettier marca el archivo
+# entero como error, ahogando los avisos reales en miles de falsos positivos.
+* text=auto eol=lf
+
+# Binarios: nunca tocar.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.docx binary
+*.xlsx binary

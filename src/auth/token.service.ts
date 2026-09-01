@@ -1,6 +1,5 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { TokenType } from '@prisma/client';
 
 @Injectable()
 export class TokenService {
@@ -11,13 +10,13 @@ export class TokenService {
    * @param params parametros para crear el refresh token
    * @returns el refresh token creado
    */
-  async createRefreshToken( params: {
-    userId: number,
-    token: string,
-    expiresAt: Date,
-    ipAddress?: string,
-    userAgent?: string,
-  }){
+  async createRefreshToken(params: {
+    userId: number;
+    token: string;
+    expiresAt: Date;
+    ipAddress?: string;
+    userAgent?: string;
+  }) {
     return await this.prisma.userToken.create({
       data: {
         userId: params.userId,
@@ -25,8 +24,8 @@ export class TokenService {
         ipAddress: params.ipAddress,
         userAgent: params.userAgent,
         expiresAt: params.expiresAt,
-      }
-    })
+      },
+    });
   }
 
   /**
@@ -36,40 +35,49 @@ export class TokenService {
    * @param expiresAt la fecha de expiracion del nuevo token
    * @param ipAddress la diereccion IP del usuario
    * @param ua la cadena de agente de usuario
-   * @returns 
+   * @returns
    */
-  async rotateRefreshToken(oldToken: string, newToken: string, expiresAt: Date, ipAddress?: string, ua?: string){
+  async rotateRefreshToken(
+    oldToken: string,
+    newToken: string,
+    expiresAt: Date,
+    ipAddress?: string,
+    ua?: string,
+  ) {
     const existing = await this.prisma.userToken.findUnique({
-      where: { token: oldToken}
-    })
-    if(!existing) throw new UnauthorizedException('Token no encontrado');
+      where: { token: oldToken },
+    });
+    if (!existing) throw new UnauthorizedException('Token no encontrado');
 
     // actualizar el token existente
     return await this.prisma.userToken.update({
-      where: { 
-        id: existing.id
+      where: {
+        id: existing.id,
       },
       data: {
         token: newToken,
         lastUsedAt: new Date(),
         expiresAt,
         ipAddress,
-        userAgent: ua
-      }
+        userAgent: ua,
+      },
     });
   }
 
   /**
    * Busca y valida un refresh token
    * @param token el refresh token a validar
-   * @returns la informacion del token si existe o null si no 
+   * @returns la informacion del token si existe o null si no
    */
   async findValidateRefreshToken(token: string) {
-    const tokenData = await this.prisma.userToken.findUnique({ where: { token } });
+    const tokenData = await this.prisma.userToken.findUnique({
+      where: { token },
+    });
     if (!tokenData) throw new UnauthorizedException('Token no encontrado');
 
     // Validar si el token ha expirado
-    if (tokenData.expiresAt < new Date()) throw new UnauthorizedException('Token expirado');
+    if (tokenData.expiresAt < new Date())
+      throw new UnauthorizedException('Token expirado');
 
     return tokenData;
   }
@@ -79,12 +87,14 @@ export class TokenService {
    * @param token el token a revocar
    * @param ip la direccion IP del usuario
    * @param ua la cadena de agente de usuario
-   * @returns 
+   * @returns
    */
   async revokeRefreshToken(token: string, ip?: string, ua?: string) {
     // Validar si el token existe
-    const tokenData = await this.prisma.userToken.findUnique({ where: { token } });
-    if(!tokenData) throw new UnauthorizedException('Token no encontrado');
+    const tokenData = await this.prisma.userToken.findUnique({
+      where: { token },
+    });
+    if (!tokenData) throw new UnauthorizedException('Token no encontrado');
 
     return await this.prisma.userToken.update({
       where: { id: tokenData.id },
@@ -92,9 +102,9 @@ export class TokenService {
         revoked: true,
         revokedAt: new Date(),
         ipAddress: ip,
-        userAgent: ua
-      }
-    })
+        userAgent: ua,
+      },
+    });
   }
 
   /**
@@ -111,18 +121,18 @@ export class TokenService {
         revoked: true,
         revokedAt: new Date(),
         ipAddress: ip,
-        userAgent: ua
-      }
-    })
+        userAgent: ua,
+      },
+    });
   }
 
   /**
    * Elimina los token expirados de la base de datos
    * @returns el numero de tokens eliminados
    */
-  async deleteExpired(){
+  async deleteExpired() {
     return await this.prisma.userToken.deleteMany({
-      where: { expiresAt: { lt: new Date() } }
-    })
+      where: { expiresAt: { lt: new Date() } },
+    });
   }
 }
