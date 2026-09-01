@@ -1,5 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { ConflictException, BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  BadRequestException,
+  NotFoundException,
+} from '@nestjs/common';
 import { Decimal } from '@prisma/client/runtime/library';
 import { SalesService } from './sales.service';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -30,10 +34,22 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
     clientProductPriceHistory: { create: jest.fn(), updateMany: jest.fn() },
   };
 
-  const mockPrisma = { $transaction: jest.fn((cb: any) => cb(tx)) };
-  const mockInventory = { registerMovement: jest.fn(), lockProductRow: jest.fn() };
+  const mockPrisma = {
+    $transaction: jest.fn((cb: (client: typeof tx) => unknown) => cb(tx)),
+  };
+
+  /** Cliente embebido en la venta, tal como lo devuelve el `include` de Prisma. */
+  type ClienteDeVenta = { id: number; name: string; hasCredit: boolean };
+  const mockInventory = {
+    registerMovement: jest.fn(),
+    lockProductRow: jest.fn(),
+  };
   const mockCashShift = { getCurrentShift: jest.fn() };
-  const mockPayment = { applyToSale: jest.fn(), decreaseClientDebt: jest.fn(), resolveCashShiftId: jest.fn() };
+  const mockPayment = {
+    applyToSale: jest.fn(),
+    decreaseClientDebt: jest.fn(),
+    resolveCashShiftId: jest.fn(),
+  };
 
   const ventaBase = {
     id: 10,
@@ -44,10 +60,22 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
     note: null,
     status: 'PENDING',
     flowStatus: 'DRAFT',
-    client: null as any,
+    client: null as ClienteDeVenta | null,
     items: [
-      { id: 2, productId: 55, quantity: 1, price: new Decimal(100), costAtSale: new Decimal(50) },
-      { id: 1, productId: 11, quantity: 2, price: new Decimal(100), costAtSale: new Decimal(40) },
+      {
+        id: 2,
+        productId: 55,
+        quantity: 1,
+        price: new Decimal(100),
+        costAtSale: new Decimal(50),
+      },
+      {
+        id: 1,
+        productId: 11,
+        quantity: 2,
+        price: new Decimal(100),
+        costAtSale: new Decimal(40),
+      },
     ],
   };
 
@@ -65,11 +93,16 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
     service = module.get<SalesService>(SalesService);
     jest.clearAllMocks();
 
-    tx.sale.updateMany.mockResolvedValue({ count: 1 });   // claim exitoso por defecto
+    tx.sale.updateMany.mockResolvedValue({ count: 1 }); // claim exitoso por defecto
     tx.sale.findUnique.mockResolvedValue(ventaBase);
-    tx.sale.update.mockImplementation(({ data }: any) => Promise.resolve({ ...ventaBase, ...data }));
+    tx.sale.update.mockImplementation(
+      ({ data }: { data: Record<string, unknown> }) =>
+        Promise.resolve({ ...ventaBase, ...data }),
+    );
     tx.saleItem.findMany.mockResolvedValue([]);
-    mockInventory.registerMovement.mockResolvedValue({ totalCost: new Decimal(60) });
+    mockInventory.registerMovement.mockResolvedValue({
+      totalCost: new Decimal(60),
+    });
   });
 
   describe('claim atómico del cierre', () => {
@@ -83,10 +116,12 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
     });
 
     it('rechaza con ConflictException si otra operación ya cerró la venta', async () => {
-      tx.sale.updateMany.mockResolvedValue({ count: 0 });          // no pudimos reclamarla
+      tx.sale.updateMany.mockResolvedValue({ count: 0 }); // no pudimos reclamarla
       tx.sale.findUnique.mockResolvedValue({ flowStatus: 'COMPLETED' });
 
-      await expect(service.completeSale(10, 99)).rejects.toThrow(ConflictException);
+      await expect(service.completeSale(10, 99)).rejects.toThrow(
+        ConflictException,
+      );
       // Lo crítico: no se descontó stock por segunda vez.
       expect(mockInventory.registerMovement).not.toHaveBeenCalled();
     });
@@ -95,7 +130,9 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
       tx.sale.updateMany.mockResolvedValue({ count: 0 });
       tx.sale.findUnique.mockResolvedValue({ flowStatus: 'CANCELLED' });
 
-      await expect(service.completeSale(10, 99)).rejects.toThrow(ConflictException);
+      await expect(service.completeSale(10, 99)).rejects.toThrow(
+        ConflictException,
+      );
       expect(mockInventory.registerMovement).not.toHaveBeenCalled();
     });
 
@@ -103,12 +140,16 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
       tx.sale.updateMany.mockResolvedValue({ count: 0 });
       tx.sale.findUnique.mockResolvedValue(null);
 
-      await expect(service.completeSale(10, 99)).rejects.toThrow(NotFoundException);
+      await expect(service.completeSale(10, 99)).rejects.toThrow(
+        NotFoundException,
+      );
     });
 
     it('rechaza una venta sin productos', async () => {
       tx.sale.findUnique.mockResolvedValue({ ...ventaBase, items: [] });
-      await expect(service.completeSale(10, 99)).rejects.toThrow(BadRequestException);
+      await expect(service.completeSale(10, 99)).rejects.toThrow(
+        BadRequestException,
+      );
     });
   });
 
@@ -117,9 +158,10 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
       // Los items llegan desordenados (55 antes que 11) a propósito.
       await service.completeSale(10, 99);
 
-      const productIds = mockInventory.registerMovement.mock.calls.map(
-        (c: any[]) => c[0].productId,
-      );
+      const llamadas = mockInventory.registerMovement.mock.calls as Array<
+        [{ productId: number }]
+      >;
+      const productIds = llamadas.map((c) => c[0].productId);
       expect(productIds).toEqual([11, 55]); // ordenado, no [55, 11]
     });
   });
@@ -160,14 +202,22 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
         creditLimit: new Decimal(1000),
       });
 
-      await expect(service.completeSale(10, 99)).rejects.toThrow(BadRequestException);
+      await expect(service.completeSale(10, 99)).rejects.toThrow(
+        BadRequestException,
+      );
       // El rollback de la transacción deshace el incremento; no se toca inventario.
       expect(mockInventory.registerMovement).not.toHaveBeenCalled();
     });
 
     it('rechaza saldo pendiente sin cliente asignado', async () => {
-      tx.sale.findUnique.mockResolvedValue({ ...ventaCredito, client: null, clientId: null });
-      await expect(service.completeSale(10, 99)).rejects.toThrow(BadRequestException);
+      tx.sale.findUnique.mockResolvedValue({
+        ...ventaCredito,
+        client: null,
+        clientId: null,
+      });
+      await expect(service.completeSale(10, 99)).rejects.toThrow(
+        BadRequestException,
+      );
     });
 
     it('rechaza saldo pendiente de un cliente sin crédito', async () => {
@@ -175,13 +225,18 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
         ...ventaCredito,
         client: { id: 7, name: 'Contado', hasCredit: false },
       });
-      await expect(service.completeSale(10, 99)).rejects.toThrow(BadRequestException);
+      await expect(service.completeSale(10, 99)).rejects.toThrow(
+        BadRequestException,
+      );
     });
   });
 
   describe('cancelación de venta', () => {
     it('reclama la cancelación de forma atómica', async () => {
-      tx.sale.findUnique.mockResolvedValue({ ...ventaBase, paidAmount: new Decimal(0) });
+      tx.sale.findUnique.mockResolvedValue({
+        ...ventaBase,
+        paidAmount: new Decimal(0),
+      });
       await service.cancel(10, 99);
 
       expect(tx.sale.updateMany).toHaveBeenCalledWith({

@@ -17,6 +17,7 @@
  *   4. El costo promedio se restaura al cancelar una compra recibida.
  */
 import { Test, TestingModule } from '@nestjs/testing';
+import { PaymentMethod } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { PrismaService } from '../prisma/prisma.service';
 import { SalesService } from '../src/sales/sales.service';
@@ -35,11 +36,24 @@ describe('Concurrencia de inventario y ventas (integración)', () => {
 
   let userId: number;
   let cashShiftId: number;
-  const creados = { products: [] as number[], sales: [] as number[], clients: [] as number[], suppliers: [] as number[], purchases: [] as number[] };
+  const creados = {
+    products: [] as number[],
+    sales: [] as number[],
+    clients: [] as number[],
+    suppliers: [] as number[],
+    purchases: [] as number[],
+  };
 
   beforeAll(async () => {
     moduleRef = await Test.createTestingModule({
-      providers: [PrismaService, SalesService, PurchaseService, InventoryService, CashShiftService, PaymentService],
+      providers: [
+        PrismaService,
+        SalesService,
+        PurchaseService,
+        InventoryService,
+        CashShiftService,
+        PaymentService,
+      ],
     }).compile();
 
     prisma = moduleRef.get(PrismaService);
@@ -72,20 +86,42 @@ describe('Concurrencia de inventario y ventas (integración)', () => {
     // Limpieza respetando las llaves foráneas. El orden importa: primero las tablas
     // hijas, después las padres. Sale referencia a CashShift, así que el turno se
     // borra al final.
-    await prisma.inventoryMovement.deleteMany({ where: { productId: { in: creados.products } } });
-    await prisma.saleItem.deleteMany({ where: { saleId: { in: creados.sales } } });
-    await prisma.salePayment.deleteMany({ where: { saleId: { in: creados.sales } } });
+    await prisma.inventoryMovement.deleteMany({
+      where: { productId: { in: creados.products } },
+    });
+    await prisma.saleItem.deleteMany({
+      where: { saleId: { in: creados.sales } },
+    });
+    await prisma.salePayment.deleteMany({
+      where: { saleId: { in: creados.sales } },
+    });
     await prisma.sale.deleteMany({ where: { id: { in: creados.sales } } });
-    await prisma.purchaseItem.deleteMany({ where: { purchaseId: { in: creados.purchases } } });
-    await prisma.purchase.deleteMany({ where: { id: { in: creados.purchases } } });
-    await prisma.productPriceHistory.deleteMany({ where: { productId: { in: creados.products } } });
+    await prisma.purchaseItem.deleteMany({
+      where: { purchaseId: { in: creados.purchases } },
+    });
+    await prisma.purchase.deleteMany({
+      where: { id: { in: creados.purchases } },
+    });
+    await prisma.productPriceHistory.deleteMany({
+      where: { productId: { in: creados.products } },
+    });
     // Asignar un cliente a una venta genera precio especial e historial para ese cliente.
-    await prisma.clientProductPriceHistory.deleteMany({ where: { productId: { in: creados.products } } });
-    await prisma.clientProductPrice.deleteMany({ where: { productId: { in: creados.products } } });
-    await prisma.product.deleteMany({ where: { id: { in: creados.products } } });
+    await prisma.clientProductPriceHistory.deleteMany({
+      where: { productId: { in: creados.products } },
+    });
+    await prisma.clientProductPrice.deleteMany({
+      where: { productId: { in: creados.products } },
+    });
+    await prisma.product.deleteMany({
+      where: { id: { in: creados.products } },
+    });
     await prisma.client.deleteMany({ where: { id: { in: creados.clients } } });
-    await prisma.supplier.deleteMany({ where: { id: { in: creados.suppliers } } });
-    await prisma.cashTransaction.deleteMany({ where: { shiftId: cashShiftId } });
+    await prisma.supplier.deleteMany({
+      where: { id: { in: creados.suppliers } },
+    });
+    await prisma.cashTransaction.deleteMany({
+      where: { shiftId: cashShiftId },
+    });
     await prisma.cashShift.delete({ where: { id: cashShiftId } });
     await prisma.user.delete({ where: { id: userId } });
     await moduleRef.close();
@@ -114,7 +150,10 @@ describe('Concurrencia de inventario y ventas (integración)', () => {
     // 12 ventas en borrador, cada una de 1 unidad
     const borradores = await Promise.all(
       Array.from({ length: 12 }, () =>
-        sales.create({ items: [{ productId: producto.id, quantity: 1 }] }, userId),
+        sales.create(
+          { items: [{ productId: producto.id, quantity: 1 }] },
+          userId,
+        ),
       ),
     );
     borradores.forEach((s) => creados.sales.push(s.id));
@@ -122,26 +161,35 @@ describe('Concurrencia de inventario y ventas (integración)', () => {
     // Pagamos cada venta para que sea de contado (balance 0). Si el cobro fallara,
     // la prueba debe romperse aquí y no disfrazar el fallo como "no hubo sobreventa".
     for (const s of borradores) {
-      await sales.addPayment(s.id, { method: 'CASH', amount: Number(s.total) } as any, userId);
+      await sales.addPayment(
+        s.id,
+        { method: PaymentMethod.CASH, amount: Number(s.total) },
+        userId,
+      );
     }
 
     // CIERRE SIMULTÁNEO
-    const resultados = await Promise.allSettled(borradores.map((s) => sales.completeSale(s.id, userId)));
+    const resultados = await Promise.allSettled(
+      borradores.map((s) => sales.completeSale(s.id, userId)),
+    );
 
     const exitosos = resultados.filter((r) => r.status === 'fulfilled').length;
     const fallidos = resultados.filter((r) => r.status === 'rejected').length;
 
-    const final = await prisma.product.findUnique({ where: { id: producto.id } });
+    const final = await prisma.product.findUnique({
+      where: { id: producto.id },
+    });
     const movimientos = await prisma.inventoryMovement.aggregate({
       where: { productId: producto.id, type: 'SALE' },
       _sum: { quantity: true },
     });
 
-    // eslint-disable-next-line no-console
-    console.log(`   cierres OK: ${exitosos}, rechazados: ${fallidos}, stock final: ${final?.stock}`);
+    console.log(
+      `   cierres OK: ${exitosos}, rechazados: ${fallidos}, stock final: ${final?.stock}`,
+    );
 
-    expect(final?.stock).toBe(0);                     // nunca negativo
-    expect(exitosos).toBeLessThanOrEqual(5);          // como máximo lo que había
+    expect(final?.stock).toBe(0); // nunca negativo
+    expect(exitosos).toBeLessThanOrEqual(5); // como máximo lo que había
     expect(Number(movimientos._sum.quantity)).toBe(-exitosos); // Kardex cuadra con lo vendido
     expect(exitosos + fallidos).toBe(12);
   });
@@ -149,9 +197,16 @@ describe('Concurrencia de inventario y ventas (integración)', () => {
   // ───────────────────────────────────────────────────────────────────
   it('2) NO permite cerrar dos veces la misma venta (doble clic)', async () => {
     const producto = await nuevoProducto(50);
-    const venta = await sales.create({ items: [{ productId: producto.id, quantity: 3 }] }, userId);
+    const venta = await sales.create(
+      { items: [{ productId: producto.id, quantity: 3 }] },
+      userId,
+    );
     creados.sales.push(venta.id);
-    await sales.addPayment(venta.id, { method: 'CASH', amount: Number(venta.total) } as any, userId);
+    await sales.addPayment(
+      venta.id,
+      { method: PaymentMethod.CASH, amount: Number(venta.total) },
+      userId,
+    );
 
     const [a, b] = await Promise.allSettled([
       sales.completeSale(venta.id, userId),
@@ -159,11 +214,16 @@ describe('Concurrencia de inventario y ventas (integración)', () => {
     ]);
 
     const exitosos = [a, b].filter((r) => r.status === 'fulfilled').length;
-    const final = await prisma.product.findUnique({ where: { id: producto.id } });
-    const folios = await prisma.sale.findUnique({ where: { id: venta.id }, select: { invoiceNumber: true } });
+    const final = await prisma.product.findUnique({
+      where: { id: producto.id },
+    });
+    const folios = await prisma.sale.findUnique({
+      where: { id: venta.id },
+      select: { invoiceNumber: true },
+    });
 
-    expect(exitosos).toBe(1);          // exactamente un cierre
-    expect(final?.stock).toBe(47);     // descontado UNA vez (50 - 3)
+    expect(exitosos).toBe(1); // exactamente un cierre
+    expect(final?.stock).toBe(47); // descontado UNA vez (50 - 3)
     expect(folios?.invoiceNumber).toBeTruthy();
   });
 
@@ -181,8 +241,20 @@ describe('Concurrencia de inventario y ventas (integración)', () => {
     creados.clients.push(cliente.id);
 
     // Dos ventas de $600 a crédito: juntas serían $1200 > $1000
-    const v1 = await sales.create({ clientId: cliente.id, items: [{ productId: producto.id, quantity: 1 }] }, userId);
-    const v2 = await sales.create({ clientId: cliente.id, items: [{ productId: producto.id, quantity: 1 }] }, userId);
+    const v1 = await sales.create(
+      {
+        clientId: cliente.id,
+        items: [{ productId: producto.id, quantity: 1 }],
+      },
+      userId,
+    );
+    const v2 = await sales.create(
+      {
+        clientId: cliente.id,
+        items: [{ productId: producto.id, quantity: 1 }],
+      },
+      userId,
+    );
     creados.sales.push(v1.id, v2.id);
 
     const res = await Promise.allSettled([
@@ -191,16 +263,20 @@ describe('Concurrencia de inventario y ventas (integración)', () => {
     ]);
     const exitosos = res.filter((r) => r.status === 'fulfilled').length;
 
-    const clienteFinal = await prisma.client.findUnique({ where: { id: cliente.id } });
+    const clienteFinal = await prisma.client.findUnique({
+      where: { id: cliente.id },
+    });
 
-    expect(exitosos).toBe(1);                                        // solo una pasa
+    expect(exitosos).toBe(1); // solo una pasa
     expect(Number(clienteFinal?.currentDebt)).toBeLessThanOrEqual(1000); // límite respetado
   });
 
   // ───────────────────────────────────────────────────────────────────
   it('4) restaura el costo promedio al cancelar una compra recibida', async () => {
     const producto = await nuevoProducto(10, 100); // 10 u @ $100
-    const proveedor = await prisma.supplier.create({ data: { name: `QA Prov ${Date.now()}` } });
+    const proveedor = await prisma.supplier.create({
+      data: { name: `QA Prov ${Date.now()}` },
+    });
     creados.suppliers.push(proveedor.id);
 
     const compra = await purchases.create(
@@ -208,19 +284,23 @@ describe('Concurrencia de inventario y ventas (integración)', () => {
         supplierId: proveedor.id,
         invoiceNumber: `QA-${Date.now()}`,
         items: [{ productId: producto.id, quantity: 10, cost: 200 }], // 10 u @ $200
-      } as any,
+      },
       userId,
     );
     if (!compra) throw new Error('No se pudo crear la compra de prueba');
     creados.purchases.push(compra.id);
 
     await purchases.receive(compra.id, userId);
-    const trasRecibir = await prisma.product.findUnique({ where: { id: producto.id } });
+    const trasRecibir = await prisma.product.findUnique({
+      where: { id: producto.id },
+    });
     expect(Number(trasRecibir?.cost)).toBeCloseTo(150, 2); // promedio ponderado
     expect(trasRecibir?.stock).toBe(20);
 
     await purchases.cancel(compra.id, userId);
-    const trasCancelar = await prisma.product.findUnique({ where: { id: producto.id } });
+    const trasCancelar = await prisma.product.findUnique({
+      where: { id: producto.id },
+    });
 
     expect(trasCancelar?.stock).toBe(10);
     expect(Number(trasCancelar?.cost)).toBeCloseTo(100, 2); // costo RESTAURADO
