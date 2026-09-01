@@ -128,6 +128,7 @@ model Sale {
   payments         SalePayment[]
   saleReturn       SaleReturn[]
   saleRefunds      SaleRefund[]
+  receiptPrints    SaleReceiptPrint[]
 
   @@index([createdAt])
   @@index([invoiceNumber])
@@ -277,12 +278,79 @@ model User {
   token                     UserToken[]
   saleReturn                SaleReturn[]
   cashData                  CashShift[]
+  saleReceiptPrints         SaleReceiptPrint[]
 
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
 
   @@index([userName])
   @@index([email])
+}
+
+// Una sola empresa por instalación. `singletonKey` impide que un GET
+// concurrente al primer arranque cree dos fichas fiscales.
+model Company {
+  id           Int      @id @default(autoincrement())
+  singletonKey String   @unique @default("default")
+
+  legalName    String
+  tradeName    String
+  rfc          String   @default("")
+  fiscalRegime String?
+  address      String   @default("")
+  phone        String?
+  email        String?
+  logoUrl      String?
+  ticketFooter String?  @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  templates ReceiptTemplate[]
+}
+
+model ReceiptTemplate {
+  id           Int     @id @default(autoincrement())
+  company      Company @relation(fields: [companyId], references: [id])
+  companyId    Int
+
+  name         String
+  paperWidthMm Int     @default(58)
+  showLogo     Boolean @default(true)
+  showTaxId    Boolean @default(true)
+  showAddress  Boolean @default(true)
+  showPhone    Boolean @default(true)
+  fontScale    Int     @default(1)
+  layout       Json
+  isDefault    Boolean @default(false)
+  isActive     Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  prints SaleReceiptPrint[]
+
+  @@index([companyId, isDefault])
+  @@index([companyId, isActive])
+}
+
+// Cada pulso de "Imprimir" deja rastro. copyNumber 1 = original, 2+ = copia.
+model SaleReceiptPrint {
+  id          Int              @id @default(autoincrement())
+  sale        Sale             @relation(fields: [saleId], references: [id])
+  saleId      Int
+  printedBy   User             @relation(fields: [printedById], references: [id])
+  printedById Int
+  template    ReceiptTemplate? @relation(fields: [templateId], references: [id])
+  templateId  Int?
+
+  copyNumber Int
+  channel    PrintChannel
+  printedAt  DateTime     @default(now())
+
+  @@unique([saleId, copyNumber])
+  @@index([saleId])
+  @@index([printedById])
 }
 
 model Supplier {
@@ -571,4 +639,9 @@ enum PurchaseDeliveryStatus {
   PENDING    // Orden creada, mercancía no ha llegado
   RECEIVED   // Mercancía recibida e Inventario actualizado (Kardex)
   CANCELLED
+}
+
+enum PrintChannel {
+  THERMAL
+  BROWSER
 }

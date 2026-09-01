@@ -18,6 +18,7 @@ import { AddPaymentDto } from './dto/add-payment.dto';
 import { GetUser } from 'src/common/decorators/get-user.decorator';
 import { ReturnSaleDto } from './dto/return-sale.dto';
 import { FindAllSalesQueryDto } from './dto/find-all-sales-query.dto';
+import { RegisterSalePrintDto } from './dto/register-sale-print.dto';
 import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
@@ -59,6 +60,16 @@ export class SalesController {
   async findByInvoiceNumber(@Param('invoiceNumber') invoiceNumber: string) {
     const data = await this.salesService.findByInvoiceNumber(invoiceNumber);
     return ApiResponse.ok(data, 'Venta obtenida correctamente');
+  }
+
+  /**
+   * [OPERATIVO] Historial de copias impresas de una venta.
+   * Debe ir antes de GET :id para que "prints" no se interprete como id.
+   */
+  @Get(':id/prints')
+  async listPrints(@Param('id', ParseIntPipe) id: number) {
+    const data = await this.salesService.listPrints(id);
+    return ApiResponse.ok(data, 'Historial de impresiones obtenido');
   }
 
   /**
@@ -198,5 +209,24 @@ export class SalesController {
       user.userId,
     );
     return ApiResponse.ok(data, 'Devolución creada correctamente');
+  }
+
+  /**
+   * [OPERATIVO] Registra una impresión (original o copia) y devuelve el copyNumber.
+   * El front imprime DESPUÉS de este llamado para que el papel coincida con el rastro.
+   */
+  @Post(':id/prints')
+  async registerPrint(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: RegisterSalePrintDto,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    const data = await this.salesService.registerPrint(
+      id,
+      user.userId,
+      dto.channel,
+      dto.templateId,
+    );
+    return ApiResponse.ok(data, 'Impresión registrada');
   }
 }

@@ -232,6 +232,10 @@ export class AuthService {
       canGiveDiscounts: isManagerOrAdmin,
       canReturnSales: isManagerOrAdmin,
       canViewSalesSummary: canOperatePOS,
+      canPrintReceipt: canOperatePOS,
+
+      // ---- Empresa / ticket ----
+      canManageCompany: isManagerOrAdmin,
 
       // ---- Clientes (client) ----
       canViewClients: canOperatePOS,
