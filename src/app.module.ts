@@ -17,7 +17,10 @@ import { CashShiftModule } from './cash-shift/cash-shift.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { CompanyModule } from './company/company.module';
+import { HealthModule } from './health/health.module';
 import { envValidationSchema } from './config/env.validation';
+import { LoggerModule } from 'nestjs-pino';
+import { buildPinoHttpOptions } from './logger/pino.config';
 
 @Module({
   imports: [
@@ -26,6 +29,20 @@ import { envValidationSchema } from './config/env.validation';
     ConfigModule.forRoot({
       isGlobal: true,
       validationSchema: envValidationSchema,
+    }),
+
+    LoggerModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        const nodeEnv = config.get<string>('NODE_ENV', 'development');
+        const logLevel = config.get<string>(
+          'LOG_LEVEL',
+          nodeEnv === 'development' ? 'debug' : 'info',
+        );
+        return {
+          pinoHttp: buildPinoHttpOptions({ nodeEnv, logLevel }),
+        };
+      },
     }),
 
     ThrottlerModule.forRootAsync({
@@ -53,6 +70,7 @@ import { envValidationSchema } from './config/env.validation';
     InventoryModule,
     AnalyticsModule,
     CompanyModule,
+    HealthModule,
   ],
   controllers: [AppController],
   providers: [

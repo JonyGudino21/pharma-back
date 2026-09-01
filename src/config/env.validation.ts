@@ -47,6 +47,10 @@ export const envValidationSchema = Joi.object({
   // compartir la misma IP publica.
   THROTTLE_TTL_MS: Joi.number().integer().positive().default(60000),
   THROTTLE_LIMIT: Joi.number().integer().positive().default(600),
+
+  LOG_LEVEL: Joi.string()
+    .valid('fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent')
+    .optional(),
 })
   // Reporta TODOS los problemas de configuracion de una vez, en lugar de obligar
   // a corregirlos uno por uno reiniciando entre cada intento.

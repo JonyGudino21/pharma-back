@@ -4,20 +4,26 @@ import {
   ArgumentsHost,
   HttpException,
   HttpStatus,
+  Logger,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { ApiResponse } from '../dto/response.dto';
 
+type RequestWithId = Request & { id?: string };
+
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
+  private readonly logger = new Logger(AllExceptionsFilter.name);
+
   catch(exception: unknown, host: ArgumentsHost) {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
-    const request = ctx.getRequest<Request>();
+    const request = ctx.getRequest<RequestWithId>();
+    const requestId = request.id ?? request.header('x-request-id');
 
     let status = HttpStatus.INTERNAL_SERVER_ERROR;
     let message = 'Internal server error';
-    let error: any = null;
+    let error: Record<string, unknown> = {};
 
     if (exception instanceof HttpException) {
       status = exception.getStatus();
@@ -36,7 +42,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
             : Array.isArray(msg)
               ? msg.join(', ')
               : exception.message;
-        error = res;
+        error = res as Record<string, unknown>;
       } else {
         message = exception.message;
         error = { message: String(res) };
@@ -54,6 +60,20 @@ export class AllExceptionsFilter implements ExceptionFilter {
       };
     }
 
+    const linea = `HTTP ${status} ${request.method} ${request.url} rid=${requestId ?? '-'}`;
+    if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
+      this.logger.error(
+        `${linea} ${message}`,
+        exception instanceof Error ? exception.stack : undefined,
+      );
+    } else {
+      this.logger.warn(`${linea} ${message}`);
+    }
+
+    if (requestId && !response.headersSent) {
+      response.setHeader('x-request-id', requestId);
+    }
+
     response.status(status).json(
       new ApiResponse(
         false,
@@ -64,6 +84,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
           path: request.url,
           method: request.method,
           timestamp: new Date().toISOString(),
+          requestId: requestId ?? null,
         },
         status,
       ),

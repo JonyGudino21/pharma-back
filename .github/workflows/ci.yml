@@ -79,6 +79,7 @@ jobs:
       # Valores desechables, validos solo dentro del runner. No corresponden a ningun entorno real.
       JWT_SECRET: ci_throwaway_secret_used_only_inside_the_runner
       JWT_REFRESH_SECRET: ci_throwaway_refresh_secret_used_only_inside_the_runner
+      FRONTEND_URL: http://localhost:3000
       TOLERANCE_THRESHOLD: '20'
 
     steps:
