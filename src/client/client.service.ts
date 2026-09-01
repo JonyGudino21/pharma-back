@@ -1,4 +1,10 @@
-import { Injectable, Logger, ConflictException, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  ConflictException,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
 import { CreateClientDto } from './dto/create-client.dto';
 import { UpdateClientDto } from './dto/update-client.dto';
 import { PrismaService } from 'prisma/prisma.service';
@@ -8,18 +14,24 @@ import { RegisterClientPaymentDto } from './dto/register-payment.dto';
 import { AccountStatementQueryDto } from './dto/account-statement-query.dto';
 import { CashShiftService } from 'src/cash-shift/cash-shift.service';
 import { PaymentService } from 'src/payment/payment.service';
-import { PaymentMethod, SaleStatus, SaleFlowStatus, CashTransactionType, SalePayment, ShiftStatus } from '@prisma/client';
+import {
+  PaymentMethod,
+  SaleStatus,
+  SaleFlowStatus,
+  SalePayment,
+} from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
+import { money } from 'src/common/utils/decimal.util';
 
 @Injectable()
 export class ClientService {
   private readonly logger = new Logger(ClientService.name);
 
-  constructor (
+  constructor(
     private prisma: PrismaService,
     private cashShiftService: CashShiftService,
     private paymentService: PaymentService,
-  ){}
+  ) {}
 
   /**
    * Crea un nuevo cliente.
@@ -30,16 +42,15 @@ export class ClientService {
     // Validar si exiten duplicados
     const exiting = await this.prisma.client.findFirst({
       where: {
-        OR: [
-          { email: createClientDto.email },
-          { rfc: createClientDto.rfc }
-        ]
-      }
+        OR: [{ email: createClientDto.email }, { rfc: createClientDto.rfc }],
+      },
     });
 
-    if(exiting) {
-      if(exiting.email === createClientDto.email) throw new ConflictException('El email ya esta registrado');
-      if(exiting.rfc === createClientDto.rfc) throw new ConflictException('El RFC ya esta registrado');
+    if (exiting) {
+      if (exiting.email === createClientDto.email)
+        throw new ConflictException('El email ya esta registrado');
+      if (exiting.rfc === createClientDto.rfc)
+        throw new ConflictException('El RFC ya esta registrado');
     }
 
     return await this.prisma.client.create({
@@ -50,28 +61,29 @@ export class ClientService {
         address: createClientDto.address,
         rfc: createClientDto.rfc,
         curp: createClientDto.curp,
-      }
-    })
+      },
+    });
   }
 
   /**
    * Encuentra todos los clientes.
    * @param active si es true, solo se devuelven los clientes activos, si es false, solo los inactivos, si no devuelve todos
-   * @returns 
+   * @returns
    */
   async findAll(active?: boolean, pagination?: PaginationParamsDto) {
     // Verificar si realmente vienen parámetros de paginación en el query
-    const hasPagination = pagination && 
-                       (pagination.page !== undefined || pagination.limit !== undefined);
-  
-    const page = hasPagination ? pagination?.page ?? 1 : 1;
-    const limit = hasPagination ? pagination?.limit ?? 20 : 20;
+    const hasPagination =
+      pagination &&
+      (pagination.page !== undefined || pagination.limit !== undefined);
+
+    const page = hasPagination ? (pagination?.page ?? 1) : 1;
+    const limit = hasPagination ? (pagination?.limit ?? 20) : 20;
     const skip = (page - 1) * limit;
 
     let whereClause = {};
-    if(active === true){
+    if (active === true) {
       whereClause = { isActive: true };
-    } else if(active === false){
+    } else if (active === false) {
       whereClause = { isActive: false };
     }
 
@@ -79,20 +91,20 @@ export class ClientService {
     if (!hasPagination) {
       const data = await this.prisma.client.findMany({
         where: whereClause,
-        orderBy: { name: 'asc' }
+        orderBy: { name: 'asc' },
       });
-      return {clients: data};
+      return { clients: data };
     }
 
-    const [ data, total ] = await Promise.all([
+    const [data, total] = await Promise.all([
       this.prisma.client.findMany({
         where: whereClause,
         skip,
         take: limit,
-        orderBy: { name: 'asc' }
+        orderBy: { name: 'asc' },
       }),
-      this.prisma.client.count({ where: whereClause})
-    ])
+      this.prisma.client.count({ where: whereClause }),
+    ]);
 
     return {
       clients: data,
@@ -100,9 +112,9 @@ export class ClientService {
         total,
         page,
         limit,
-        totalPages: Math.ceil(total / limit)
-      }
-    }
+        totalPages: Math.ceil(total / limit),
+      },
+    };
   }
 
   /**
@@ -112,13 +124,13 @@ export class ClientService {
    */
   async findOne(id: number) {
     const client = await this.prisma.client.findUnique({
-      where: {id},
+      where: { id },
       include: {
         // Incluir resumen financiero basico
         _count: { select: { sales: true } },
-      }
-    })
-    if(!client) {
+      },
+    });
+    if (!client) {
       throw new NotFoundException('Cliente no encontrado');
     }
 
@@ -126,47 +138,52 @@ export class ClientService {
   }
 
   /**
- * Actualiza un cliente por su ID.
- * @param id el ID del cliente a actualizar
- * @param updateClientDto los nuevos datos del cliente
- * @returns el cliente actualizado
- */
-async update(id: number, updateClientDto: UpdateClientDto) {
-  // 1. Validar que el cliente exista antes de hacer nada
-  await this.findOne(id);
+   * Actualiza un cliente por su ID.
+   * @param id el ID del cliente a actualizar
+   * @param updateClientDto los nuevos datos del cliente
+   * @returns el cliente actualizado
+   */
+  async update(id: number, updateClientDto: UpdateClientDto) {
+    // 1. Validar que el cliente exista antes de hacer nada
+    await this.findOne(id);
 
-  // 2. Construir condiciones dinámicas para evitar validar campos nulos/indefinidos
-  const orConditions: { email?: string; rfc?: string }[] = [];
-  if (updateClientDto.email) orConditions.push({ email: updateClientDto.email });
-  if (updateClientDto.rfc) orConditions.push({ rfc: updateClientDto.rfc });
+    // 2. Construir condiciones dinámicas para evitar validar campos nulos/indefinidos
+    const orConditions: { email?: string; rfc?: string }[] = [];
+    if (updateClientDto.email)
+      orConditions.push({ email: updateClientDto.email });
+    if (updateClientDto.rfc) orConditions.push({ rfc: updateClientDto.rfc });
 
-  // 3. Si se están intentando actualizar campos únicos, validar duplicados
-  if (orConditions.length > 0) {
-    const existing = await this.prisma.client.findFirst({
-      where: {
-        OR: orConditions,
-        NOT: { id } // CRÍTICO: Excluye al cliente actual de la búsqueda
+    // 3. Si se están intentando actualizar campos únicos, validar duplicados
+    if (orConditions.length > 0) {
+      const existing = await this.prisma.client.findFirst({
+        where: {
+          OR: orConditions,
+          NOT: { id }, // CRÍTICO: Excluye al cliente actual de la búsqueda
+        },
+      });
+
+      if (existing) {
+        if (updateClientDto.email && existing.email === updateClientDto.email) {
+          throw new ConflictException(
+            'El email ya está registrado por otro cliente',
+          );
+        }
+        if (updateClientDto.rfc && existing.rfc === updateClientDto.rfc) {
+          throw new ConflictException(
+            'El RFC ya está registrado por otro cliente',
+          );
+        }
       }
+    }
+
+    // 4. Actualizar usando la inyección directa del DTO limpio
+    return await this.prisma.client.update({
+      where: { id },
+      data: {
+        ...updateClientDto, // Si el DTO está bien tipado, esto es más limpio y escalable
+      },
     });
-
-    if (existing) {
-      if (updateClientDto.email && existing.email === updateClientDto.email) {
-        throw new ConflictException('El email ya está registrado por otro cliente');
-      }
-      if (updateClientDto.rfc && existing.rfc === updateClientDto.rfc) {
-        throw new ConflictException('El RFC ya está registrado por otro cliente');
-      }
-    }
   }
-
-  // 4. Actualizar usando la inyección directa del DTO limpio
-  return await this.prisma.client.update({
-    where: { id },
-    data: {
-      ...updateClientDto, // Si el DTO está bien tipado, esto es más limpio y escalable
-    }
-  });
-}
 
   /**
    * Eliminar un cliente por su Id
@@ -175,10 +192,10 @@ async update(id: number, updateClientDto: UpdateClientDto) {
    */
   async remove(id: number) {
     await this.findOne(id);
-    
+
     return await this.prisma.client.update({
       where: { id },
-      data: { isActive: false}
+      data: { isActive: false },
     });
   }
 
@@ -189,32 +206,40 @@ async update(id: number, updateClientDto: UpdateClientDto) {
    * @param phone el telefono del cliente a buscar
    * @returns el o los clientes encontrados o null si no existe
    */
-  async findClient(name?: string, email?: string, phone?: string, pagination?: PaginationParamsDto) {
+  async findClient(
+    name?: string,
+    email?: string,
+    phone?: string,
+    pagination?: PaginationParamsDto,
+  ) {
     // Verificar si realmente vienen parámetros de paginación en el query
-    const hasPagination = pagination && 
-                       (pagination.page !== undefined || pagination.limit !== undefined);
-  
-    const page = hasPagination ? pagination?.page ?? 1 : 1;
-    const limit = hasPagination ? pagination?.limit ?? 20 : 20;
+    const hasPagination =
+      pagination &&
+      (pagination.page !== undefined || pagination.limit !== undefined);
+
+    const page = hasPagination ? (pagination?.page ?? 1) : 1;
+    const limit = hasPagination ? (pagination?.limit ?? 20) : 20;
     const skip = (page - 1) * limit;
 
-    const conditions: Array<{ [key: string]: { contains: string; mode: 'insensitive' } }> = [];
+    const conditions: Array<{
+      [key: string]: { contains: string; mode: 'insensitive' };
+    }> = [];
 
     if (name) {
-      conditions.push({ 
-        name: { contains: name, mode: 'insensitive' } 
+      conditions.push({
+        name: { contains: name, mode: 'insensitive' },
       });
     }
-    
+
     if (email) {
-      conditions.push({ 
-        email: { contains: email, mode: 'insensitive' } 
+      conditions.push({
+        email: { contains: email, mode: 'insensitive' },
       });
     }
-    
+
     if (phone) {
-      conditions.push({ 
-        phone: { contains: phone, mode: 'insensitive' } 
+      conditions.push({
+        phone: { contains: phone, mode: 'insensitive' },
       });
     }
 
@@ -237,17 +262,17 @@ async update(id: number, updateClientDto: UpdateClientDto) {
         take: limit,
         orderBy: { name: 'asc' },
       }),
-      this.prisma.client.count({ where })
+      this.prisma.client.count({ where }),
     ]);
 
     return {
       clients, // ← Mismo nombre de propiedad que findAll
       pagination: {
         total,
-        page, 
+        page,
         limit,
         totalPages: Math.ceil(total / limit),
-      }
+      },
     };
   }
 
@@ -260,18 +285,19 @@ async update(id: number, updateClientDto: UpdateClientDto) {
    * @returns el cliente actualizado
    */
   async updateCreditConfiguration(id: number, dto: UpdateCreditConfigDto) {
-    const client = await this.findOne(id);
-    
-    // Si le quitamos el crédito pero debe dinero, advertencia? 
-    // Por ahora permitimos quitar el permiso para que no compre más, 
+    // Solo nos interesa que exista: `findOne` lanza 404 si no.
+    await this.findOne(id);
+
+    // Si le quitamos el crédito pero debe dinero, advertencia?
+    // Por ahora permitimos quitar el permiso para que no compre más,
     // pero la deuda persiste.
-    
+
     return await this.prisma.client.update({
-        where: { id },
-        data: {
-            hasCredit: dto.hasCredit,
-            creditLimit: dto.creditLimit
-        }
+      where: { id },
+      data: {
+        hasCredit: dto.hasCredit,
+        creditLimit: dto.creditLimit,
+      },
     });
   }
 
@@ -284,10 +310,11 @@ async update(id: number, updateClientDto: UpdateClientDto) {
    */
   async getDebtors(pagination?: PaginationParamsDto) {
     const hasPagination =
-      pagination && (pagination.page !== undefined || pagination.limit !== undefined);
+      pagination &&
+      (pagination.page !== undefined || pagination.limit !== undefined);
 
-    const page = hasPagination ? pagination?.page ?? 1 : 1;
-    const limit = hasPagination ? pagination?.limit ?? 20 : 20;
+    const page = hasPagination ? (pagination?.page ?? 1) : 1;
+    const limit = hasPagination ? (pagination?.limit ?? 20) : 20;
     const skip = (page - 1) * limit;
 
     const where = {
@@ -368,7 +395,11 @@ async update(id: number, updateClientDto: UpdateClientDto) {
    * @param userId usuario que registra el pago
    * @returns resumen del abono aplicado, deuda restante, excedente (si aplica) y detalle por venta
    */
-  async registerPayment(clientId: number, dto: RegisterClientPaymentDto, userId: number) {
+  async registerPayment(
+    clientId: number,
+    dto: RegisterClientPaymentDto,
+    userId: number,
+  ) {
     const client = await this.findOne(clientId);
     if (new Decimal(client.currentDebt).lte(0)) {
       throw new BadRequestException('El cliente no tiene deuda pendiente');
@@ -378,9 +409,12 @@ async update(id: number, updateClientDto: UpdateClientDto) {
       // 1. Validar Caja (Solo si es efectivo)
       let cashShiftId: number | null = null;
       if (dto.method === PaymentMethod.CASH) {
-          const shift = await this.cashShiftService.getCurrentShift(userId);
-          if (!shift) throw new ConflictException('Se requiere caja abierta para recibir efectivo.');
-          cashShiftId = shift.id;
+        const shift = await this.cashShiftService.getCurrentShift(userId);
+        if (!shift)
+          throw new ConflictException(
+            'Se requiere caja abierta para recibir efectivo.',
+          );
+        cashShiftId = shift.id;
       }
 
       // 2. Obtener ventas pendientes (Ordenadas por antigüedad)
@@ -409,7 +443,11 @@ async update(id: number, updateClientDto: UpdateClientDto) {
       let remainingPayment = new Decimal(dto.amount);
       const totalPayment = new Decimal(dto.amount);
       const paymentsCreated: SalePayment[] = [];
-      const appliedBySale: { saleId: number; invoiceNumber: string | null; amount: number }[] = [];
+      const appliedBySale: {
+        saleId: number;
+        invoiceNumber: string | null;
+        amount: number;
+      }[] = [];
 
       // Aplicación FIFO: la venta más antigua se salda primero.
       for (const sale of pendingSales) {
@@ -417,7 +455,9 @@ async update(id: number, updateClientDto: UpdateClientDto) {
 
         const saleBalance = new Decimal(sale.balance);
         // ¿Cuánto pagamos de esta venta? Lo que alcance o lo que se deba.
-        const amountToPay = remainingPayment.gte(saleBalance) ? saleBalance : remainingPayment;
+        const amountToPay = remainingPayment.gte(saleBalance)
+          ? saleBalance
+          : remainingPayment;
 
         // DELEGACIÓN al dueño único del dinero: crea el asiento, actualiza saldos y
         // estados, y descuenta la deuda del cliente de forma atómica.
@@ -451,13 +491,17 @@ async update(id: number, updateClientDto: UpdateClientDto) {
       });
       const debtCapped = clientAfter.currentDebt;
 
-      const overpaidAmount = remainingPayment.gt(0) ? remainingPayment : new Decimal(0);
+      const overpaidAmount = remainingPayment.gt(0)
+        ? remainingPayment
+        : new Decimal(0);
       if (overpaidAmount.gt(0)) {
         this.logger.log(
-          `Abono Cliente #${clientId}: aplicado $${amountApplied}; excedente no aplicado a deuda: $${overpaidAmount}`,
+          `Abono Cliente #${clientId}: aplicado ${money(amountApplied)}; excedente no aplicado a deuda: ${money(overpaidAmount)}`,
         );
       } else {
-        this.logger.log(`Abono registrado Cliente #${clientId}: $${amountApplied}`);
+        this.logger.log(
+          `Abono registrado Cliente #${clientId}: ${money(amountApplied)}`,
+        );
       }
 
       return {
@@ -471,7 +515,6 @@ async update(id: number, updateClientDto: UpdateClientDto) {
         appliedBySale,
       };
     });
-
   }
 
   /**
@@ -481,23 +524,28 @@ async update(id: number, updateClientDto: UpdateClientDto) {
    * @param clientId ID del cliente
    * @param query paginación (page, limit) y rango de fechas (startDate, endDate) opcionales
    */
-  async getAccountStatement(clientId: number, query?: AccountStatementQueryDto) {
+  async getAccountStatement(
+    clientId: number,
+    query?: AccountStatementQueryDto,
+  ) {
     const client = await this.findOne(clientId);
     if (!client) throw new NotFoundException('Cliente no encontrado');
 
     const hasPagination =
       query && (query.page !== undefined || query.limit !== undefined);
-    const page = hasPagination ? query?.page ?? 1 : 1;
-    const limit = hasPagination ? query?.limit ?? 20 : 20;
+    const page = hasPagination ? (query?.page ?? 1) : 1;
+    const limit = hasPagination ? (query?.limit ?? 20) : 20;
     const skip = (page - 1) * limit;
 
     const hasDateRange = Boolean(query?.startDate ?? query?.endDate);
     const startDate = query?.startDate ? new Date(query.startDate) : undefined;
-    const endDate = query?.endDate ? (() => {
-      const d = new Date(query.endDate);
-      d.setHours(23, 59, 59, 999);
-      return d;
-    })() : undefined;
+    const endDate = query?.endDate
+      ? (() => {
+          const d = new Date(query.endDate);
+          d.setHours(23, 59, 59, 999);
+          return d;
+        })()
+      : undefined;
 
     const baseWhere = {
       clientId,
@@ -556,7 +604,9 @@ async update(id: number, updateClientDto: UpdateClientDto) {
           orderBy: { createdAt: 'desc' },
           select: movementSelect,
         }),
-        hasDateRange ? this.getAccountStatementTotals(clientId, startDate, endDate) : Promise.resolve(null),
+        hasDateRange
+          ? this.getAccountStatementTotals(clientId, startDate, endDate)
+          : Promise.resolve(null),
       ]);
 
       const result: Record<string, unknown> = {
@@ -578,7 +628,9 @@ async update(id: number, updateClientDto: UpdateClientDto) {
         select: movementSelect,
       }),
       this.prisma.sale.count({ where: whereWithDates }),
-      hasDateRange ? this.getAccountStatementTotals(clientId, startDate, endDate) : Promise.resolve(null),
+      hasDateRange
+        ? this.getAccountStatementTotals(clientId, startDate, endDate)
+        : Promise.resolve(null),
     ]);
 
     const result: Record<string, unknown> = {
@@ -616,7 +668,9 @@ async update(id: number, updateClientDto: UpdateClientDto) {
       clientId,
       flowStatus: SaleFlowStatus.COMPLETED,
       status: { not: SaleStatus.CANCELLED },
-      ...(Object.keys(createdAtFilter).length > 0 && { createdAt: createdAtFilter }),
+      ...(Object.keys(createdAtFilter).length > 0 && {
+        createdAt: createdAtFilter,
+      }),
     };
 
     const paymentWhere = {
@@ -625,7 +679,9 @@ async update(id: number, updateClientDto: UpdateClientDto) {
         flowStatus: SaleFlowStatus.COMPLETED,
         status: { not: SaleStatus.CANCELLED },
       },
-      ...(Object.keys(createdAtFilter).length > 0 && { createdAt: createdAtFilter }),
+      ...(Object.keys(createdAtFilter).length > 0 && {
+        createdAt: createdAtFilter,
+      }),
     };
 
     const [chargesAgg, paymentsAgg] = await Promise.all([

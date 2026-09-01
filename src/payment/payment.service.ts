@@ -16,6 +16,7 @@ import {
 import { Decimal } from '@prisma/client/runtime/library';
 import { PrismaService } from 'prisma/prisma.service';
 import { CashShiftService } from 'src/cash-shift/cash-shift.service';
+import { money } from 'src/common/utils/decimal.util';
 
 export interface ApplyPaymentParams {
   saleId: number;
@@ -59,7 +60,10 @@ export class PaymentService {
    * Determina a qué caja entra el dinero.
    * El efectivo exige turno abierto; tarjeta y transferencia no tocan caja física.
    */
-  async resolveCashShiftId(method: PaymentMethod, userId: number): Promise<number | null> {
+  async resolveCashShiftId(
+    method: PaymentMethod,
+    userId: number,
+  ): Promise<number | null> {
     if (method !== PaymentMethod.CASH) return null;
 
     const shift = await this.cashShiftService.getCurrentShift(userId);
@@ -120,7 +124,7 @@ export class PaymentService {
         throw new BadRequestException('No se puede cobrar una venta cancelada');
       }
       throw new BadRequestException(
-        `El pago excede el saldo pendiente. Saldo: $${sale.balance}, intento de cobro: $${amount}`,
+        `El pago excede el saldo pendiente. Saldo: ${money(sale.balance)}, intento de cobro: ${money(amount)}`,
       );
     }
 
@@ -161,7 +165,11 @@ export class PaymentService {
     let clientDebtDecremented = new Decimal(0);
 
     if (sale.clientId && sale.flowStatus === SaleFlowStatus.COMPLETED) {
-      clientDebtDecremented = await this.decreaseClientDebt(tx, sale.clientId, amount);
+      clientDebtDecremented = await this.decreaseClientDebt(
+        tx,
+        sale.clientId,
+        amount,
+      );
     }
 
     return {
@@ -194,8 +202,8 @@ export class PaymentService {
 
     if (updated.currentDebt.lt(0)) {
       this.logger.warn(
-        `Deuda negativa detectada en Cliente #${clientId} tras aplicar $${amount} ` +
-          `(quedó en ${updated.currentDebt}). Se corrige a 0. REVISAR consistencia de cartera.`,
+        `Deuda negativa detectada en Cliente #${clientId} tras aplicar ${money(amount)} ` +
+          `(quedó en ${money(updated.currentDebt)}). Se corrige a 0. REVISAR consistencia de cartera.`,
       );
       await tx.client.update({
         where: { id: clientId },

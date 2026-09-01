@@ -1,8 +1,25 @@
-import { Injectable, BadRequestException, NotFoundException, Logger, ConflictException } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  NotFoundException,
+  Logger,
+  ConflictException,
+} from '@nestjs/common';
 import { CreateSaleDto } from './dto/create-sale.dto';
 import { AddPaymentDto } from './dto/add-payment.dto';
 import { PrismaService } from '../../prisma/prisma.service';
-import { PaymentMethod, SaleFlowStatus, SaleStatus, Sale, SaleItem, ClientProductPrice, MovementType, CashTransactionType, SaleRefund, Prisma } from '@prisma/client';
+import {
+  PaymentMethod,
+  SaleFlowStatus,
+  SaleStatus,
+  Sale,
+  SaleItem,
+  ClientProductPrice,
+  MovementType,
+  CashTransactionType,
+  SaleRefund,
+  Prisma,
+} from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { ReturnSaleDto } from './dto/return-sale.dto';
 import { SaleItemDto } from './dto/create-sale.dto';
@@ -10,6 +27,7 @@ import { InventoryService } from 'src/inventory/inventory.service';
 import { CashShiftService } from 'src/cash-shift/cash-shift.service';
 import { PaymentService } from 'src/payment/payment.service';
 import { FindAllSalesQueryDto } from './dto/find-all-sales-query.dto';
+import { money } from 'src/common/utils/decimal.util';
 
 @Injectable()
 export class SalesService {
@@ -20,32 +38,33 @@ export class SalesService {
     private inventoryService: InventoryService,
     private cashShiftService: CashShiftService,
     private paymentService: PaymentService,
-  ){}
-
+  ) {}
 
   async create(data: CreateSaleDto, userId: number) {
-    if(!data.items || data.items.length === 0){
+    if (!data.items || data.items.length === 0) {
       throw new BadRequestException('La venta debe tener al menos un proucto');
     }
 
     const productIds = data.items.map((i) => i.productId);
     const products = await this.prisma.product.findMany({
-      where: { id: {in: productIds }, isActive: true },
+      where: { id: { in: productIds }, isActive: true },
     });
 
-    if(products.length !== productIds.length){
-      throw new NotFoundException('Alguno de los productos no existe o no está activo');
+    if (products.length !== productIds.length) {
+      throw new NotFoundException(
+        'Alguno de los productos no existe o no está activo',
+      );
     }
 
     // Si hay cliente buscamos su precio especial
     let specialPrices: ClientProductPrice[] = [];
-    if(data.clientId){
+    if (data.clientId) {
       specialPrices = await this.prisma.clientProductPrice.findMany({
         where: {
           clientId: data.clientId,
           productId: { in: productIds },
           isActive: true,
-        }
+        },
       });
     }
 
@@ -57,7 +76,7 @@ export class SalesService {
     let subtotal = new Decimal(0);
     const saleItemsData: SaleItem[] = [];
 
-    for(const itemDto of data.items){
+    for (const itemDto of data.items) {
       const product = productMap.get(itemDto.productId);
 
       // Logica:
@@ -66,7 +85,7 @@ export class SalesService {
 
       let finalPrice = product?.price ?? 0;
 
-      if(priceMap.has(itemDto.productId)){
+      if (priceMap.has(itemDto.productId)) {
         finalPrice = priceMap.get(itemDto.productId)!; // Precio especial del cliente
       }
 
@@ -85,7 +104,7 @@ export class SalesService {
         discount: new Decimal(0), // Por ahora 0, luego podrías implementar lógica de descuentos
         subtotal: lineTotal,
         // SNAPSHOT DE COSTO: Vital para calcular utilidad histórica
-        costAtSale: new Decimal(product?.cost ?? 0), 
+        costAtSale: new Decimal(product?.cost ?? 0),
       });
     }
 
@@ -109,7 +128,7 @@ export class SalesService {
         items: true,
       },
     });
-    
+
     return sale;
   }
 
@@ -118,16 +137,19 @@ export class SalesService {
     // autoritativa y atómica ocurre dentro de PaymentService.applyToSale.
     const sale = await this.validateSale(saleId);
 
-    if(sale.status === SaleStatus.CANCELLED) {
+    if (sale.status === SaleStatus.CANCELLED) {
       throw new BadRequestException('No se puede cobrar una venta cancelada');
     }
-    if(sale.balance.lessThanOrEqualTo(0)) {
+    if (sale.balance.lessThanOrEqualTo(0)) {
       throw new BadRequestException('La venta ya está pagada completamente');
     }
 
     // La caja se resuelve FUERA de la transacción: consultar el turno abierto es
     // una lectura independiente y así la transacción es lo más corta posible.
-    const cashShiftId = await this.paymentService.resolveCashShiftId(data.method, userId);
+    const cashShiftId = await this.paymentService.resolveCashShiftId(
+      data.method,
+      userId,
+    );
 
     return await this.prisma.$transaction(async (tx) => {
       // DELEGACIÓN: el invariante del dinero (sin sobrepago + deuda del cliente
@@ -155,7 +177,7 @@ export class SalesService {
    * @param userId el ID del usuario que cancela
    * @returns la venta cancelada
    */
-  async cancel(saleId: number, userId: number){
+  async cancel(saleId: number, userId: number) {
     return await this.prisma.$transaction(async (tx) => {
       // CLAIM ATÓMICO DE LA CANCELACIÓN:
       // sin esto, dos cancelaciones simultáneas reingresaban el stock DOS VECES
@@ -166,9 +188,14 @@ export class SalesService {
       });
 
       if (claim.count === 0) {
-        const current = await tx.sale.findUnique({ where: { id: saleId }, select: { id: true } });
+        const current = await tx.sale.findUnique({
+          where: { id: saleId },
+          select: { id: true },
+        });
         if (!current) throw new NotFoundException('Venta no encontrada');
-        throw new ConflictException('Esta venta ya fue cancelada por otra operación');
+        throw new ConflictException(
+          'Esta venta ya fue cancelada por otra operación',
+        );
       }
 
       // Releemos dentro de la transacción (ya reservada para nosotros)
@@ -194,15 +221,19 @@ export class SalesService {
               referenceId: saleId,
             },
             userId,
-            tx
+            tx,
           );
         }
-        
+
         // Si era a crédito, revertir la deuda del cliente.
         // Se delega en PaymentService para heredar la misma red de seguridad contra
         // deudas negativas que usan los cobros y las devoluciones.
         if (sale.balance.gt(0) && sale.clientId) {
-            await this.paymentService.decreaseClientDebt(tx, sale.clientId, sale.balance);
+          await this.paymentService.decreaseClientDebt(
+            tx,
+            sale.clientId,
+            sale.balance,
+          );
         }
       }
 
@@ -212,48 +243,51 @@ export class SalesService {
         // A. Crear el "Expediente" de la devolución (SaleReturn)
         const saleReturn = await tx.saleReturn.create({
           data: {
-              saleId: saleId,
-              processedById: userId,
-              note: `Cancelación automática (Reembolso de $${sale.paidAmount})`
-          }
+            saleId: saleId,
+            processedById: userId,
+            note: `Cancelación automática (Reembolso de ${money(sale.paidAmount)})`,
+          },
         });
 
         // B. Crear el registro Financiero del Reembolso (SaleRefund)
         await tx.saleRefund.create({
           data: {
-              saleReturnId: saleReturn.id,
-              saleId: saleId,
-              amount: sale.paidAmount,
-              method: sale.paymentMethod,
-              reference: `Reembolso por Cancelación Venta #${saleId}`
-          }
+            saleReturnId: saleReturn.id,
+            saleId: saleId,
+            amount: sale.paidAmount,
+            method: sale.paymentMethod,
+            reference: `Reembolso por Cancelación Venta #${saleId}`,
+          },
         });
-      
-         // C. Sacar el dinero FÍSICO de la caja (CashShift)
+
+        // C. Sacar el dinero FÍSICO de la caja (CashShift)
         //  TODO: Implemntar logica de si fue tranferencia o con tarjeta no mover dinero fisico
         // Solo podemos sacar dinero si hay una caja abierta.
-        const currentShift = await this.cashShiftService.getCurrentShift(userId);
-        
+        const currentShift =
+          await this.cashShiftService.getCurrentShift(userId);
+
         if (currentShift) {
-            // Creamos la transacción de caja DIRECTAMENTE dentro de la misma 'tx' de Prisma
-            // para asegurar que si falla la venta, no se registre la salida de dinero.
-            await tx.cashTransaction.create({
-                data: {
-                    shiftId: currentShift.id,
-                    type: CashTransactionType.MANUAL_WITHDRAW, // O REFUND_OUT
-                    amount: sale.paidAmount,
-                    reason: `Reembolso automático Venta #${saleId}`,
-                    relatedTable: 'SaleRefund',
-                    referenceId: saleReturn.id,
-                    createdBy: userId
-                }
-            });
+          // Creamos la transacción de caja DIRECTAMENTE dentro de la misma 'tx' de Prisma
+          // para asegurar que si falla la venta, no se registre la salida de dinero.
+          await tx.cashTransaction.create({
+            data: {
+              shiftId: currentShift.id,
+              type: CashTransactionType.MANUAL_WITHDRAW, // O REFUND_OUT
+              amount: sale.paidAmount,
+              reason: `Reembolso automático Venta #${saleId}`,
+              relatedTable: 'SaleRefund',
+              referenceId: saleReturn.id,
+              createdBy: userId,
+            },
+          });
         } else {
-            // DECISIÓN DE NEGOCIO:
-            // Si no hay caja abierta, registramos el reembolso en el sistema pero NO movemos dinero físico
-            // o lanzamos alerta. Por ahora, permitimos cancelar (el SaleRefund queda registrado)
-            // pero el cajero no verá salida en su corte porque no tiene turno.
-            this.logger.warn(`Venta #${saleId} cancelada con reembolso, pero sin caja abierta para registrar salida de efectivo.`);
+          // DECISIÓN DE NEGOCIO:
+          // Si no hay caja abierta, registramos el reembolso en el sistema pero NO movemos dinero físico
+          // o lanzamos alerta. Por ahora, permitimos cancelar (el SaleRefund queda registrado)
+          // pero el cajero no verá salida en su corte porque no tiene turno.
+          this.logger.warn(
+            `Venta #${saleId} cancelada con reembolso, pero sin caja abierta para registrar salida de efectivo.`,
+          );
         }
       }
 
@@ -264,8 +298,8 @@ export class SalesService {
           status: SaleStatus.CANCELLED,
           flowStatus: SaleFlowStatus.CANCELLED,
           note: sale.note ? `${sale.note} | Cancelado` : 'Cancelado',
-          balance: new Decimal(0) // La deuda se anula
-        }
+          balance: new Decimal(0), // La deuda se anula
+        },
       });
     });
   }
@@ -280,7 +314,9 @@ export class SalesService {
    */
   async createReturn(saleId: number, dto: ReturnSaleDto, userId: number) {
     if (!dto.items || dto.items.length === 0) {
-      throw new BadRequestException('La devolución debe tener al menos un producto');
+      throw new BadRequestException(
+        'La devolución debe tener al menos un producto',
+      );
     }
 
     return await this.prisma.$transaction(async (tx) => {
@@ -300,10 +336,14 @@ export class SalesService {
 
       if (!sale) throw new NotFoundException('Venta no encontrada');
       if (sale.flowStatus !== SaleFlowStatus.COMPLETED) {
-        throw new BadRequestException('Solo se pueden hacer devoluciones sobre ventas FINALIZADAS');
+        throw new BadRequestException(
+          'Solo se pueden hacer devoluciones sobre ventas FINALIZADAS',
+        );
       }
       if (sale.status === SaleStatus.CANCELLED) {
-        throw new BadRequestException('No se puede devolver sobre una venta cancelada');
+        throw new BadRequestException(
+          'No se puede devolver sobre una venta cancelada',
+        );
       }
 
       // 3. Items originales + CANTIDADES YA DEVUELTAS en devoluciones anteriores.
@@ -311,21 +351,24 @@ export class SalesService {
       // vendida, no contra "lo que queda por devolver", así que la misma unidad
       // podía devolverse una y otra vez.
       const saleItems = await tx.saleItem.findMany({ where: { saleId } });
-      const itemsMap = new Map(saleItems.map(it => [it.id, it]));
+      const itemsMap = new Map(saleItems.map((it) => [it.id, it]));
 
       const previousReturns = await tx.saleReturnItem.groupBy({
         by: ['saleItemId'],
-        where: { saleItemId: { in: saleItems.map(it => it.id) } },
+        where: { saleItemId: { in: saleItems.map((it) => it.id) } },
         _sum: { quantity: true },
       });
       const returnedMap = new Map(
-        previousReturns.map(r => [r.saleItemId, r._sum.quantity ?? 0]),
+        previousReturns.map((r) => [r.saleItemId, r._sum.quantity ?? 0]),
       );
 
       // 4. Consolidar el DTO: si el mismo saleItemId viene repetido en la petición,
       // se suman las cantidades antes de validar (si no, cada línea pasaría la
       // validación por separado y en conjunto excederían lo disponible).
-      const consolidated = new Map<number, { quantity: number; reason?: string; restock: boolean }>();
+      const consolidated = new Map<
+        number,
+        { quantity: number; reason?: string; restock: boolean }
+      >();
       for (const it of dto.items) {
         const prev = consolidated.get(it.saleItemId);
         if (prev) {
@@ -346,7 +389,9 @@ export class SalesService {
       for (const [saleItemId, req] of consolidated) {
         const originalItem = itemsMap.get(saleItemId);
         if (!originalItem) {
-          throw new BadRequestException(`El item ${saleItemId} no pertenece a esta venta`);
+          throw new BadRequestException(
+            `El item ${saleItemId} no pertenece a esta venta`,
+          );
         }
 
         const yaDevuelto = returnedMap.get(saleItemId) ?? 0;
@@ -355,7 +400,7 @@ export class SalesService {
         if (req.quantity > disponible) {
           throw new BadRequestException(
             `Solo puedes devolver ${disponible} unidad(es) de este producto ` +
-            `(vendidas: ${originalItem.quantity}, ya devueltas: ${yaDevuelto})`,
+              `(vendidas: ${originalItem.quantity}, ya devueltas: ${yaDevuelto})`,
           );
         }
       }
@@ -437,7 +482,9 @@ export class SalesService {
       // Si TODAS las unidades de la venta quedaron devueltas, la venta pasa a
       // REFUNDED (el estado existía en el enum pero nunca se usaba).
       const totalmenteDevuelta = saleItems.every((it) => {
-        const acumulado = (returnedMap.get(it.id) ?? 0) + (consolidated.get(it.id)?.quantity ?? 0);
+        const acumulado =
+          (returnedMap.get(it.id) ?? 0) +
+          (consolidated.get(it.id)?.quantity ?? 0);
         return acumulado >= it.quantity;
       });
 
@@ -467,7 +514,9 @@ export class SalesService {
         const saleBalance = new Decimal(sale.balance);
 
         // (a) Tramo contra la deuda pendiente de la venta
-        debtApplied = totalRefundAmount.gt(saleBalance) ? saleBalance : totalRefundAmount;
+        debtApplied = totalRefundAmount.gt(saleBalance)
+          ? saleBalance
+          : totalRefundAmount;
 
         if (debtApplied.gt(0)) {
           await tx.sale.update({
@@ -478,7 +527,11 @@ export class SalesService {
           if (sale.clientId) {
             // Reutilizamos el dueño único de la deuda (misma red de seguridad
             // contra deudas negativas que en los cobros).
-            await this.paymentService.decreaseClientDebt(tx, sale.clientId, debtApplied);
+            await this.paymentService.decreaseClientDebt(
+              tx,
+              sale.clientId,
+              debtApplied,
+            );
           }
         }
 
@@ -489,16 +542,19 @@ export class SalesService {
         const paidAmount = new Decimal(sale.paidAmount);
         if (cashRefunded.gt(paidAmount)) {
           this.logger.warn(
-            `Devolución #${saleReturn.id}: el reembolso en efectivo ($${cashRefunded}) supera lo pagado ` +
-            `($${paidAmount}) en la venta #${saleId}. Se limita a lo pagado. REVISAR consistencia.`,
+            `Devolución #${saleReturn.id}: el reembolso en efectivo (${money(cashRefunded)}) supera lo pagado ` +
+              `(${money(paidAmount)}) en la venta #${saleId}. Se limita a lo pagado. REVISAR consistencia.`,
           );
           cashRefunded = paidAmount;
         }
 
         if (cashRefunded.gt(0)) {
-          const currentShift = await this.cashShiftService.getCurrentShift(userId);
+          const currentShift =
+            await this.cashShiftService.getCurrentShift(userId);
           if (!currentShift) {
-            throw new ConflictException('Se requiere caja abierta para realizar reembolso en efectivo');
+            throw new ConflictException(
+              'Se requiere caja abierta para realizar reembolso en efectivo',
+            );
           }
 
           // Salida de dinero de la caja, dentro de la MISMA transacción para que
@@ -528,8 +584,8 @@ export class SalesService {
       }
 
       this.logger.log(
-        `Devolución #${saleReturn.id} de la venta #${saleId}: total $${totalRefundAmount} ` +
-        `(deuda cancelada $${debtApplied}, efectivo devuelto $${cashRefunded})`,
+        `Devolución #${saleReturn.id} de la venta #${saleId}: total ${money(totalRefundAmount)} ` +
+          `(deuda cancelada ${money(debtApplied)}, efectivo devuelto ${money(cashRefunded)})`,
       );
 
       return {
@@ -547,14 +603,17 @@ export class SalesService {
    * Se usa para serializar operaciones que deben leer el histórico acumulado de la
    * venta antes de decidir (ej. cuánto queda por devolver).
    */
-  private async lockSaleRow(tx: Prisma.TransactionClient, saleId: number): Promise<void> {
+  private async lockSaleRow(
+    tx: Prisma.TransactionClient,
+    saleId: number,
+  ): Promise<void> {
     await tx.$queryRaw`SELECT id FROM "public"."Sale" WHERE id = ${saleId} FOR UPDATE`;
   }
 
   /**
    * Agregar un producto a una venta
    * @param saleId el ID de la venta
-    * @param dto los datos del item a agregar
+   * @param dto los datos del item a agregar
    * @returns el item agregado o actualizado
    */
   async addItem(saleId: number, dto: SaleItemDto) {
@@ -562,16 +621,24 @@ export class SalesService {
     this.ensureDraftSale(sale);
 
     // 1. Buscar producto y precio real
-    const product = await this.prisma.product.findUnique({ where: { id: dto.productId } });
-    if (!product || !product.isActive) throw new NotFoundException('Producto no válido');
+    const product = await this.prisma.product.findUnique({
+      where: { id: dto.productId },
+    });
+    if (!product || !product.isActive)
+      throw new NotFoundException('Producto no válido');
 
     // Lógica de precio especial (Simplificada para un item, idealmente reutilizar lógica de create)
     let price = product.price;
     if (sale.clientId) {
-       const specialPrice = await this.prisma.clientProductPrice.findUnique({
-           where: { clientId_productId: { clientId: sale.clientId, productId: product.id } }
-       });
-       if (specialPrice && specialPrice.isActive) price = specialPrice.price;
+      const specialPrice = await this.prisma.clientProductPrice.findUnique({
+        where: {
+          clientId_productId: {
+            clientId: sale.clientId,
+            productId: product.id,
+          },
+        },
+      });
+      if (specialPrice && specialPrice.isActive) price = specialPrice.price;
     }
 
     const quantity = new Decimal(dto.quantity);
@@ -580,41 +647,48 @@ export class SalesService {
     return await this.prisma.$transaction(async (tx) => {
       // Upsert: Si ya existe el item, sumamos cantidad. Si no, creamos.
       const existingItem = await tx.saleItem.findFirst({
-          where: { saleId, productId: dto.productId }
+        where: { saleId, productId: dto.productId },
       });
 
       if (existingItem) {
-          // Actualizar existente
-          const newQty = new Decimal(existingItem.quantity).add(quantity);
-          const newSubtotal = price.mul(newQty);
-          await tx.saleItem.update({
-              where: { id: existingItem.id },
-              data: { quantity: newQty.toNumber(), subtotal: newSubtotal }
-          });
+        // Actualizar existente
+        const newQty = new Decimal(existingItem.quantity).add(quantity);
+        const newSubtotal = price.mul(newQty);
+        await tx.saleItem.update({
+          where: { id: existingItem.id },
+          data: { quantity: newQty.toNumber(), subtotal: newSubtotal },
+        });
       } else {
-          // Crear nuevo
-          await tx.saleItem.create({
-              data: {
-                  saleId,
-                  productId: dto.productId,
-                  quantity: dto.quantity,
-                  price: price,
-                  subtotal: subtotal,
-                  costAtSale: product.cost // Snapshot
-              }
-          });
+        // Crear nuevo
+        await tx.saleItem.create({
+          data: {
+            saleId,
+            productId: dto.productId,
+            quantity: dto.quantity,
+            price: price,
+            subtotal: subtotal,
+            costAtSale: product.cost, // Snapshot
+          },
+        });
       }
 
       // Recalcular Total Venta
       // Lo hacemos sumando subtotales de items para evitar errores de deriva
-      const agg = await tx.saleItem.aggregate({ where: { saleId }, _sum: { subtotal: true } });
+      const agg = await tx.saleItem.aggregate({
+        where: { saleId },
+        _sum: { subtotal: true },
+      });
       const newTotal = agg._sum.subtotal ?? new Decimal(0);
 
       await tx.sale.update({
-          where: { id: saleId },
-          data: { total: newTotal, subtotal: newTotal, balance: newTotal.sub(sale.paidAmount) }
+        where: { id: saleId },
+        data: {
+          total: newTotal,
+          subtotal: newTotal,
+          balance: newTotal.sub(sale.paidAmount),
+        },
       });
-      
+
       return { message: 'Producto agregado', newTotal };
     });
   }
@@ -637,14 +711,21 @@ export class SalesService {
       await tx.saleItem.delete({ where: { id: itemId } });
 
       // Recálculo seguro
-      const agg = await tx.saleItem.aggregate({ where: { saleId }, _sum: { subtotal: true } });
+      const agg = await tx.saleItem.aggregate({
+        where: { saleId },
+        _sum: { subtotal: true },
+      });
       const newTotal = agg._sum.subtotal ?? new Decimal(0);
 
       await tx.sale.update({
-          where: { id: saleId },
-          data: { total: newTotal, subtotal: newTotal, balance: newTotal.sub(sale.paidAmount) }
+        where: { id: saleId },
+        data: {
+          total: newTotal,
+          subtotal: newTotal,
+          balance: newTotal.sub(sale.paidAmount),
+        },
       });
-      
+
       return { message: 'Producto eliminado', newTotal };
     });
   }
@@ -665,12 +746,17 @@ export class SalesService {
     this.ensureDraftSale(sale);
 
     return await this.prisma.$transaction(async (tx) => {
-      const item = await tx.saleItem.findFirst({ where: { id: itemId, saleId } });
-      if (!item) throw new NotFoundException('Producto no encontrado en esta venta');
+      const item = await tx.saleItem.findFirst({
+        where: { id: itemId, saleId },
+      });
+      if (!item)
+        throw new NotFoundException('Producto no encontrado en esta venta');
 
       // Validación temprana de existencias (UX: fallar pronto).
       // La verificación autoritativa y atómica sigue ocurriendo en completeSale.
-      const product = await tx.product.findUnique({ where: { id: item.productId } });
+      const product = await tx.product.findUnique({
+        where: { id: item.productId },
+      });
       if (!product) throw new NotFoundException('Producto no válido');
       if (product.stock < quantity) {
         throw new BadRequestException(
@@ -685,7 +771,11 @@ export class SalesService {
         data: { quantity, subtotal: newSubtotal },
       });
 
-      const newTotal = await this.recalculateSaleTotals(tx, saleId, sale.paidAmount);
+      const newTotal = await this.recalculateSaleTotals(
+        tx,
+        saleId,
+        sale.paidAmount,
+      );
       return { message: 'Cantidad actualizada', newTotal };
     });
   }
@@ -707,9 +797,12 @@ export class SalesService {
 
     // Validar el cliente destino (si se asigna uno)
     if (clientId) {
-      const client = await this.prisma.client.findUnique({ where: { id: clientId } });
+      const client = await this.prisma.client.findUnique({
+        where: { id: clientId },
+      });
       if (!client) throw new NotFoundException('Cliente no encontrado');
-      if (!client.isActive) throw new BadRequestException('El cliente está inactivo');
+      if (!client.isActive)
+        throw new BadRequestException('El cliente está inactivo');
     }
 
     return await this.prisma.$transaction(async (tx) => {
@@ -751,12 +844,19 @@ export class SalesService {
         }
       }
 
-      await tx.sale.update({ where: { id: saleId }, data: { clientId: clientId ?? null } });
+      await tx.sale.update({
+        where: { id: saleId },
+        data: { clientId: clientId ?? null },
+      });
 
-      const newTotal = await this.recalculateSaleTotals(tx, saleId, sale.paidAmount);
+      const newTotal = await this.recalculateSaleTotals(
+        tx,
+        saleId,
+        sale.paidAmount,
+      );
 
       this.logger.log(
-        `Venta #${saleId}: cliente asignado ${clientId ?? 'Público General'}. Total re-preciado: ${newTotal}`,
+        `Venta #${saleId}: cliente asignado ${clientId ?? 'Público General'}. Total re-preciado: ${money(newTotal)}`,
       );
 
       return { message: 'Cliente actualizado', newTotal };
@@ -772,12 +872,19 @@ export class SalesService {
     saleId: number,
     paidAmount: Decimal,
   ): Promise<Decimal> {
-    const agg = await tx.saleItem.aggregate({ where: { saleId }, _sum: { subtotal: true } });
+    const agg = await tx.saleItem.aggregate({
+      where: { saleId },
+      _sum: { subtotal: true },
+    });
     const newTotal = agg._sum.subtotal ?? new Decimal(0);
 
     await tx.sale.update({
       where: { id: saleId },
-      data: { total: newTotal, subtotal: newTotal, balance: newTotal.sub(paidAmount) },
+      data: {
+        total: newTotal,
+        subtotal: newTotal,
+        balance: newTotal.sub(paidAmount),
+      },
     });
 
     return newTotal;
@@ -817,9 +924,13 @@ export class SalesService {
         });
         if (!current) throw new NotFoundException('Venta no encontrada');
         if (current.flowStatus === SaleFlowStatus.COMPLETED) {
-          throw new ConflictException('Esta venta ya fue cerrada por otra operación');
+          throw new ConflictException(
+            'Esta venta ya fue cerrada por otra operación',
+          );
         }
-        throw new ConflictException('La venta ya no es editable (fue cancelada)');
+        throw new ConflictException(
+          'La venta ya no es editable (fue cancelada)',
+        );
       }
 
       // 2. Releer la venta DENTRO de la transacción (datos frescos y ya reservados)
@@ -835,9 +946,15 @@ export class SalesService {
         throw new BadRequestException('Venta cancelada, no se puede cerrar');
 
       // 3. Validacion financiera (credito vs contado)
-      if(sale.balance.gt(0)){
-        if(!sale.client) throw new BadRequestException('La venta tiene saldo pendiente y no tiene cliente. Debe pagarse en su totalidad');
-        if(!sale.client.hasCredit) throw new BadRequestException(`El cliente ${sale.client.name} no tiene credito. Debe liquidar el saldo: ${sale.balance}`);
+      if (sale.balance.gt(0)) {
+        if (!sale.client)
+          throw new BadRequestException(
+            'La venta tiene saldo pendiente y no tiene cliente. Debe pagarse en su totalidad',
+          );
+        if (!sale.client.hasCredit)
+          throw new BadRequestException(
+            `El cliente ${sale.client.name} no tiene credito. Debe liquidar el saldo: ${money(sale.balance)}`,
+          );
 
         // LÍMITE DE CRÉDITO A PRUEBA DE CONCURRENCIA:
         // Antes se leía `currentDebt`, se sumaba en memoria y se escribía el total.
@@ -856,7 +973,7 @@ export class SalesService {
             updatedClient.currentDebt.sub(sale.balance),
           );
           throw new BadRequestException(
-            `Límite de crédito excedido. Disponible: $${disponible}, Requerido: $${sale.balance}`,
+            `Límite de crédito excedido. Disponible: ${money(disponible)}, Requerido: ${money(sale.balance)}`,
           );
         }
       }
@@ -869,7 +986,9 @@ export class SalesService {
       // bloquea la fila que la otra necesita y Postgres aborta una. Recorriendo
       // siempre en el mismo orden, los bloqueos se toman en secuencia y sólo
       // hay espera, nunca deadlock.
-      const orderedItems = [...sale.items].sort((a, b) => a.productId - b.productId);
+      const orderedItems = [...sale.items].sort(
+        (a, b) => a.productId - b.productId,
+      );
 
       for (const item of orderedItems) {
         // DELEGAMOS AL EXPERTO: InventoryService (descuento atómico y guardado)
@@ -882,7 +1001,7 @@ export class SalesService {
             referenceId: sale.id,
           },
           userId,
-          tx // Pasamos la transacción para atomicidad
+          tx, // Pasamos la transacción para atomicidad
         );
         totalCostOfSale = totalCostOfSale.add(movement.totalCost);
       }
@@ -899,7 +1018,7 @@ export class SalesService {
           profit: profit,
           invoiceNumber: invoiceNumber,
           // Si quedó saldo, el estado sigue siendo PARTIAL o PENDING, eso está bien.
-        }
+        },
       });
 
       // 6. Actualizar precios históricos del cliente
@@ -907,7 +1026,6 @@ export class SalesService {
 
       this.logger.log(`Venta #${saleId} finalizada. Factura: ${invoiceNumber}`);
       return completedSale;
-
     });
   }
 
@@ -952,7 +1070,9 @@ export class SalesService {
       };
     }
 
-    const orderBy: Prisma.SaleOrderByWithRelationInput = { [sortBy]: sortOrder };
+    const orderBy: Prisma.SaleOrderByWithRelationInput = {
+      [sortBy]: sortOrder,
+    };
 
     const include = {
       client: { select: { id: true, name: true } },
@@ -993,11 +1113,22 @@ export class SalesService {
     const sale = await this.prisma.sale.findUnique({
       where: { id },
       include: {
-        items: { include: { product: { select: {id: true, name: true, sku: true } } } }, // Nombre del producto
+        items: {
+          include: { product: { select: { id: true, name: true, sku: true } } },
+        }, // Nombre del producto
         payments: true, // Historial de pagos
-        client: { select: { id: true, name: true, rfc: true, address: true, email: true, phone: true } }, // Datos para factura
-        user: { select: { firstName: true, lastName: true } } // Quién vendió
-      }
+        client: {
+          select: {
+            id: true,
+            name: true,
+            rfc: true,
+            address: true,
+            email: true,
+            phone: true,
+          },
+        }, // Datos para factura
+        user: { select: { firstName: true, lastName: true } }, // Quién vendió
+      },
     });
     if (!sale) throw new NotFoundException('Venta no encontrada');
     return sale;
@@ -1023,7 +1154,10 @@ export class SalesService {
         user: { select: { id: true, firstName: true, lastName: true } },
       },
     });
-    if (!sale) throw new NotFoundException('Venta no encontrada con ese número de factura');
+    if (!sale)
+      throw new NotFoundException(
+        'Venta no encontrada con ese número de factura',
+      );
     return sale;
   }
 
@@ -1044,35 +1178,40 @@ export class SalesService {
       }
     }
 
-    const [byStatus, byFlowStatus, todayCount, totalRevenue] = await Promise.all([
-      this.prisma.sale.groupBy({
-        by: ['status'],
-        where: { ...where, status: { not: SaleStatus.CANCELLED } },
-        _count: { id: true },
-        _sum: { total: true },
-      }),
-      this.prisma.sale.groupBy({
-        by: ['flowStatus'],
-        where,
-        _count: { id: true },
-      }),
-      this.prisma.sale.count({
-        where: {
-          ...where,
-          flowStatus: SaleFlowStatus.COMPLETED,
-          status: { not: SaleStatus.CANCELLED },
-          createdAt: {
-            gte: new Date(new Date().setHours(0, 0, 0, 0)),
-            lte: new Date(),
+    const [byStatus, byFlowStatus, todayCount, totalRevenue] =
+      await Promise.all([
+        this.prisma.sale.groupBy({
+          by: ['status'],
+          where: { ...where, status: { not: SaleStatus.CANCELLED } },
+          _count: { id: true },
+          _sum: { total: true },
+        }),
+        this.prisma.sale.groupBy({
+          by: ['flowStatus'],
+          where,
+          _count: { id: true },
+        }),
+        this.prisma.sale.count({
+          where: {
+            ...where,
+            flowStatus: SaleFlowStatus.COMPLETED,
+            status: { not: SaleStatus.CANCELLED },
+            createdAt: {
+              gte: new Date(new Date().setHours(0, 0, 0, 0)),
+              lte: new Date(),
+            },
           },
-        },
-      }),
-      this.prisma.sale.aggregate({
-        where: { ...where, flowStatus: SaleFlowStatus.COMPLETED, status: { not: SaleStatus.CANCELLED } },
-        _sum: { total: true },
-        _count: { id: true },
-      }),
-    ]);
+        }),
+        this.prisma.sale.aggregate({
+          where: {
+            ...where,
+            flowStatus: SaleFlowStatus.COMPLETED,
+            status: { not: SaleStatus.CANCELLED },
+          },
+          _sum: { total: true },
+          _count: { id: true },
+        }),
+      ]);
 
     return {
       byStatus,
@@ -1089,13 +1228,22 @@ export class SalesService {
    * @param sale la venta
    * @param userId el ID del usuario que actualiza los precios
    */
-  private async updateClientPricesOnSaleComplete(tx: any, sale: Sale & { items: SaleItem[] }, userId?: number) {
+  private async updateClientPricesOnSaleComplete(
+    tx: Prisma.TransactionClient,
+    sale: Sale & { items: SaleItem[] },
+    userId?: number,
+  ) {
     // 1. Validar que la venta tenga un cliente
-    if(!sale.clientId) return;
+    if (!sale.clientId) return;
 
     for (const it of sale.items) {
       const existing = await tx.clientProductPrice.findUnique({
-        where: { clientId_productId: { clientId: sale.clientId, productId: it.productId } }
+        where: {
+          clientId_productId: {
+            clientId: sale.clientId,
+            productId: it.productId,
+          },
+        },
       });
 
       const newPrice = new Decimal(it.price);
@@ -1106,18 +1254,27 @@ export class SalesService {
         where: {
           clientId: sale.clientId,
           productId: it.productId,
-          endDate: null
+          endDate: null,
         },
         data: {
-          endDate: new Date()
+          endDate: new Date(),
         },
       });
 
       // upsert precio activo
       await tx.clientProductPrice.upsert({
-        where: { clientId_productId: { clientId: sale.clientId, productId: it.productId } },
+        where: {
+          clientId_productId: {
+            clientId: sale.clientId,
+            productId: it.productId,
+          },
+        },
         update: { price: newPrice, isActive: true },
-        create: { clientId: sale.clientId, productId: it.productId, price: newPrice}
+        create: {
+          clientId: sale.clientId,
+          productId: it.productId,
+          price: newPrice,
+        },
       });
 
       // crear nuevo historial
@@ -1135,17 +1292,17 @@ export class SalesService {
 
   private async validateSale(saleId: number) {
     const sale = await this.prisma.sale.findUnique({ where: { id: saleId } });
-    if(!sale) throw new NotFoundException('Venta no encontrada');
+    if (!sale) throw new NotFoundException('Venta no encontrada');
     return sale;
   }
 
   private ensureDraftSale(sale: Sale) {
-    if(sale.flowStatus !== SaleFlowStatus.DRAFT) throw new BadRequestException('La venta ya no es editable');
+    if (sale.flowStatus !== SaleFlowStatus.DRAFT)
+      throw new BadRequestException('La venta ya no es editable');
   }
 
   private generateInvoiceNumber(id: number): string {
     const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     return `FAC-${date}-${id.toString().padStart(6, '0')}`;
   }
-
 }

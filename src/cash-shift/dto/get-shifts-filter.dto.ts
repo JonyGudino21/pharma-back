@@ -1,9 +1,9 @@
-import { IsOptional, IsInt, IsEnum, IsDateString, IsNumber } from 'class-validator';
+import { IsOptional, IsInt, IsEnum, IsDateString } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ShiftStatus } from '@prisma/client';
 import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
 
-export class GetShiftsFilterDto extends PaginationParamsDto{
+export class GetShiftsFilterDto extends PaginationParamsDto {
   @IsOptional()
   @Type(() => Number)
   @IsInt()
@@ -19,5 +19,5 @@ export class GetShiftsFilterDto extends PaginationParamsDto{
 
   @IsOptional()
   @IsDateString()
-  endDate?: string;   // YYYY-MM-DD
+  endDate?: string; // YYYY-MM-DD
 }
