@@ -162,20 +162,33 @@ export class SalesController {
   }
 
   /**
-   * [GERENCIAL] Anula una venta completa (Devuelve stock y dinero).
+   * [MIXTO] Descarta un borrador o anula una venta cerrada.
+   *
+   * No lleva `@Roles` a proposito: la misma ruta cubre el descarte del carrito
+   * abierto, que es rutina de cajero, y la anulacion de una venta cerrada, que
+   * mueve stock y efectivo. El permiso lo decide el servicio segun el estado
+   * real de la venta, ya leida y bloqueada dentro de la transaccion.
    */
   @Post(':id/cancel')
-  async cancel(@Param('id') id: number, @GetUser() user: AuthenticatedUser) {
-    const data = await this.salesService.cancel(id, user.userId);
+  async cancel(
+    @Param('id', ParseIntPipe) id: number,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    const data = await this.salesService.cancel(id, user.userId, user.role);
     return ApiResponse.ok(data, 'Venta cancelada correctamente');
   }
 
   /**
    * [GERENCIAL] Procesa devolución parcial o total.
+   *
+   * Solo opera sobre ventas FINALIZADAS: reingresa mercancia al Kardex y saca
+   * dinero de la caja. A diferencia de `cancel`, aqui no hay caso operativo
+   * que atender, asi que el rol se exige en la propia ruta.
    */
   @Post(':id/return')
+  @Roles(UserRole.MANAGER)
   async createReturn(
-    @Param('id') id: number,
+    @Param('id', ParseIntPipe) id: number,
     @Body() returnSaleDto: ReturnSaleDto,
     @GetUser() user: AuthenticatedUser,
   ) {

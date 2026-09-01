@@ -4,6 +4,7 @@ import {
   NotFoundException,
   Logger,
   ConflictException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { CreateSaleDto } from './dto/create-sale.dto';
 import { AddPaymentDto } from './dto/add-payment.dto';
@@ -19,6 +20,7 @@ import {
   CashTransactionType,
   SaleRefund,
   Prisma,
+  UserRole,
 } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { ReturnSaleDto } from './dto/return-sale.dto';
@@ -177,7 +179,7 @@ export class SalesService {
    * @param userId el ID del usuario que cancela
    * @returns la venta cancelada
    */
-  async cancel(saleId: number, userId: number) {
+  async cancel(saleId: number, userId: number, role: UserRole) {
     return await this.prisma.$transaction(async (tx) => {
       // CLAIM ATÓMICO DE LA CANCELACIÓN:
       // sin esto, dos cancelaciones simultáneas reingresaban el stock DOS VECES
@@ -202,6 +204,32 @@ export class SalesService {
       const sale = await tx.sale.findUnique({ where: { id: saleId } });
       if (!sale) throw new NotFoundException('Venta no encontrada');
 
+      // AUTORIZACIÓN DEPENDIENTE DEL ESTADO.
+      //
+      // Este endpoint cubre dos operaciones que no se parecen en nada:
+      //   - DRAFT: descartar el carrito abierto. Rutina de cajero, no mueve
+      //     stock ni dinero porque nada ha salido todavía.
+      //   - COMPLETED: anular una venta cerrada. Reingresa mercancía al Kardex,
+      //     saca efectivo de la caja y revierte la deuda del cliente.
+      //
+      // Por eso el permiso no puede ser un @Roles fijo en la ruta: bloquearía a
+      // los cajeros el descarte de su propio carrito. Se decide aquí, con la
+      // venta ya leída y bloqueada.
+      //
+      // Al lanzar dentro de la transacción, el claim atómico de arriba se
+      // revierte y la venta NO queda marcada como cancelada.
+      const puedeAnularVentasCerradas =
+        role === UserRole.MANAGER || role === UserRole.ADMIN;
+
+      if (
+        sale.flowStatus === SaleFlowStatus.COMPLETED &&
+        !puedeAnularVentasCerradas
+      ) {
+        throw new ForbiddenException(
+          'Anular una venta cerrada requiere permiso de gerencia. Solicita la autorización de un supervisor.',
+        );
+      }
+
       // 1. REVERSIÓN DE INVENTARIO (Si la mercancía ya había salido)
       if (sale.flowStatus === SaleFlowStatus.COMPLETED) {
         // Orden determinista por productId: previene deadlocks entre operaciones
@@ -211,12 +239,32 @@ export class SalesService {
           orderBy: { productId: 'asc' },
         });
 
+        // SOLO se reingresa lo que el cliente TODAVÍA tiene.
+        //
+        // Una venta puede haber tenido devoluciones parciales antes de anularse:
+        // esas unidades ya volvieron al Kardex (o se dieron de baja como merma).
+        // Reingresar la cantidad vendida completa las contaba por segunda vez y
+        // creaba stock fantasma: unidades que el sistema cree tener y no existen
+        // en el anaquel. El descuadre solo aparecía en el inventario físico,
+        // semanas después y sin rastro de su origen.
+        const devueltoPrevio = await tx.saleReturnItem.groupBy({
+          by: ['saleItemId'],
+          where: { saleItemId: { in: items.map((it) => it.id) } },
+          _sum: { quantity: true },
+        });
+        const devueltoPorItem = new Map(
+          devueltoPrevio.map((r) => [r.saleItemId, r._sum.quantity ?? 0]),
+        );
+
         for (const item of items) {
+          const pendiente = item.quantity - (devueltoPorItem.get(item.id) ?? 0);
+          if (pendiente <= 0) continue;
+
           await this.inventoryService.registerMovement(
             {
               productId: item.productId,
               type: MovementType.RETURN_IN,
-              quantity: item.quantity,
+              quantity: pendiente,
               reason: `Cancelación Venta #${saleId}`,
               referenceId: saleId,
             },
@@ -238,14 +286,31 @@ export class SalesService {
       }
 
       // 2. GESTIÓN DE DINERO (REEMBOLSO AUTOMÁTICO vs SALDO A FAVOR)
-      // Si hubo pagos reales (dinero que entró), hay que registrar su salida.
-      if (sale.paidAmount.gt(0)) {
+      //
+      // Se devuelve lo pagado MENOS lo ya reembolsado en devoluciones previas.
+      // `paidAmount` no se decrementa al procesar una devolución (registra lo que
+      // entró históricamente), así que tomarlo tal cual pagaba dos veces el mismo
+      // dinero: en una venta de $270 con $90 ya devueltos, salían otros $270 de la
+      // caja. A diferencia del stock fantasma, esto es una pérdida directa y sale
+      // descuadrado en el arqueo del turno.
+      const reembolsadoPrevio = await tx.saleRefund.aggregate({
+        where: { saleId },
+        _sum: { amount: true },
+      });
+      const pendienteDeDevolver = Decimal.max(
+        new Decimal(sale.paidAmount).sub(
+          new Decimal(reembolsadoPrevio._sum.amount ?? 0),
+        ),
+        new Decimal(0),
+      );
+
+      if (pendienteDeDevolver.gt(0)) {
         // A. Crear el "Expediente" de la devolución (SaleReturn)
         const saleReturn = await tx.saleReturn.create({
           data: {
             saleId: saleId,
             processedById: userId,
-            note: `Cancelación automática (Reembolso de ${money(sale.paidAmount)})`,
+            note: `Cancelación automática (Reembolso de ${money(pendienteDeDevolver)})`,
           },
         });
 
@@ -254,7 +319,7 @@ export class SalesService {
           data: {
             saleReturnId: saleReturn.id,
             saleId: saleId,
-            amount: sale.paidAmount,
+            amount: pendienteDeDevolver,
             method: sale.paymentMethod,
             reference: `Reembolso por Cancelación Venta #${saleId}`,
           },
@@ -273,7 +338,7 @@ export class SalesService {
             data: {
               shiftId: currentShift.id,
               type: CashTransactionType.MANUAL_WITHDRAW, // O REFUND_OUT
-              amount: sale.paidAmount,
+              amount: pendienteDeDevolver,
               reason: `Reembolso automático Venta #${saleId}`,
               relatedTable: 'SaleRefund',
               referenceId: saleReturn.id,
@@ -1058,7 +1123,11 @@ export class SalesService {
     }
 
     if (query.status != null) where.status = query.status;
+    // El historial es de ventas cerradas. Un borrador vivo es el carrito del POS,
+    // no un ticket: mezclarlo en el listado hace que un cajero "anule" lo que
+    // otro tiene abierto en mostrador. Se listan solo si se piden explícitamente.
     if (query.flowStatus != null) where.flowStatus = query.flowStatus;
+    else where.flowStatus = { not: SaleFlowStatus.DRAFT };
     if (query.paymentStatus != null) where.paymentStatus = query.paymentStatus;
     if (query.clientId != null) where.clientId = query.clientId;
     if (query.userId != null) where.userId = query.userId;
@@ -1077,7 +1146,10 @@ export class SalesService {
     const include = {
       client: { select: { id: true, name: true } },
       user: { select: { id: true, firstName: true, lastName: true } },
-      _count: { select: { items: true, payments: true } },
+      // `saleReturn` alimenta el distintivo "con devoluciones" del listado.
+      // Cuenta agregada, no las filas: el historial completo se lee al abrir
+      // el detalle, no al pintar 20 renglones.
+      _count: { select: { items: true, payments: true, saleReturn: true } },
     };
 
     const [sales, total] = await Promise.all([
@@ -1128,6 +1200,21 @@ export class SalesService {
           },
         }, // Datos para factura
         user: { select: { firstName: true, lastName: true } }, // Quién vendió
+
+        // Historial de devoluciones con su reembolso asociado.
+        //
+        // No es decorativo: el front necesita saber cuanto se devolvio ya de
+        // cada linea para no ofrecer devolver mas de lo que queda. Sin este
+        // dato la pantalla propondria cantidades que el backend rechazaria,
+        // convirtiendo una validacion correcta en un error de cara al usuario.
+        saleReturn: {
+          orderBy: { createdAt: 'desc' },
+          include: {
+            items: true,
+            refund: true,
+            processedBy: { select: { firstName: true, lastName: true } },
+          },
+        },
       },
     });
     if (!sale) throw new NotFoundException('Venta no encontrada');
