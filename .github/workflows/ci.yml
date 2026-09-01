@@ -37,22 +37,11 @@ jobs:
       - name: Generar Prisma Client
         run: npx prisma generate
 
-      # Informativo por ahora: el codigo arrastra ~5300 diferencias de formato y
-      # ~156 errores de tipado previos a este pipeline. Se bloqueara cuando lleguen a cero.
-      - name: Lint (informativo, aun no bloquea el merge)
-        continue-on-error: true
-        run: npm run lint:ci | tee lint-report.txt
-
-      - name: Publicar resumen de lint
-        if: always()
-        run: |
-          {
-            echo '### Lint (informativo)'
-            echo ''
-            echo '```'
-            tail -n 4 lint-report.txt 2>/dev/null || echo 'Sin reporte de lint.'
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+      # Bloqueante desde que la deuda llego a cero. Volver a ponerlo en
+      # informativo equivale a reabrir la puerta por la que entraron los 5554
+      # avisos originales.
+      - name: Lint
+        run: npm run lint:ci
 
       - name: Typecheck
         run: npm run typecheck
