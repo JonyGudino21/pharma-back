@@ -196,6 +196,7 @@ describe('Concurrencia de inventario y ventas (integración)', () => {
       } as any,
       userId,
     );
+    if (!compra) throw new Error('No se pudo crear la compra de prueba');
     creados.purchases.push(compra.id);
 
     await purchases.receive(compra.id, userId);
