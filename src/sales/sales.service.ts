@@ -21,6 +21,7 @@ import {
   SaleRefund,
   Prisma,
   UserRole,
+  PrintChannel,
 } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { ReturnSaleDto } from './dto/return-sale.dto';
@@ -30,6 +31,7 @@ import { CashShiftService } from 'src/cash-shift/cash-shift.service';
 import { PaymentService } from 'src/payment/payment.service';
 import { FindAllSalesQueryDto } from './dto/find-all-sales-query.dto';
 import { money } from 'src/common/utils/decimal.util';
+import { isUniqueConstraintError } from 'src/common/utils/prisma-error.util';
 
 @Injectable()
 export class SalesService {
@@ -1215,6 +1217,13 @@ export class SalesService {
             processedBy: { select: { firstName: true, lastName: true } },
           },
         },
+        receiptPrints: {
+          orderBy: { copyNumber: 'asc' },
+          include: {
+            printedBy: { select: { firstName: true, lastName: true } },
+            template: { select: { id: true, name: true, paperWidthMm: true } },
+          },
+        },
       },
     });
     if (!sale) throw new NotFoundException('Venta no encontrada');
@@ -1391,5 +1400,92 @@ export class SalesService {
   private generateInvoiceNumber(id: number): string {
     const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     return `FAC-${date}-${id.toString().padStart(6, '0')}`;
+  }
+
+  /**
+   * Registra una impresión. copyNumber es el máximo existente + 1, con reintento
+   * si dos cajas pulsan Imprimir a la vez (UNIQUE saleId+copyNumber).
+   */
+  async registerPrint(
+    saleId: number,
+    userId: number,
+    channel: PrintChannel,
+    templateId?: number,
+  ) {
+    if (templateId) {
+      const template = await this.prisma.receiptTemplate.findFirst({
+        where: { id: templateId, isActive: true },
+        select: { id: true },
+      });
+      if (!template) {
+        throw new NotFoundException('Plantilla de ticket no encontrada');
+      }
+    }
+
+    const maxAttempts = 3;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        return await this.prisma.$transaction(async (tx) => {
+          const sale = await tx.sale.findUnique({
+            where: { id: saleId },
+            select: { id: true, flowStatus: true },
+          });
+          if (!sale) throw new NotFoundException('Venta no encontrada');
+          if (sale.flowStatus === SaleFlowStatus.DRAFT) {
+            throw new BadRequestException(
+              'No se puede imprimir el ticket de una venta en borrador',
+            );
+          }
+
+          const agg = await tx.saleReceiptPrint.aggregate({
+            where: { saleId },
+            _max: { copyNumber: true },
+          });
+          const copyNumber = (agg._max.copyNumber ?? 0) + 1;
+
+          return tx.saleReceiptPrint.create({
+            data: {
+              saleId,
+              printedById: userId,
+              templateId: templateId ?? null,
+              copyNumber,
+              channel,
+            },
+            include: {
+              printedBy: { select: { firstName: true, lastName: true } },
+              template: {
+                select: { id: true, name: true, paperWidthMm: true },
+              },
+            },
+          });
+        });
+      } catch (error) {
+        if (isUniqueConstraintError(error) && attempt < maxAttempts - 1) {
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    throw new ConflictException(
+      'No se pudo registrar la impresión. Inténtalo de nuevo.',
+    );
+  }
+
+  async listPrints(saleId: number) {
+    const sale = await this.prisma.sale.findUnique({
+      where: { id: saleId },
+      select: { id: true },
+    });
+    if (!sale) throw new NotFoundException('Venta no encontrada');
+
+    return this.prisma.saleReceiptPrint.findMany({
+      where: { saleId },
+      orderBy: { copyNumber: 'asc' },
+      include: {
+        printedBy: { select: { firstName: true, lastName: true } },
+        template: { select: { id: true, name: true, paperWidthMm: true } },
+      },
+    });
   }
 }

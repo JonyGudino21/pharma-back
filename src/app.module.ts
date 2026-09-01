@@ -16,6 +16,7 @@ import { SalesModule } from './sales/sales.module';
 import { CashShiftModule } from './cash-shift/cash-shift.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { CompanyModule } from './company/company.module';
 import { envValidationSchema } from './config/env.validation';
 
 @Module({
@@ -51,6 +52,7 @@ import { envValidationSchema } from './config/env.validation';
     CashShiftModule,
     InventoryModule,
     AnalyticsModule,
+    CompanyModule,
   ],
   controllers: [AppController],
   providers: [

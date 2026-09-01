@@ -89,6 +89,9 @@ describe('Concurrencia de inventario y ventas (integración)', () => {
     await prisma.inventoryMovement.deleteMany({
       where: { productId: { in: creados.products } },
     });
+    await prisma.saleReceiptPrint.deleteMany({
+      where: { saleId: { in: creados.sales } },
+    });
     await prisma.saleItem.deleteMany({
       where: { saleId: { in: creados.sales } },
     });
