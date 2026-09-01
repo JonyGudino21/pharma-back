@@ -3,17 +3,21 @@ import { Prisma } from '@prisma/client';
 export type DecimalLike = Prisma.Decimal | number | string;
 
 /**
- * Formatea un importe monetario con dos decimales.
+ * Formatea un importe monetario, simbolo incluido.
  *
  * Prisma devuelve los campos `Decimal` como objetos, no como numeros. Al
  * interpolarlos en una plantilla el resultado depende de la implementacion
  * interna del tipo, y los mensajes de error y las notas de auditoria son
  * contrato con el usuario y con el auditor: se formatean de forma explicita.
  *
- * @example money(sale.balance) // "1250.00"
+ * El simbolo va dentro del helper a proposito. Dejarlo en cada plantilla
+ * (`$${money(x)}`) obliga a acertar en cada uno de los 16 sitios que lo usan y
+ * basta un despiste para que un importe salga sin moneda.
+ *
+ * @example money(sale.balance) // "$1250.00"
  */
 export function money(value: DecimalLike): string {
-  return new Prisma.Decimal(value).toFixed(2);
+  return `$${new Prisma.Decimal(value).toFixed(2)}`;
 }
 
 /**
