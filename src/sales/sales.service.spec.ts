@@ -3,7 +3,9 @@ import {
   ConflictException,
   BadRequestException,
   NotFoundException,
+  ForbiddenException,
 } from '@nestjs/common';
+import { UserRole } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { SalesService } from './sales.service';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -27,7 +29,8 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
     client: { update: jest.fn() },
     // Ramas de cancel() con pagos reales (reembolso y salida de caja)
     saleReturn: { create: jest.fn() },
-    saleRefund: { create: jest.fn() },
+    saleReturnItem: { groupBy: jest.fn() },
+    saleRefund: { create: jest.fn(), aggregate: jest.fn() },
     cashTransaction: { create: jest.fn() },
     // updateClientPricesOnSaleComplete usa estos 4 métodos al cerrar una venta con cliente
     clientProductPrice: { findUnique: jest.fn(), upsert: jest.fn() },
@@ -100,6 +103,9 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
         Promise.resolve({ ...ventaBase, ...data }),
     );
     tx.saleItem.findMany.mockResolvedValue([]);
+    tx.saleReturnItem.groupBy.mockResolvedValue([]);
+    tx.saleRefund.aggregate.mockResolvedValue({ _sum: { amount: null } });
+    tx.saleReturn.create.mockResolvedValue({ id: 88 });
     mockInventory.registerMovement.mockResolvedValue({
       totalCost: new Decimal(60),
     });
@@ -237,7 +243,7 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
         ...ventaBase,
         paidAmount: new Decimal(0),
       });
-      await service.cancel(10, 99);
+      await service.cancel(10, 99, UserRole.MANAGER);
 
       expect(tx.sale.updateMany).toHaveBeenCalledWith({
         where: { id: 10, status: { not: 'CANCELLED' } },
@@ -249,9 +255,136 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
       tx.sale.updateMany.mockResolvedValue({ count: 0 });
       tx.sale.findUnique.mockResolvedValue({ id: 10 });
 
-      await expect(service.cancel(10, 99)).rejects.toThrow(ConflictException);
+      await expect(service.cancel(10, 99, UserRole.MANAGER)).rejects.toThrow(
+        ConflictException,
+      );
       // No debe reingresar stock dos veces.
       expect(mockInventory.registerMovement).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * `cancel` cubre dos operaciones distintas bajo la misma ruta. El permiso no
+   * puede vivir en un @Roles fijo: dejaria a los cajeros sin poder descartar su
+   * propio carrito. Estas pruebas fijan donde esta la frontera.
+   */
+  describe('quién puede cancelar qué', () => {
+    const ventaCerrada = {
+      ...ventaBase,
+      flowStatus: 'COMPLETED',
+      paidAmount: new Decimal(0),
+    };
+    const borrador = {
+      ...ventaBase,
+      flowStatus: 'DRAFT',
+      paidAmount: new Decimal(0),
+    };
+
+    it('un cajero descarta su propio borrador', async () => {
+      tx.sale.findUnique.mockResolvedValue(borrador);
+
+      await expect(
+        service.cancel(10, 99, UserRole.CASHIER),
+      ).resolves.toBeDefined();
+    });
+
+    it('un cajero NO puede anular una venta ya cerrada', async () => {
+      tx.sale.findUnique.mockResolvedValue(ventaCerrada);
+
+      await expect(service.cancel(10, 99, UserRole.CASHIER)).rejects.toThrow(
+        ForbiddenException,
+      );
+    });
+
+    it('el rechazo ocurre antes de tocar stock o caja', async () => {
+      tx.sale.findUnique.mockResolvedValue(ventaCerrada);
+
+      await expect(service.cancel(10, 99, UserRole.PHARMACIST)).rejects.toThrow(
+        ForbiddenException,
+      );
+
+      // La transacción se revierte, pero además no debe haberse intentado
+      // siquiera: un reingreso a medias dejaría el Kardex descuadrado.
+      expect(mockInventory.registerMovement).not.toHaveBeenCalled();
+      expect(tx.saleReturn.create).not.toHaveBeenCalled();
+    });
+
+    it('gerencia y administración sí pueden anular una venta cerrada', async () => {
+      tx.sale.findUnique.mockResolvedValue(ventaCerrada);
+      await expect(
+        service.cancel(10, 99, UserRole.MANAGER),
+      ).resolves.toBeDefined();
+
+      jest.clearAllMocks();
+      tx.sale.updateMany.mockResolvedValue({ count: 1 });
+      tx.sale.findUnique.mockResolvedValue(ventaCerrada);
+      tx.saleItem.findMany.mockResolvedValue([]);
+      tx.saleReturnItem.groupBy.mockResolvedValue([]);
+      tx.saleRefund.aggregate.mockResolvedValue({ _sum: { amount: null } });
+      tx.sale.update.mockImplementation(
+        ({ data }: { data: Record<string, unknown> }) =>
+          Promise.resolve({ ...ventaBase, ...data }),
+      );
+      await expect(
+        service.cancel(10, 99, UserRole.ADMIN),
+      ).resolves.toBeDefined();
+    });
+  });
+
+  /**
+   * Anular y devolver conviven en la misma pantalla. Si cancel() ignora las
+   * devoluciones previas, reingresa stock fantasma y paga dos veces el mismo
+   * dinero. Estas pruebas clavan esa frontera: solo se revierte lo que el
+   * cliente todavía tiene en la mano.
+   */
+  describe('anulación tras devoluciones previas', () => {
+    it('solo reingresa las unidades que el cliente todavía tiene', async () => {
+      tx.sale.findUnique.mockResolvedValue({
+        ...ventaBase,
+        flowStatus: 'COMPLETED',
+        paidAmount: new Decimal(0),
+        balance: new Decimal(0),
+      });
+      tx.saleItem.findMany.mockResolvedValue([
+        { id: 1, productId: 11, quantity: 5 },
+      ]);
+      tx.saleReturnItem.groupBy.mockResolvedValue([
+        { saleItemId: 1, _sum: { quantity: 2 } },
+      ]);
+
+      await service.cancel(10, 99, UserRole.MANAGER);
+
+      expect(mockInventory.registerMovement).toHaveBeenCalledTimes(1);
+      expect(mockInventory.registerMovement).toHaveBeenCalledWith(
+        expect.objectContaining({
+          productId: 11,
+          quantity: 3,
+          type: 'RETURN_IN',
+        }),
+        99,
+        tx,
+      );
+    });
+
+    it('no reembolsa lo que ya se devolvió', async () => {
+      tx.sale.findUnique.mockResolvedValue({
+        ...ventaBase,
+        flowStatus: 'COMPLETED',
+        paidAmount: new Decimal(500),
+        balance: new Decimal(0),
+        paymentMethod: 'CASH',
+      });
+      tx.saleRefund.aggregate.mockResolvedValue({
+        _sum: { amount: new Decimal(200) },
+      });
+      mockCashShift.getCurrentShift.mockResolvedValue({ id: 3 });
+
+      await service.cancel(10, 99, UserRole.MANAGER);
+
+      const llamadas = tx.saleRefund.create.mock.calls as Array<
+        [{ data: { amount: Decimal } }]
+      >;
+      expect(llamadas[0][0].data.amount.toString()).toBe('300');
     });
   });
 });

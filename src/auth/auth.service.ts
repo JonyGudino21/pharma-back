@@ -1,4 +1,5 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
@@ -16,7 +17,7 @@ type JwtPayload = { sub: number; role: string; userName: string };
  * firmado con el mismo secreto es indistinguible de un token de acceso.
  */
 type TokenType = 'access' | 'refresh';
-type RefreshPayload = { sub: number; type: TokenType };
+type RefreshPayload = { sub: number; type: TokenType; jti?: string };
 
 @Injectable()
 export class AuthService {
@@ -57,8 +58,18 @@ export class AuthService {
     // El nombre de la variable tambien estaba mal: se leia REFRESH_TOKEN_EXPIRES_IN
     // mientras la configuracion define JWT_REFRESH_EXPIRES_IN, de modo que el valor
     // configurado se ignoraba en silencio y siempre se aplicaba el respaldo de 7d.
+    // `jti` unico por token. El payload anterior era { sub, type } y el `iat` de
+    // un JWT tiene resolucion de SEGUNDOS: dos inicios de sesion del mismo
+    // usuario dentro del mismo segundo producian dos cadenas identicas byte a
+    // byte, y la columna `token` es UNIQUE. El resultado era un HTTP 500 con un
+    // doble clic en "Iniciar sesion", al entrar desde dos dispositivos a la vez,
+    // o al rotar el token en el mismo segundo en que se emitio.
     const refreshToken = this.jwt.sign(
-      { sub: payload.sub, type: 'refresh' satisfies TokenType },
+      {
+        sub: payload.sub,
+        type: 'refresh' satisfies TokenType,
+        jti: randomUUID(),
+      },
       {
         secret: this.config.getOrThrow<string>('JWT_REFRESH_SECRET'),
         expiresIn: this.config.get<string>('JWT_REFRESH_EXPIRES_IN', '7d'),
