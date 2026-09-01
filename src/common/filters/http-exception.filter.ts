@@ -43,7 +43,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
       }
     } else if (exception instanceof Error) {
       message = exception.message;
-      const showStack = process.env.NODE_ENV !== 'production';
+      // A prueba de fallos: el stack solo se expone cuando el entorno es
+      // EXPLICITAMENTE de desarrollo. Antes bastaba con que NODE_ENV no
+      // estuviera definida —lo habitual en un despliegue mal configurado—
+      // para filtrar rutas internas, dependencias y estructura del proyecto.
+      const showStack = process.env.NODE_ENV === 'development';
       error = {
         name: exception.name,
         ...(showStack && exception.stack ? { stack: exception.stack } : {}),
