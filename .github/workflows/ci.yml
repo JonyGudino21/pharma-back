@@ -64,6 +64,10 @@ jobs:
     name: Integracion de concurrencia (PostgreSQL real)
     runs-on: ubuntu-latest
 
+    # Contenedor efimero que vive y muere con este job. NO es la base de datos local
+    # ni ninguna base real: se crea vacia en cada corrida y se destruye al terminar.
+    # Los valores de abajo deben coincidir EXACTAMENTE con DATABASE_URL: si se cambia
+    # uno hay que cambiar el otro, o el job falla al conectar.
     services:
       postgres:
         image: postgres:16
@@ -80,7 +84,8 @@ jobs:
           --health-retries 10
 
     env:
-      DATABASE_URL: postgresql://postgres:123456@localhost:5432/farmacia_db?schema=public
+      # Apunta al contenedor de arriba, no a ninguna base de desarrollo.
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/pharma_test?schema=public
       NODE_ENV: test
       # Valores desechables, validos solo dentro del runner. No corresponden a ningun entorno real.
       JWT_SECRET: ci_throwaway_secret_used_only_inside_the_runner
