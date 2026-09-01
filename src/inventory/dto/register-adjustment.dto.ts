@@ -1,7 +1,6 @@
-import { IsInt, IsNotEmpty, IsString } from "class-validator";
+import { IsInt, IsNotEmpty, IsString } from 'class-validator';
 
-export class RegisterAdjustmentDto{
-
+export class RegisterAdjustmentDto {
   @IsInt()
   @IsNotEmpty()
   productId: number;
@@ -13,5 +12,4 @@ export class RegisterAdjustmentDto{
   @IsString()
   @IsNotEmpty()
   reason: string;
-
 }

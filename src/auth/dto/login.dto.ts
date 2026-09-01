@@ -11,4 +11,3 @@ export class LoginDto {
   @IsBoolean()
   rememberMe?: boolean = false; // si true -> refresh 7 días, si false/omitido -> 1 día
 }
-

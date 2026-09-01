@@ -1,4 +1,10 @@
-import { IsNumber, Min, IsNotEmpty, IsString, IsOptional } from 'class-validator';
+import {
+  IsNumber,
+  Min,
+  IsNotEmpty,
+  IsString,
+  IsOptional,
+} from 'class-validator';
 
 export class OpenShiftDto {
   @IsNumber({ maxDecimalPlaces: 2 })

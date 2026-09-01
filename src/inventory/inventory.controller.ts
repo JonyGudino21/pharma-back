@@ -23,8 +23,13 @@ export class InventoryController {
   async createAdjustment(
     @Body() body: RegisterAdjustmentDto,
     @GetUser('id') userId: number,
-  ){
-    const data = await this.inventoryService.registerAdjustment(body.productId, body.realQuantity, body.reason, userId);
+  ) {
+    const data = await this.inventoryService.registerAdjustment(
+      body.productId,
+      body.realQuantity,
+      body.reason,
+      userId,
+    );
     return ApiResponse.ok(data, 'Ajuste creado correctamente');
   }
 
@@ -33,9 +38,12 @@ export class InventoryController {
    */
   @Get('alerts/low-stock')
   @Roles(UserRole.MANAGER, UserRole.PHARMACIST)
-  async getLowStockAlerts(){
+  async getLowStockAlerts() {
     const data = await this.inventoryService.getLowStockAlerts();
-    return ApiResponse.ok(data, 'Alertas de stock bajo obtenidas correctamente');
+    return ApiResponse.ok(
+      data,
+      'Alertas de stock bajo obtenidas correctamente',
+    );
   }
 
   /**
@@ -43,7 +51,7 @@ export class InventoryController {
    */
   @Get('kardex/:productId')
   @Roles(UserRole.MANAGER, UserRole.PHARMACIST)
-  async getKardex(@Param('productId') productId: number){
+  async getKardex(@Param('productId') productId: number) {
     const data = await this.inventoryService.getKardex(productId);
     return ApiResponse.ok(data, 'Kardex obtenido correctamente');
   }
@@ -54,9 +62,12 @@ export class InventoryController {
    */
   @Get('valuation')
   @Roles(UserRole.MANAGER)
-  async getInventoryValuation(){
+  async getInventoryValuation() {
     const data = await this.inventoryService.getInventoryValuation();
-    return ApiResponse.ok(data, 'Valoración del inventario obtenida correctamente');
+    return ApiResponse.ok(
+      data,
+      'Valoración del inventario obtenida correctamente',
+    );
   }
 
   /**
@@ -64,13 +75,13 @@ export class InventoryController {
    * PÚBLICO para usuarios logueados (el POS necesita esto para saber si dejar vender).
    */
   @Get('stock/:productId')
-  async getStock(@Param('productId') productId: number){
+  async getStock(@Param('productId') productId: number) {
     const data = await this.inventoryService.getStock(productId);
     return ApiResponse.ok(data, 'Stock obtenido correctamente');
   }
 
-  /**  
+  /**
    * POST /inventory/stocktake	Toma de Inventario Masiva (Futuro): Ajustar múltiples productos a la vez tras un conteo físico anual.
-   * 
-   * */ 
+   *
+   * */
 }

@@ -1,4 +1,9 @@
-import { Injectable, BadRequestException, NotFoundException, ConflictException } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  NotFoundException,
+  ConflictException,
+} from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateInventoryMovementDto } from './dto/create-movement.dto';
 import { MovementType, Prisma } from '@prisma/client';
@@ -6,7 +11,7 @@ import { Decimal } from '@prisma/client/runtime/library';
 
 @Injectable()
 export class InventoryService {
-  constructor(private prisma: PrismaService){}
+  constructor(private prisma: PrismaService) {}
 
   /**
    * Registra un movimiento de inventario en el sistema
@@ -20,7 +25,7 @@ export class InventoryService {
     userId: number,
     tx?: Prisma.TransactionClient,
     unitCostOverride?: Decimal | number,
-  ){
+  ) {
     // GARANTÍA DE ATOMICIDAD:
     // El asiento del Kardex y la mutación del stock deben ocurrir juntos o no ocurrir.
     // Si el llamador no aporta transacción, abrimos una propia. Antes, al ejecutarse
@@ -46,21 +51,27 @@ export class InventoryService {
     unitCostOverride?: Decimal | number,
   ) {
     // 1. Obtener el producto (para nombre en mensajes y costo de valuación)
-    const product = await tx.product.findUnique({ where: { id: dto.productId } });
-    if(!product) throw new NotFoundException(`Producto ${dto.productId} no encontrado`);
+    const product = await tx.product.findUnique({
+      where: { id: dto.productId },
+    });
+    if (!product)
+      throw new NotFoundException(`Producto ${dto.productId} no encontrado`);
 
     // 2. Determinar el signo (Entrada o Salida)
     const quantityChange = this.resolveQuantityChange(dto);
 
     if (quantityChange === 0) {
-      throw new BadRequestException('Un movimiento de inventario no puede ser de cantidad 0');
+      throw new BadRequestException(
+        'Un movimiento de inventario no puede ser de cantidad 0',
+      );
     }
 
     // 3. Calcular Costo con PRECISIÓN DECIMAL.
     // Si el llamador especifica un costo explícito (reversiones), lo respetamos.
-    const unitCost = unitCostOverride !== undefined
-      ? new Decimal(unitCostOverride)
-      : new Decimal(product.cost);
+    const unitCost =
+      unitCostOverride !== undefined
+        ? new Decimal(unitCostOverride)
+        : new Decimal(product.cost);
     const totalCost = unitCost.mul(new Decimal(Math.abs(quantityChange)));
 
     // 4. MUTACIÓN ATÓMICA DEL STOCK.
@@ -114,7 +125,7 @@ export class InventoryService {
    * Traduce el tipo de movimiento al signo que aplica sobre el stock.
    */
   private resolveQuantityChange(dto: CreateInventoryMovementDto): number {
-    switch(dto.type){
+    switch (dto.type) {
       case MovementType.PURCHASE:
       case MovementType.RETURN_IN:
       case MovementType.INITIAL:
@@ -141,7 +152,10 @@ export class InventoryService {
    * operaciones concurrentes leen el mismo valor y una sobreescribe a la otra.
    * No sustituye a la mutación atómica del stock: resuelve un problema distinto.
    */
-  async lockProductRow(tx: Prisma.TransactionClient, productId: number): Promise<void> {
+  async lockProductRow(
+    tx: Prisma.TransactionClient,
+    productId: number,
+  ): Promise<void> {
     await tx.$queryRaw`SELECT id FROM "public"."Product" WHERE id = ${productId} FOR UPDATE`;
   }
 
@@ -156,14 +170,16 @@ export class InventoryService {
    * @returns el ajuste registrado
    */
   async registerAdjustment(
-    productId: number, 
+    productId: number,
     realQuantity: number, // Lo que el usuario contó físicamente
-    reason: string, 
-    userId: number
+    reason: string,
+    userId: number,
   ) {
     // Un conteo físico no puede ser negativo.
     if (!Number.isInteger(realQuantity) || realQuantity < 0) {
-      throw new BadRequestException('La cantidad real contada debe ser un entero mayor o igual a 0');
+      throw new BadRequestException(
+        'La cantidad real contada debe ser un entero mayor o igual a 0',
+      );
     }
 
     return await this.prisma.$transaction(async (tx) => {
@@ -179,16 +195,18 @@ export class InventoryService {
       const difference = realQuantity - product.stock;
 
       if (difference === 0) {
-        throw new BadRequestException('La cantidad real es igual al stock actual. No hay ajuste.');
+        throw new BadRequestException(
+          'La cantidad real es igual al stock actual. No hay ajuste.',
+        );
       }
 
       // Si difference es positivo (sobra), es ADJUSTMENT.
       // Si difference es negativo (falta), es LOSS (pérdida) o ADJUSTMENT negativo.
-      const type = difference > 0 ? MovementType.ADJUSTMENT : MovementType.LOSS; 
+      const type = difference > 0 ? MovementType.ADJUSTMENT : MovementType.LOSS;
 
       // Reutilizamos la lógica core, pero pasando los datos manuales
       // Nota: Como registerMovement valida tipos, pasamos quantity absoluto y dejamos que el switch decida
-      
+
       const dto: CreateInventoryMovementDto = {
         productId,
         type,
@@ -210,19 +228,19 @@ export class InventoryService {
     // Sumamos (stock * cost) de todo lo que tenga stock > 0
     const products = await this.prisma.product.findMany({
       where: { stock: { gt: 0 }, isActive: true },
-      select: { stock: true, cost: true }
+      select: { stock: true, cost: true },
     });
 
     let totalValuation = new Decimal(0);
 
-    products.forEach(p => {
+    products.forEach((p) => {
       const value = p.cost.mul(new Decimal(p.stock));
       totalValuation = totalValuation.add(value);
     });
 
     return {
       totalValue: totalValuation,
-      productCount: products.length
+      productCount: products.length,
     };
   }
 
@@ -234,12 +252,12 @@ export class InventoryService {
   async getStock(productId: number) {
     const product = await this.prisma.product.findUnique({
       where: { id: productId },
-      select: { id: true, stock: true, minStock: true, name: true } //TODO: Add more fields if needed
+      select: { id: true, stock: true, minStock: true, name: true }, //TODO: Add more fields if needed
     });
     if (!product) throw new NotFoundException('Producto no encontrado');
     return product;
   }
-  
+
   // REPORTE: Alertas de Stock Bajo
   /**
    * Obtiene los productos con stock bajo
@@ -250,8 +268,8 @@ export class InventoryService {
       where: {
         isActive: true,
         stock: {
-          lte: this.prisma.product.fields.minStock // Donde stock <= minStock
-        }
+          lte: this.prisma.product.fields.minStock, // Donde stock <= minStock
+        },
       },
       select: {
         id: true,
@@ -259,7 +277,7 @@ export class InventoryService {
         sku: true,
         stock: true,
         minStock: true,
-      }
+      },
     });
   }
 

@@ -9,6 +9,6 @@ import { PaymentModule } from 'src/payment/payment.module';
   imports: [PrismaModule, CashShiftModule, PaymentModule],
   controllers: [ClientController],
   providers: [ClientService],
-  exports: [ClientService]
+  exports: [ClientService],
 })
 export class ClientModule {}

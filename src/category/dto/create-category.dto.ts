@@ -1,7 +1,6 @@
 import { IsString, IsOptional, IsBoolean, MaxLength } from 'class-validator';
 
 export class CreateCategoryDto {
-
   @IsString()
   name: string;
 

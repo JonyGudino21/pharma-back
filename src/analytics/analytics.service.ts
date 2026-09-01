@@ -55,9 +55,9 @@ export class AnalyticsService {
       where,
       _count: { id: true },
       _sum: {
-        total: true,       // Ventas brutas
-        totalCost: true,   // Costo de lo vendido (COGS)
-        profit: true,      // Utilidad Bruta
+        total: true, // Ventas brutas
+        totalCost: true, // Costo de lo vendido (COGS)
+        profit: true, // Utilidad Bruta
       },
     });
 
@@ -66,13 +66,14 @@ export class AnalyticsService {
     const totalTransactions = agg._count.id;
 
     // Matemáticas de negocio
-    const margin = totalSales.gt(0) 
-      ? totalProfit.dividedBy(totalSales).mul(100) 
+    const margin = totalSales.gt(0)
+      ? totalProfit.dividedBy(totalSales).mul(100)
       : new Decimal(0);
-      
-    const averageTicket = totalTransactions > 0 
-      ? totalSales.dividedBy(totalTransactions) 
-      : new Decimal(0);
+
+    const averageTicket =
+      totalTransactions > 0
+        ? totalSales.dividedBy(totalTransactions)
+        : new Decimal(0);
 
     return {
       totalSales: totalSales.toNumber(),
@@ -106,10 +107,10 @@ export class AnalyticsService {
       where: { isActive: true, stock: { gt: 0 } },
       select: { stock: true, cost: true },
     });
-    
+
     const inventoryValue = products.reduce(
       (sum, p) => sum.add(new Decimal(p.stock).mul(new Decimal(p.cost))),
-      new Decimal(0)
+      new Decimal(0),
     );
 
     return {
@@ -130,7 +131,7 @@ export class AnalyticsService {
       _count: { id: true },
     });
 
-    return grouped.map(g => ({
+    return grouped.map((g) => ({
       method: g.paymentMethod,
       totalAmount: Number(g._sum.total ?? 0),
       count: g._count.id,
@@ -142,7 +143,7 @@ export class AnalyticsService {
    * Uso de Raw SQL para mayor rendimiento al cruzar SaleItem con Product y Sale.
    */
   private async getTopProducts(startDate: Date, endDate: Date) {
-    // RAW QUERY: Máximo rendimiento para reportes complejos. 
+    // RAW QUERY: Máximo rendimiento para reportes complejos.
     // Evita cargar miles de filas a la memoria de Node.js
     const result = await this.prisma.$queryRaw`
       SELECT 
@@ -168,17 +169,15 @@ export class AnalyticsService {
   // --- HELPER DE FECHAS ---
   private getDateRange(dto: GetDashboardDto) {
     const now = new Date();
-    
+
     // Si no mandan inicio, tomamos el primer día del mes actual
-    let startDate = dto.startDate 
-      ? new Date(dto.startDate) 
+    const startDate = dto.startDate
+      ? new Date(dto.startDate)
       : new Date(now.getFullYear(), now.getMonth(), 1);
-      
+
     // Si no mandan fin, tomamos hoy al final del día
-    let endDate = dto.endDate 
-      ? new Date(dto.endDate) 
-      : new Date();
-      
+    const endDate = dto.endDate ? new Date(dto.endDate) : new Date();
+
     // Asegurar que startDate sea a las 00:00:00 y endDate a las 23:59:59
     startDate.setHours(0, 0, 0, 0);
     endDate.setHours(23, 59, 59, 999);

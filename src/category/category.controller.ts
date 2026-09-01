@@ -1,4 +1,14 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, Query, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Patch,
+  Param,
+  Delete,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { CategoryService } from './category.service';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
@@ -63,7 +73,10 @@ export class CategoryController {
    */
   @Patch(':id')
   @Roles(UserRole.MANAGER, UserRole.PHARMACIST)
-  async update(@Param('id') id: number, @Body() updateCategoryDto: UpdateCategoryDto) {
+  async update(
+    @Param('id') id: number,
+    @Body() updateCategoryDto: UpdateCategoryDto,
+  ) {
     console.log(updateCategoryDto);
     const res = await this.categoryService.update(id, updateCategoryDto);
     return ApiResponse.ok(res, 'Category updated successfully');

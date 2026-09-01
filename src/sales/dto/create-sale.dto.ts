@@ -1,7 +1,15 @@
-import { IsInt, IsNumber, IsOptional, IsPositive, ValidateNested, IsArray, IsString } from 'class-validator';
+import {
+  IsInt,
+  IsNumber,
+  IsOptional,
+  IsPositive,
+  ValidateNested,
+  IsArray,
+  IsString,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 
-export class SaleItemDto{
+export class SaleItemDto {
   @IsInt()
   @IsPositive()
   productId: number;
@@ -19,7 +27,7 @@ export class SaleItemDto{
 export class CreateSaleDto {
   @IsOptional()
   @IsInt()
-  clientId ?: number;
+  clientId?: number;
 
   @IsArray()
   @ValidateNested({ each: true })
