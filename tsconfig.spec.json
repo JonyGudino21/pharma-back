@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // Jest ejecuta en CommonJS. El tsconfig principal usa "nodenext" porque es
+    // lo correcto para el build de produccion, pero eso deja los `import` como
+    // ESM y Jest no los entiende sin flags experimentales.
+    "module": "commonjs",
+    "moduleResolution": "node",
+
+    // `@nestjs/config` v12 se publica como ESM puro: no tiene build CommonJS.
+    // Sin `allowJs`, ts-jest no puede transformar su `dist/index.js` y CUALQUIER
+    // prueba que toque un servicio con ConfigService inyectado muere al importar,
+    // aunque el servicio en si sea perfectamente testeable.
+    "allowJs": true,
+    "isolatedModules": false
+  }
+}
