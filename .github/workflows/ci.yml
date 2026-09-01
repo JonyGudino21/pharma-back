@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+  workflow_dispatch:
+
+# Si se empujan varios commits seguidos a un PR, se cancelan las corridas anteriores:
+# solo interesa validar el ultimo estado de la rama.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Calidad y pruebas unitarias
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Generar Prisma Client
+        run: npx prisma generate
+
+      # Informativo por ahora: el codigo arrastra ~5300 diferencias de formato y
+      # ~156 errores de tipado previos a este pipeline. Se bloqueara cuando lleguen a cero.
+      - name: Lint (informativo, aun no bloquea el merge)
+        continue-on-error: true
+        run: npm run lint:ci | tee lint-report.txt
+
+      - name: Publicar resumen de lint
+        if: always()
+        run: |
+          {
+            echo '### Lint (informativo)'
+            echo ''
+            echo '```'
+            tail -n 4 lint-report.txt 2>/dev/null || echo 'Sin reporte de lint.'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Pruebas unitarias
+        run: npm test -- --ci
+
+  e2e:
+    name: Integracion de concurrencia (PostgreSQL real)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pharma_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/pharma_test
+      NODE_ENV: test
+      # Valores desechables, validos solo dentro del runner. No corresponden a ningun entorno real.
+      JWT_SECRET: ci_throwaway_secret_used_only_inside_the_runner
+      TOLERANCE_THRESHOLD: '20'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Generar Prisma Client
+        run: npx prisma generate
+
+      - name: Aplicar migraciones en la base efimera
+        run: npx prisma migrate deploy
+
+      # --runInBand: la suite comparte una sola base de datos. Los workers en paralelo
+      # se pisarian entre si y produciran fallos intermitentes que no son bugs reales.
+      - name: Pruebas de integracion
+        run: npm run test:e2e -- --runInBand
