@@ -21,9 +21,11 @@ import {
 import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
 import { UpdatePurchaseItemDto } from './dto/update-item.dto';
 import { InventoryService } from 'src/inventory/inventory.service';
+import { InventoryBatchesService } from 'src/inventory/inventory-batches.service';
 import { CashShiftService } from 'src/cash-shift/cash-shift.service';
 import { Decimal } from '@prisma/client/runtime/library';
 import { decimalText, money } from 'src/common/utils/decimal.util';
+import { normalizeLotNumber, toUtcDateOnly } from 'src/inventory/fefo';
 
 @Injectable()
 export class PurchaseService {
@@ -32,6 +34,7 @@ export class PurchaseService {
   constructor(
     private prisma: PrismaService,
     private inventoryService: InventoryService,
+    private inventoryBatches: InventoryBatchesService,
     private cashShiftService: CashShiftService,
   ) {}
 
@@ -59,6 +62,24 @@ export class PurchaseService {
     }
 
     const { subtotal, total } = this.calculateTotals(dto.items);
+    const productById = new Map(products.map((p) => [p.id, p]));
+    const itemsData = dto.items.map((item) => {
+      const product = productById.get(item.productId)!;
+      const lot = this.parseLotFields(item.lotNumber, item.expiryDate);
+      if (product.controlled && !lot.lotNumber) {
+        throw new BadRequestException(
+          `El medicamento controlado ${product.name} requiere lote y caducidad.`,
+        );
+      }
+      return {
+        productId: item.productId,
+        quantity: item.quantity,
+        cost: item.cost,
+        subtotal: Number(item.quantity) * Number(item.cost),
+        lotNumber: lot.lotNumber,
+        expiryDate: lot.expiryDate,
+      };
+    });
 
     //crear purchase e items, pagos y actualizar stock automaticamente
     const purchase = await this.prisma.$transaction(async (tx) => {
@@ -72,12 +93,7 @@ export class PurchaseService {
           status: PurchaseStatus.PENDING,
           deliveryStatus: PurchaseDeliveryStatus.PENDING,
           items: {
-            create: dto.items.map((item) => ({
-              productId: item.productId,
-              quantity: item.quantity,
-              cost: item.cost,
-              subtotal: Number(item.quantity) * Number(item.cost),
-            })),
+            create: itemsData,
           },
         },
       });
@@ -317,6 +333,12 @@ export class PurchaseService {
 
           // A.2 Sacar la mercancía del Kardex valuada al costo REAL al que entró
           // (no al promedio vigente), para que el valor del inventario cuadre.
+          const batchId = await this.findBatchIdForPurchaseItem(tx, item);
+          if (item.lotNumber && !batchId) {
+            throw new ConflictException(
+              `No se encontró el lote ${item.lotNumber} para revertir la compra #${fresh.id}`,
+            );
+          }
           await this.inventoryService.registerMovement(
             {
               productId: item.productId,
@@ -324,6 +346,7 @@ export class PurchaseService {
               quantity: item.quantity,
               reason: `Cancelación de Compra #${fresh.id}`,
               referenceId: fresh.id,
+              batchId,
             },
             userId,
             tx,
@@ -414,6 +437,13 @@ export class PurchaseService {
     });
     if (!product) throw new NotFoundException('Producto no encontrado');
 
+    const lot = this.parseLotFields(dto.lotNumber, dto.expiryDate);
+    if (product.controlled && !lot.lotNumber) {
+      throw new BadRequestException(
+        `El medicamento controlado ${product.name} requiere lote y caducidad.`,
+      );
+    }
+
     return await this.prisma.$transaction(async (tx) => {
       // 1. Crear el Item
       const subtotalItem = new Decimal(dto.quantity).mul(new Decimal(dto.cost));
@@ -425,6 +455,8 @@ export class PurchaseService {
           quantity: dto.quantity,
           cost: dto.cost,
           subtotal: subtotalItem,
+          lotNumber: lot.lotNumber,
+          expiryDate: lot.expiryDate,
         },
       });
 
@@ -476,9 +508,23 @@ export class PurchaseService {
     return await this.prisma.$transaction(async (tx) => {
       const item = await tx.purchaseItem.findUnique({
         where: { id: itemId, purchaseId },
+        include: { product: { select: { name: true, controlled: true } } },
       });
       if (!item)
         throw new NotFoundException('Producto no encontrado en esta compra');
+
+      const lot =
+        dto.lotNumber !== undefined || dto.expiryDate !== undefined
+          ? this.parseLotFields(
+              dto.lotNumber !== undefined ? dto.lotNumber : item.lotNumber,
+              dto.expiryDate !== undefined ? dto.expiryDate : item.expiryDate,
+            )
+          : null;
+      if (lot && item.product.controlled && !lot.lotNumber) {
+        throw new BadRequestException(
+          `El medicamento controlado ${item.product.name} requiere lote y caducidad.`,
+        );
+      }
 
       const newQty = new Decimal(dto.quantity);
       const newCost = new Decimal(dto.cost);
@@ -486,7 +532,14 @@ export class PurchaseService {
 
       await tx.purchaseItem.update({
         where: { id: itemId },
-        data: { quantity: dto.quantity, cost: dto.cost, subtotal: newSubtotal },
+        data: {
+          quantity: dto.quantity,
+          cost: dto.cost,
+          subtotal: newSubtotal,
+          ...(lot
+            ? { lotNumber: lot.lotNumber, expiryDate: lot.expiryDate }
+            : {}),
+        },
       });
 
       // Recalcular
@@ -797,18 +850,41 @@ export class PurchaseService {
           data: { cost: newAverageCost }, // Solo costo, el stock lo mueve el Kardex abajo
         });
 
-        // C. REGISTRAR EN KARDEX (Suma el invetnario de forma auditable)
-        await this.inventoryService.registerMovement(
-          {
-            productId: item.productId,
-            type: MovementType.PURCHASE,
-            quantity: item.quantity,
-            reason: `Recepción Compra #${fresh.invoiceNumber}`,
-            referenceId: fresh.id,
-          },
-          userId,
-          tx,
-        );
+        // C. REGISTRAR EN KARDEX (Suma el inventario de forma auditable)
+        const lot = this.parseLotFields(item.lotNumber, item.expiryDate);
+        if (product.controlled && !lot.lotNumber) {
+          throw new BadRequestException(
+            `El medicamento controlado ${product.name} debe recibirse con lote y caducidad.`,
+          );
+        }
+        if (lot.lotNumber && lot.expiryDate) {
+          await this.inventoryBatches.receiveIntoBatch(
+            tx,
+            {
+              productId: item.productId,
+              quantity: item.quantity,
+              unitCost: incomingCost,
+              lotNumber: lot.lotNumber,
+              expiryDate: lot.expiryDate,
+              purchaseItemId: item.id,
+              reason: `Recepción Compra #${fresh.invoiceNumber}`,
+              referenceId: fresh.id,
+            },
+            userId,
+          );
+        } else {
+          await this.inventoryService.registerMovement(
+            {
+              productId: item.productId,
+              type: MovementType.PURCHASE,
+              quantity: item.quantity,
+              reason: `Recepción Compra #${fresh.invoiceNumber}`,
+              referenceId: fresh.id,
+            },
+            userId,
+            tx,
+          );
+        }
 
         // D. Guardar historial si el costo cambió significativamente
         if (!currentCost.equals(newAverageCost)) {
@@ -934,6 +1010,48 @@ export class PurchaseService {
     }
 
     return newAverageCost;
+  }
+
+  /**
+   * Lote y caducidad van juntos o no van. Un lote sin fecha (o al revés)
+   * dejaría el Kardex FEFO ciego.
+   */
+  private parseLotFields(
+    lotNumber?: string | null,
+    expiryDate?: string | Date | null,
+  ): { lotNumber: string | null; expiryDate: Date | null } {
+    const lot = lotNumber ? normalizeLotNumber(lotNumber) : '';
+    const expiry = expiryDate ? toUtcDateOnly(expiryDate) : null;
+    const hasLot = lot.length > 0;
+    const hasExpiry = !!expiry && !Number.isNaN(expiry.getTime());
+    if (hasLot !== hasExpiry) {
+      throw new BadRequestException(
+        'El número de lote y la fecha de caducidad deben ir juntos.',
+      );
+    }
+    return {
+      lotNumber: hasLot ? lot : null,
+      expiryDate: hasExpiry ? expiry : null,
+    };
+  }
+
+  private async findBatchIdForPurchaseItem(
+    tx: Prisma.TransactionClient,
+    item: { productId: number; lotNumber: string | null },
+  ): Promise<number | undefined> {
+    if (!item.lotNumber) return undefined;
+    const lot = normalizeLotNumber(item.lotNumber);
+    if (!lot) return undefined;
+    const batch = await tx.productBatch.findUnique({
+      where: {
+        productId_lotNumber: {
+          productId: item.productId,
+          lotNumber: lot,
+        },
+      },
+      select: { id: true },
+    });
+    return batch?.id;
   }
 
   //Helper: calcular total y subtotal de los items

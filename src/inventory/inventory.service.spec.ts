@@ -27,6 +27,11 @@ describe('InventoryService — mutación atómica de stock', () => {
       updateMany: jest.fn(),
       update: jest.fn(),
     },
+    productBatch: {
+      aggregate: jest.fn(),
+      updateMany: jest.fn(),
+      update: jest.fn(),
+    },
     inventoryMovement: { create: jest.fn() },
     $queryRaw: jest.fn(),
   };
@@ -76,6 +81,8 @@ describe('InventoryService — mutación atómica de stock', () => {
     tx.product.findUnique.mockResolvedValue(producto);
     tx.product.updateMany.mockResolvedValue({ count: 1 });
     tx.product.update.mockResolvedValue(producto);
+    tx.productBatch.aggregate.mockResolvedValue({ _sum: { quantity: 0 } });
+    tx.productBatch.updateMany.mockResolvedValue({ count: 1 });
     tx.inventoryMovement.create.mockImplementation(
       ({ data }: { data: Record<string, unknown> }) =>
         Promise.resolve({ id: 1, ...data }),
@@ -124,6 +131,53 @@ describe('InventoryService — mutación atómica de stock', () => {
       ).rejects.toThrow(ConflictException);
 
       // Si no hay existencias, NO debe quedar rastro en el Kardex.
+      expect(tx.inventoryMovement.create).not.toHaveBeenCalled();
+    });
+
+    it('con batchId descuenta el lote ANTES que el total del producto', async () => {
+      await service.registerMovement(
+        {
+          productId: 1,
+          type: MovementType.SALE,
+          quantity: 2,
+          reason: 'Venta lote',
+          batchId: 44,
+        },
+        99,
+        txClient,
+      );
+
+      expect(tx.productBatch.updateMany).toHaveBeenCalledWith({
+        where: { id: 44, productId: 1, quantity: { gte: 2 } },
+        data: { quantity: { decrement: 2 } },
+      });
+      expect(tx.product.updateMany).toHaveBeenCalledWith({
+        where: { id: 1, stock: { gte: 2 } },
+        data: { stock: { decrement: 2 } },
+      });
+      expect(movimientoRegistrado()).toEqual(
+        expect.objectContaining({ quantity: -2 }),
+      );
+    });
+
+    it('conflicto de lote (0 filas) no toca el Kardex ni el stock del producto', async () => {
+      tx.productBatch.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(
+        service.registerMovement(
+          {
+            productId: 1,
+            type: MovementType.SALE,
+            quantity: 2,
+            reason: 'Carrera de lotes',
+            batchId: 44,
+          },
+          99,
+          txClient,
+        ),
+      ).rejects.toThrow(ConflictException);
+
+      expect(tx.product.updateMany).not.toHaveBeenCalled();
       expect(tx.inventoryMovement.create).not.toHaveBeenCalled();
     });
 
@@ -234,6 +288,15 @@ describe('InventoryService — mutación atómica de stock', () => {
       await expect(
         service.registerAdjustment(1, -5, 'conteo', 99),
       ).rejects.toThrow(BadRequestException);
+    });
+
+    it('prohíbe el ajuste a ciegas si el producto tiene lotes con existencia', async () => {
+      tx.productBatch.aggregate.mockResolvedValue({ _sum: { quantity: 4 } });
+
+      await expect(
+        service.registerAdjustment(1, 8, 'conteo', 99),
+      ).rejects.toThrow(BadRequestException);
+      expect(tx.inventoryMovement.create).not.toHaveBeenCalled();
     });
 
     it('bloquea la fila del producto antes de calcular la diferencia', async () => {

@@ -70,10 +70,13 @@ model Product {
   clientPrice               ClientProductPrice[]
   clientPriceHistory        ClientProductPriceHistory[]
   movements                 InventoryMovement[]
+  batches                   ProductBatch[]
+  controlledLogs            ControlledSaleLog[]
 
   @@index([name])
   @@index([sku])
   @@index([barcode])
+  @@index([controlled])
 }
 
 model ProductPriceHistory {
@@ -129,6 +132,7 @@ model Sale {
   saleReturn       SaleReturn[]
   saleRefunds      SaleRefund[]
   receiptPrints    SaleReceiptPrint[]
+  controlledLogs   ControlledSaleLog[]
 
   @@index([createdAt])
   @@index([invoiceNumber])
@@ -151,6 +155,8 @@ model SaleItem {
 
   // Guardamos cuánto costaba este producto HOY para calcular ganancia histórica
   costAtSale    Decimal     @db.Decimal(10, 2)
+
+  batches       SaleItemBatch[]
 
   @@index([saleId])
   @@index([productId])
@@ -279,6 +285,7 @@ model User {
   saleReturn                SaleReturn[]
   cashData                  CashShift[]
   saleReceiptPrints         SaleReceiptPrint[]
+  controlledSaleLogs        ControlledSaleLog[]
 
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
@@ -412,6 +419,13 @@ model PurchaseItem {
   quantity    Int
   cost        Decimal     @db.Decimal(10, 2)  // Precio de COMPRA real de este lote
   subtotal    Decimal     @db.Decimal(12, 2)
+
+  // Lote del fabricante. Obligatorio al recibir un controlado; opcional en el resto
+  // para no bloquear insumos sin caducidad (bolsas, material de curación).
+  lotNumber   String?
+  expiryDate  DateTime?   @db.Date
+
+  batches     ProductBatch[]
 }
 
 model PurchasePayment {
@@ -553,9 +567,87 @@ model InventoryMovement {
   createdAt        DateTime  @default(now())
   createdBy        Int       // User ID
 
+  batch            ProductBatch? @relation(fields: [batchId], references: [id])
+  batchId          Int?
+
   @@index([productId])
   @@index([createdAt])
   @@index([type])
+  @@index([batchId])
+}
+
+// Existencia física desglosada por lote/caducidad. Product.stock sigue siendo
+// el total cacheado (mutación atómica); la suma de lotes + residual sin lote
+// debe coincidir. Nunca se recalcula el total como SUM en caliente: eso
+// reintroduce el read-modify-write que P0-1 cerró.
+model ProductBatch {
+  id             Int      @id @default(autoincrement())
+  product        Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId      Int
+  lotNumber      String
+  expiryDate     DateTime @db.Date
+  quantity       Int      @default(0)
+  cost           Decimal  @db.Decimal(10, 2)
+  receivedAt     DateTime @default(now())
+
+  purchaseItem   PurchaseItem? @relation(fields: [purchaseItemId], references: [id])
+  purchaseItemId Int?
+
+  saleItemBatches SaleItemBatch[]
+  movements       InventoryMovement[]
+  controlledLogs  ControlledSaleLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([productId, lotNumber])
+  @@index([productId, expiryDate])
+  @@index([expiryDate])
+}
+
+// Cuántas unidades de cada lote salieron en una línea de venta (split FEFO).
+model SaleItemBatch {
+  id         Int          @id @default(autoincrement())
+  saleItem   SaleItem     @relation(fields: [saleItemId], references: [id], onDelete: Cascade)
+  saleItemId Int
+  batch      ProductBatch @relation(fields: [batchId], references: [id])
+  batchId    Int
+  quantity   Int
+
+  @@unique([saleItemId, batchId])
+  @@index([saleItemId])
+  @@index([batchId])
+}
+
+// Libro de controlados COFEPRIS: bitácora append-only. Nunca se borra una fila;
+// una devolución o destrucción se registra con otro entryType.
+model ControlledSaleLog {
+  id             Int                   @id @default(autoincrement())
+  entryType      ControlledLogEntryType @default(DISPENSE)
+
+  sale           Sale?                 @relation(fields: [saleId], references: [id])
+  saleId         Int?
+  product        Product               @relation(fields: [productId], references: [id])
+  productId      Int
+  batch          ProductBatch?         @relation(fields: [batchId], references: [id])
+  batchId        Int?
+
+  quantity       Int
+  prescriptionNo String?
+  doctorName     String?
+  doctorLicense  String?
+  patientName    String?
+
+  soldBy         User                  @relation(fields: [soldById], references: [id])
+  soldById       Int
+
+  createdAt      DateTime              @default(now())
+
+  @@index([productId, createdAt])
+  @@index([createdAt])
+  @@index([prescriptionNo])
+  @@index([doctorLicense])
+  @@index([saleId])
 }
 
 enum PaymentStatus {
@@ -644,4 +736,10 @@ enum PurchaseDeliveryStatus {
 enum PrintChannel {
   THERMAL
   BROWSER
+}
+
+enum ControlledLogEntryType {
+  DISPENSE
+  RETURN
+  DESTRUCTION
 }

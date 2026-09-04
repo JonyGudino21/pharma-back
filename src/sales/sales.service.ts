@@ -16,17 +16,19 @@ import {
   Sale,
   SaleItem,
   ClientProductPrice,
-  MovementType,
   CashTransactionType,
   SaleRefund,
   Prisma,
   UserRole,
   PrintChannel,
+  ControlledLogEntryType,
 } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { ReturnSaleDto } from './dto/return-sale.dto';
 import { SaleItemDto } from './dto/create-sale.dto';
 import { InventoryService } from 'src/inventory/inventory.service';
+import { InventoryBatchesService } from 'src/inventory/inventory-batches.service';
+import { CompleteSaleDto } from './dto/complete-sale.dto';
 import { CashShiftService } from 'src/cash-shift/cash-shift.service';
 import { PaymentService } from 'src/payment/payment.service';
 import { FindAllSalesQueryDto } from './dto/find-all-sales-query.dto';
@@ -40,6 +42,7 @@ export class SalesService {
   constructor(
     private prisma: PrismaService,
     private inventoryService: InventoryService,
+    private inventoryBatches: InventoryBatchesService,
     private cashShiftService: CashShiftService,
     private paymentService: PaymentService,
   ) {}
@@ -239,6 +242,9 @@ export class SalesService {
         const items = await tx.saleItem.findMany({
           where: { saleId },
           orderBy: { productId: 'asc' },
+          include: {
+            product: { select: { controlled: true } },
+          },
         });
 
         // SOLO se reingresa lo que el cliente TODAVÍA tiene.
@@ -262,16 +268,20 @@ export class SalesService {
           const pendiente = item.quantity - (devueltoPorItem.get(item.id) ?? 0);
           if (pendiente <= 0) continue;
 
-          await this.inventoryService.registerMovement(
+          await this.inventoryBatches.restoreFromSaleItem(
+            tx,
             {
+              saleItemId: item.id,
               productId: item.productId,
-              type: MovementType.RETURN_IN,
               quantity: pendiente,
+              alreadyReturned: devueltoPorItem.get(item.id) ?? 0,
+              restock: true,
               reason: `Cancelación Venta #${saleId}`,
               referenceId: saleId,
+              saleId,
+              controlled: item.product.controlled,
             },
             userId,
-            tx,
           );
         }
 
@@ -417,7 +427,10 @@ export class SalesService {
       // Este es el corazón del arreglo: antes se validaba contra la cantidad
       // vendida, no contra "lo que queda por devolver", así que la misma unidad
       // podía devolverse una y otra vez.
-      const saleItems = await tx.saleItem.findMany({ where: { saleId } });
+      const saleItems = await tx.saleItem.findMany({
+        where: { saleId },
+        include: { product: { select: { controlled: true } } },
+      });
       const itemsMap = new Map(saleItems.map((it) => [it.id, it]));
 
       const previousReturns = await tx.saleReturnItem.groupBy({
@@ -511,39 +524,23 @@ export class SalesService {
 
         // ─── IMPACTO EN INVENTARIO ───
         // La mercancía SIEMPRE reingresa primero: físicamente volvió a la farmacia
-        // y el Kardex debe reflejarlo.
-        await this.inventoryService.registerMovement(
+        // y el Kardex debe reflejarlo. Si hay lotes, se reponen los mismos (FEFO inverso).
+        await this.inventoryBatches.restoreFromSaleItem(
+          tx,
           {
+            saleItemId: originalItem.id,
             productId: originalItem.productId,
-            type: MovementType.RETURN_IN,
             quantity: req.quantity,
+            alreadyReturned: returnedMap.get(saleItemId) ?? 0,
+            restock: req.restock,
             reason: `Devolución Venta #${saleId} - Return #${saleReturn.id}`,
+            lossReason: `Merma por devolución en mal estado - Return #${saleReturn.id}`,
             referenceId: saleReturn.id,
+            saleId,
+            controlled: originalItem.product.controlled,
           },
           userId,
-          tx,
         );
-
-        // Si viene dañada, abierta o caducada, se da de baja acto seguido.
-        // Efecto NETO sobre el stock: cero, pero quedan los DOS asientos, que es lo
-        // contablemente correcto y hace visible la merma en los reportes.
-        //
-        // Antes se registraba SOLO el LOSS: como la mercancía ya había salido con la
-        // venta, eso descontaba el stock por SEGUNDA vez (pérdida fantasma) y, si el
-        // stock estaba bajo, la devolución fallaba con un absurdo "stock insuficiente".
-        if (!req.restock) {
-          await this.inventoryService.registerMovement(
-            {
-              productId: originalItem.productId,
-              type: MovementType.LOSS,
-              quantity: req.quantity,
-              reason: `Merma por devolución en mal estado - Return #${saleReturn.id}`,
-              referenceId: saleReturn.id,
-            },
-            userId,
-            tx,
-          );
-        }
       }
 
       // Si TODAS las unidades de la venta quedaron devueltas, la venta pasa a
@@ -825,9 +822,13 @@ export class SalesService {
         where: { id: item.productId },
       });
       if (!product) throw new NotFoundException('Producto no válido');
-      if (product.stock < quantity) {
+      const sellable = await this.inventoryBatches.getSellableQuantity(
+        product.id,
+        tx,
+      );
+      if (sellable.sellable < quantity) {
         throw new BadRequestException(
-          `Stock insuficiente para ${product.name}. Disponible: ${product.stock}`,
+          `Stock insuficiente para ${product.name}. Disponible: ${sellable.sellable}`,
         );
       }
 
@@ -964,7 +965,11 @@ export class SalesService {
    * @param userId el ID del usuario que cierra la venta
    * @returns la venta cerrada
    */
-  async completeSale(saleId: number, userId: number) {
+  async completeSale(
+    saleId: number,
+    userId: number,
+    dto: CompleteSaleDto = {},
+  ) {
     return await this.prisma.$transaction(async (tx) => {
       // ─────────────────────────────────────────────────────────────────────────
       // 1. CLAIM ATÓMICO DEL CIERRE (compare-and-swap)
@@ -1003,7 +1008,16 @@ export class SalesService {
       // 2. Releer la venta DENTRO de la transacción (datos frescos y ya reservados)
       const sale = await tx.sale.findUnique({
         where: { id: saleId },
-        include: { items: true, client: true },
+        include: {
+          items: {
+            include: {
+              product: {
+                select: { id: true, name: true, controlled: true },
+              },
+            },
+          },
+          client: true,
+        },
       });
 
       if (!sale) throw new NotFoundException('Venta no encontrada');
@@ -1011,6 +1025,9 @@ export class SalesService {
         throw new BadRequestException('La venta no tiene productos');
       if (sale.status === SaleStatus.CANCELLED)
         throw new BadRequestException('Venta cancelada, no se puede cerrar');
+
+      const hasControlled = sale.items.some((item) => item.product.controlled);
+      const prescription = this.requirePrescription(dto, hasControlled);
 
       // 3. Validacion financiera (credito vs contado)
       if (sale.balance.gt(0)) {
@@ -1045,7 +1062,7 @@ export class SalesService {
         }
       }
 
-      // 4. Impacto de inventario
+      // 4. Impacto de inventario (FEFO + total atómico)
       let totalCostOfSale = new Decimal(0);
 
       // ORDEN DETERMINISTA (por productId) para PREVENIR DEADLOCKS:
@@ -1058,19 +1075,34 @@ export class SalesService {
       );
 
       for (const item of orderedItems) {
-        // DELEGAMOS AL EXPERTO: InventoryService (descuento atómico y guardado)
-        const movement = await this.inventoryService.registerMovement(
+        const consumed = await this.inventoryBatches.consumeForSale(
+          tx,
           {
             productId: item.productId,
-            type: MovementType.SALE, // El servicio sabe que SALE = Restar
+            productName: item.product.name,
+            controlled: item.product.controlled,
             quantity: item.quantity,
+            saleItemId: item.id,
+            saleId: sale.id,
             reason: `Venta Finalizada #${sale.id}`,
-            referenceId: sale.id,
           },
           userId,
-          tx, // Pasamos la transacción para atomicidad
         );
-        totalCostOfSale = totalCostOfSale.add(movement.totalCost);
+        totalCostOfSale = totalCostOfSale.add(consumed.totalCost);
+
+        if (item.product.controlled) {
+          for (const take of consumed.takes) {
+            await this.inventoryBatches.writeControlledLog(tx, {
+              entryType: ControlledLogEntryType.DISPENSE,
+              saleId: sale.id,
+              productId: item.productId,
+              batchId: take.batchId,
+              quantity: take.quantity,
+              soldById: userId,
+              prescription,
+            });
+          }
+        }
       }
 
       // 3. CÁLCULO DE UTILIDAD Y CIERRE
@@ -1094,6 +1126,27 @@ export class SalesService {
       this.logger.log(`Venta #${saleId} finalizada. Factura: ${invoiceNumber}`);
       return completedSale;
     });
+  }
+
+  private requirePrescription(dto: CompleteSaleDto, hasControlled: boolean) {
+    if (!hasControlled) return null;
+    const p = dto.prescription;
+    if (
+      !p?.prescriptionNo?.trim() ||
+      !p.doctorName?.trim() ||
+      !p.doctorLicense?.trim() ||
+      !p.patientName?.trim()
+    ) {
+      throw new BadRequestException(
+        'Información de receta médica obligatoria',
+      );
+    }
+    return {
+      prescriptionNo: p.prescriptionNo.trim(),
+      doctorName: p.doctorName.trim(),
+      doctorLicense: p.doctorLicense.trim(),
+      patientName: p.patientName.trim(),
+    };
   }
 
   /**
@@ -1188,7 +1241,18 @@ export class SalesService {
       where: { id },
       include: {
         items: {
-          include: { product: { select: { id: true, name: true, sku: true } } },
+          include: {
+            product: {
+              select: { id: true, name: true, sku: true, controlled: true },
+            },
+            batches: {
+              include: {
+                batch: {
+                  select: { id: true, lotNumber: true, expiryDate: true },
+                },
+              },
+            },
+          },
         }, // Nombre del producto
         payments: true, // Historial de pagos
         client: {

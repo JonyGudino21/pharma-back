@@ -5,6 +5,7 @@ import { Prisma } from '@prisma/client';
 import { SalesService } from './sales.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { InventoryService } from '../inventory/inventory.service';
+import { InventoryBatchesService } from '../inventory/inventory-batches.service';
 import { CashShiftService } from '../cash-shift/cash-shift.service';
 import { PaymentService } from '../payment/payment.service';
 
@@ -37,6 +38,7 @@ describe('SalesService — registro de impresiones de ticket', () => {
         SalesService,
         { provide: PrismaService, useValue: prisma },
         { provide: InventoryService, useValue: {} },
+        { provide: InventoryBatchesService, useValue: {} },
         { provide: CashShiftService, useValue: {} },
         { provide: PaymentService, useValue: {} },
       ],

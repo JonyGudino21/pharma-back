@@ -8,6 +8,7 @@ import { Decimal } from '@prisma/client/runtime/library';
 import { SalesService } from './sales.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { InventoryService } from '../inventory/inventory.service';
+import { InventoryBatchesService } from '../inventory/inventory-batches.service';
 import { CashShiftService } from '../cash-shift/cash-shift.service';
 import { PaymentService } from '../payment/payment.service';
 
@@ -40,6 +41,12 @@ describe('SalesService — devoluciones', () => {
     registerMovement: jest.fn(),
     lockProductRow: jest.fn(),
   };
+  const mockBatches = {
+    consumeForSale: jest.fn(),
+    restoreFromSaleItem: jest.fn(),
+    getSellableQuantity: jest.fn(),
+    writeControlledLog: jest.fn(),
+  };
   const mockCashShift = { getCurrentShift: jest.fn() };
   const mockPayment = {
     applyToSale: jest.fn(),
@@ -59,7 +66,14 @@ describe('SalesService — devoluciones', () => {
     status: 'COMPLETED',
   };
   const itemsVenta = [
-    { id: 10, saleId: 1, productId: 100, quantity: 10, price: new Decimal(50) },
+    {
+      id: 10,
+      saleId: 1,
+      productId: 100,
+      quantity: 10,
+      price: new Decimal(50),
+      product: { controlled: false },
+    },
   ];
 
   beforeEach(async () => {
@@ -68,6 +82,7 @@ describe('SalesService — devoluciones', () => {
         SalesService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: InventoryService, useValue: mockInventory },
+        { provide: InventoryBatchesService, useValue: mockBatches },
         { provide: CashShiftService, useValue: mockCashShift },
         { provide: PaymentService, useValue: mockPayment },
       ],
@@ -85,6 +100,7 @@ describe('SalesService — devoluciones', () => {
         Promise.resolve({ id: 9, ...data }),
     );
     mockCashShift.getCurrentShift.mockResolvedValue({ id: 42 });
+    mockBatches.restoreFromSaleItem.mockResolvedValue(undefined);
   });
 
   describe('acumulación de devoluciones previas', () => {
@@ -114,7 +130,7 @@ describe('SalesService — devoluciones', () => {
 
       // Falla ANTES de escribir nada
       expect(tx.saleReturn.create).not.toHaveBeenCalled();
-      expect(mockInventory.registerMovement).not.toHaveBeenCalled();
+      expect(mockBatches.restoreFromSaleItem).not.toHaveBeenCalled();
     });
 
     it('permite devolver exactamente lo que queda disponible', async () => {
@@ -212,31 +228,34 @@ describe('SalesService — devoluciones', () => {
         99,
       );
 
-      expect(mockInventory.registerMovement).toHaveBeenCalledTimes(1);
-      const [[movimiento]] = mockInventory.registerMovement.mock.calls as Array<
-        [Record<string, unknown>]
-      >;
-      expect(movimiento).toMatchObject({
-        productId: 100,
-        type: 'RETURN_IN',
-        quantity: 3,
-      });
+      expect(mockBatches.restoreFromSaleItem).toHaveBeenCalledTimes(1);
+      expect(mockBatches.restoreFromSaleItem).toHaveBeenCalledWith(
+        tx,
+        expect.objectContaining({
+          productId: 100,
+          quantity: 3,
+          restock: true,
+          alreadyReturned: 0,
+        }),
+        99,
+      );
     });
 
-    it('mercancía dañada: reingresa y se da de baja (efecto neto CERO en stock)', async () => {
+    it('mercancía dañada: se indica restock=false (reingreso + merma en el lote)', async () => {
       await service.createReturn(
         1,
         { items: [{ saleItemId: 10, quantity: 3, restock: false }] },
         99,
       );
 
-      // Antes se registraba SOLO el LOSS, descontando stock que ya había salido
-      // con la venta (pérdida fantasma) y pudiendo fallar por "stock insuficiente".
-      const llamadas = mockInventory.registerMovement.mock.calls as Array<
-        [{ type: string }]
-      >;
-      const tipos = llamadas.map((c) => c[0].type);
-      expect(tipos).toEqual(['RETURN_IN', 'LOSS']);
+      expect(mockBatches.restoreFromSaleItem).toHaveBeenCalledWith(
+        tx,
+        expect.objectContaining({
+          quantity: 3,
+          restock: false,
+        }),
+        99,
+      );
     });
   });
 
@@ -309,7 +328,7 @@ describe('SalesService — devoluciones', () => {
       expect(res.cashRefunded.toString()).toBe('0');
       expect(res.debtApplied.toString()).toBe('0');
       expect(tx.cashTransaction.create).not.toHaveBeenCalled();
-      expect(mockInventory.registerMovement).toHaveBeenCalled();
+      expect(mockBatches.restoreFromSaleItem).toHaveBeenCalled();
     });
   });
 

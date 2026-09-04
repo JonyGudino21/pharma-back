@@ -10,15 +10,17 @@ import { Decimal } from '@prisma/client/runtime/library';
 import { SalesService } from './sales.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { InventoryService } from '../inventory/inventory.service';
+import { InventoryBatchesService } from '../inventory/inventory-batches.service';
 import { CashShiftService } from '../cash-shift/cash-shift.service';
 import { PaymentService } from '../payment/payment.service';
 
 /**
- * Pruebas del contrato de CONCURRENCIA del cierre de venta (P0-1).
+ * Pruebas del contrato de CONCURRENCIA del cierre de venta (P0-1 / P2-1).
  *
  * Se valida que el paso DRAFT → COMPLETED se reclame de forma atómica
- * (compare-and-swap) DENTRO de la transacción, y que el límite de crédito
- * no pueda excederse por dos ventas simultáneas.
+ * (compare-and-swap) DENTRO de la transacción, que el límite de crédito
+ * no pueda excederse por dos ventas simultáneas, y que un controlado
+ * no cierre sin receta.
  */
 describe('SalesService — cierre de venta a prueba de concurrencia', () => {
   let service: SalesService;
@@ -47,6 +49,12 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
     registerMovement: jest.fn(),
     lockProductRow: jest.fn(),
   };
+  const mockBatches = {
+    consumeForSale: jest.fn(),
+    restoreFromSaleItem: jest.fn(),
+    getSellableQuantity: jest.fn(),
+    writeControlledLog: jest.fn(),
+  };
   const mockCashShift = { getCurrentShift: jest.fn() };
   const mockPayment = {
     applyToSale: jest.fn(),
@@ -71,6 +79,7 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
         quantity: 1,
         price: new Decimal(100),
         costAtSale: new Decimal(50),
+        product: { id: 55, name: 'Ibuprofeno', controlled: false },
       },
       {
         id: 1,
@@ -78,8 +87,16 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
         quantity: 2,
         price: new Decimal(100),
         costAtSale: new Decimal(40),
+        product: { id: 11, name: 'Paracetamol', controlled: false },
       },
     ],
+  };
+
+  const receta = {
+    prescriptionNo: 'RX-001',
+    doctorName: 'Dra. López',
+    doctorLicense: '12345678',
+    patientName: 'Juan Pérez',
   };
 
   beforeEach(async () => {
@@ -88,6 +105,7 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
         SalesService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: InventoryService, useValue: mockInventory },
+        { provide: InventoryBatchesService, useValue: mockBatches },
         { provide: CashShiftService, useValue: mockCashShift },
         { provide: PaymentService, useValue: mockPayment },
       ],
@@ -109,6 +127,12 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
     mockInventory.registerMovement.mockResolvedValue({
       totalCost: new Decimal(60),
     });
+    mockBatches.consumeForSale.mockResolvedValue({
+      totalCost: new Decimal(60),
+      takes: [],
+    });
+    mockBatches.restoreFromSaleItem.mockResolvedValue(undefined);
+    mockBatches.writeControlledLog.mockResolvedValue({ id: 1 });
   });
 
   describe('claim atómico del cierre', () => {
@@ -129,7 +153,7 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
         ConflictException,
       );
       // Lo crítico: no se descontó stock por segunda vez.
-      expect(mockInventory.registerMovement).not.toHaveBeenCalled();
+      expect(mockBatches.consumeForSale).not.toHaveBeenCalled();
     });
 
     it('rechaza si la venta fue cancelada por otra operación', async () => {
@@ -139,7 +163,7 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
       await expect(service.completeSale(10, 99)).rejects.toThrow(
         ConflictException,
       );
-      expect(mockInventory.registerMovement).not.toHaveBeenCalled();
+      expect(mockBatches.consumeForSale).not.toHaveBeenCalled();
     });
 
     it('lanza NotFoundException si la venta no existe', async () => {
@@ -164,11 +188,61 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
       // Los items llegan desordenados (55 antes que 11) a propósito.
       await service.completeSale(10, 99);
 
-      const llamadas = mockInventory.registerMovement.mock.calls as Array<
-        [{ productId: number }]
+      const llamadas = mockBatches.consumeForSale.mock.calls as Array<
+        [unknown, { productId: number }]
       >;
-      const productIds = llamadas.map((c) => c[0].productId);
+      const productIds = llamadas.map((c) => c[1].productId);
       expect(productIds).toEqual([11, 55]); // ordenado, no [55, 11]
+    });
+  });
+
+  describe('receta de medicamentos controlados', () => {
+    const ventaControlada = {
+      ...ventaBase,
+      items: [
+        {
+          id: 9,
+          productId: 80,
+          quantity: 1,
+          price: new Decimal(300),
+          costAtSale: new Decimal(90),
+          product: { id: 80, name: 'Clonazepam', controlled: true },
+        },
+      ],
+    };
+
+    it('rechaza el cierre si falta la receta, antes de tocar inventario', async () => {
+      tx.sale.findUnique.mockResolvedValue(ventaControlada);
+
+      await expect(service.completeSale(10, 99)).rejects.toThrow(
+        BadRequestException,
+      );
+      await expect(service.completeSale(10, 99, {})).rejects.toThrow(
+        'Información de receta médica obligatoria',
+      );
+      expect(mockBatches.consumeForSale).not.toHaveBeenCalled();
+    });
+
+    it('registra el libro de controlados con la receta al despachar', async () => {
+      tx.sale.findUnique.mockResolvedValue(ventaControlada);
+      mockBatches.consumeForSale.mockResolvedValue({
+        totalCost: new Decimal(90),
+        takes: [{ batchId: 7, quantity: 1 }],
+      });
+
+      await service.completeSale(10, 99, { prescription: receta });
+
+      expect(mockBatches.writeControlledLog).toHaveBeenCalledWith(
+        tx,
+        expect.objectContaining({
+          saleId: 10,
+          productId: 80,
+          batchId: 7,
+          quantity: 1,
+          soldById: 99,
+          prescription: receta,
+        }),
+      );
     });
   });
 
@@ -212,7 +286,7 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
         BadRequestException,
       );
       // El rollback de la transacción deshace el incremento; no se toca inventario.
-      expect(mockInventory.registerMovement).not.toHaveBeenCalled();
+      expect(mockBatches.consumeForSale).not.toHaveBeenCalled();
     });
 
     it('rechaza saldo pendiente sin cliente asignado', async () => {
@@ -259,7 +333,7 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
         ConflictException,
       );
       // No debe reingresar stock dos veces.
-      expect(mockInventory.registerMovement).not.toHaveBeenCalled();
+      expect(mockBatches.restoreFromSaleItem).not.toHaveBeenCalled();
     });
   });
 
@@ -305,7 +379,7 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
 
       // La transacción se revierte, pero además no debe haberse intentado
       // siquiera: un reingreso a medias dejaría el Kardex descuadrado.
-      expect(mockInventory.registerMovement).not.toHaveBeenCalled();
+      expect(mockBatches.restoreFromSaleItem).not.toHaveBeenCalled();
       expect(tx.saleReturn.create).not.toHaveBeenCalled();
     });
 
@@ -346,7 +420,12 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
         balance: new Decimal(0),
       });
       tx.saleItem.findMany.mockResolvedValue([
-        { id: 1, productId: 11, quantity: 5 },
+        {
+          id: 1,
+          productId: 11,
+          quantity: 5,
+          product: { controlled: false },
+        },
       ]);
       tx.saleReturnItem.groupBy.mockResolvedValue([
         { saleItemId: 1, _sum: { quantity: 2 } },
@@ -354,15 +433,16 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
 
       await service.cancel(10, 99, UserRole.MANAGER);
 
-      expect(mockInventory.registerMovement).toHaveBeenCalledTimes(1);
-      expect(mockInventory.registerMovement).toHaveBeenCalledWith(
+      expect(mockBatches.restoreFromSaleItem).toHaveBeenCalledTimes(1);
+      expect(mockBatches.restoreFromSaleItem).toHaveBeenCalledWith(
+        tx,
         expect.objectContaining({
           productId: 11,
           quantity: 3,
-          type: 'RETURN_IN',
+          alreadyReturned: 2,
+          restock: true,
         }),
         99,
-        tx,
       );
     });
 

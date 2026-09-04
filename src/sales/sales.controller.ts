@@ -19,6 +19,7 @@ import { GetUser } from 'src/common/decorators/get-user.decorator';
 import { ReturnSaleDto } from './dto/return-sale.dto';
 import { FindAllSalesQueryDto } from './dto/find-all-sales-query.dto';
 import { RegisterSalePrintDto } from './dto/register-sale-print.dto';
+import { CompleteSaleDto } from './dto/complete-sale.dto';
 import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
@@ -166,9 +167,14 @@ export class SalesController {
   @Post(':id/complete')
   async completeSale(
     @Param('id') id: number,
+    @Body() dto: CompleteSaleDto,
     @GetUser() user: AuthenticatedUser,
   ) {
-    const data = await this.salesService.completeSale(id, user.userId);
+    const data = await this.salesService.completeSale(
+      id,
+      user.userId,
+      dto,
+    );
     return ApiResponse.ok(data, 'Venta completada correctamente');
   }
 

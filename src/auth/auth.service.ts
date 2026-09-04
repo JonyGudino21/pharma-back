@@ -255,6 +255,8 @@ export class AuthService {
       canAdjustInventory: isManagerOrAdmin,
       canViewLowStockAlerts: isManagerOrAdmin || isPharmacist,
       canViewInventoryValuation: isManagerOrAdmin,
+      canViewExpiringBatches: isManagerOrAdmin || isPharmacist,
+      canViewControlledLog: isManagerOrAdmin || isPharmacist,
 
       // ---- Caja (cash-shift) ----
       canOpenShift: canOperatePOS,
