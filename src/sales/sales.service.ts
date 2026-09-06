@@ -139,7 +139,12 @@ export class SalesService {
     return sale;
   }
 
-  async addPayment(saleId: number, data: AddPaymentDto, userId: number) {
+  async addPayment(
+    saleId: number,
+    data: AddPaymentDto,
+    userId: number,
+    idempotencyKey?: string | null,
+  ) {
     // Validación temprana (mejor mensaje para el cajero). La verificación
     // autoritativa y atómica ocurre dentro de PaymentService.applyToSale.
     const sale = await this.validateSale(saleId);
@@ -167,6 +172,7 @@ export class SalesService {
         method: data.method,
         references: data.references,
         cashShiftId,
+        idempotencyKey,
       });
 
       return {
@@ -341,7 +347,7 @@ export class SalesService {
         //  TODO: Implemntar logica de si fue tranferencia o con tarjeta no mover dinero fisico
         // Solo podemos sacar dinero si hay una caja abierta.
         const currentShift =
-          await this.cashShiftService.getCurrentShift(userId);
+          await this.cashShiftService.getCurrentShift(userId, tx);
 
         if (currentShift) {
           // Creamos la transacción de caja DIRECTAMENTE dentro de la misma 'tx' de Prisma
@@ -614,7 +620,7 @@ export class SalesService {
 
         if (cashRefunded.gt(0)) {
           const currentShift =
-            await this.cashShiftService.getCurrentShift(userId);
+            await this.cashShiftService.getCurrentShift(userId, tx);
           if (!currentShift) {
             throw new ConflictException(
               'Se requiere caja abierta para realizar reembolso en efectivo',
@@ -709,49 +715,45 @@ export class SalesService {
     const subtotal = price.mul(quantity);
 
     return await this.prisma.$transaction(async (tx) => {
-      // Upsert: Si ya existe el item, sumamos cantidad. Si no, creamos.
-      const existingItem = await tx.saleItem.findFirst({
-        where: { saleId, productId: dto.productId },
-      });
-
-      if (existingItem) {
-        // Actualizar existente
-        const newQty = new Decimal(existingItem.quantity).add(quantity);
-        const newSubtotal = price.mul(newQty);
-        await tx.saleItem.update({
-          where: { id: existingItem.id },
-          data: { quantity: newQty.toNumber(), subtotal: newSubtotal },
-        });
-      } else {
-        // Crear nuevo
-        await tx.saleItem.create({
-          data: {
-            saleId,
-            productId: dto.productId,
-            quantity: dto.quantity,
-            price: price,
-            subtotal: subtotal,
-            costAtSale: product.cost, // Snapshot
-          },
-        });
-      }
-
-      // Recalcular Total Venta
-      // Lo hacemos sumando subtotales de items para evitar errores de deriva
-      const agg = await tx.saleItem.aggregate({
-        where: { saleId },
-        _sum: { subtotal: true },
-      });
-      const newTotal = agg._sum.subtotal ?? new Decimal(0);
-
-      await tx.sale.update({
-        where: { id: saleId },
-        data: {
-          total: newTotal,
-          subtotal: newTotal,
-          balance: newTotal.sub(sale.paidAmount),
+      // ─────────────────────────────────────────────────────────────────────
+      // ACUMULACIÓN ATÓMICA DE LA LÍNEA
+      //
+      // Antes esto era un read-modify-write: se leía la cantidad, se sumaba en
+      // memoria y se escribía el total. Con el escáner disparando ráfagas (20
+      // lecturas del mismo código en menos de un segundo) las escrituras se
+      // pisaban entre sí y se perdían unidades: se entregaba mercancía que
+      // nunca se cobró.
+      //
+      // Ahora la suma la hace la BASE DE DATOS en la misma sentencia
+      // (increment), y la restricción UNIQUE(saleId, productId) garantiza que
+      // no se creen líneas paralelas para el mismo producto.
+      // ─────────────────────────────────────────────────────────────────────
+      await tx.saleItem.upsert({
+        where: { saleId_productId: { saleId, productId: dto.productId } },
+        create: {
+          saleId,
+          productId: dto.productId,
+          quantity: dto.quantity,
+          price,
+          subtotal,
+          costAtSale: product.cost, // Snapshot para la utilidad histórica
         },
+        update: { quantity: { increment: dto.quantity } },
       });
+
+      // El subtotal de la línea se recalcula sobre la cantidad YA consolidada
+      // por la BD, nunca sobre un valor calculado antes del lock.
+      const linea = await tx.saleItem.findUniqueOrThrow({
+        where: { saleId_productId: { saleId, productId: dto.productId } },
+        select: { id: true, quantity: true, price: true },
+      });
+
+      await tx.saleItem.update({
+        where: { id: linea.id },
+        data: { subtotal: linea.price.mul(new Decimal(linea.quantity)) },
+      });
+
+      const newTotal = await this.recalculateSaleTotals(tx, saleId);
 
       return { message: 'Producto agregado', newTotal };
     });
@@ -839,11 +841,7 @@ export class SalesService {
         data: { quantity, subtotal: newSubtotal },
       });
 
-      const newTotal = await this.recalculateSaleTotals(
-        tx,
-        saleId,
-        sale.paidAmount,
-      );
+      const newTotal = await this.recalculateSaleTotals(tx, saleId);
       return { message: 'Cantidad actualizada', newTotal };
     });
   }
@@ -917,11 +915,7 @@ export class SalesService {
         data: { clientId: clientId ?? null },
       });
 
-      const newTotal = await this.recalculateSaleTotals(
-        tx,
-        saleId,
-        sale.paidAmount,
-      );
+      const newTotal = await this.recalculateSaleTotals(tx, saleId);
 
       this.logger.log(
         `Venta #${saleId}: cliente asignado ${clientId ?? 'Público General'}. Total re-preciado: ${money(newTotal)}`,
@@ -938,13 +932,21 @@ export class SalesService {
   private async recalculateSaleTotals(
     tx: Prisma.TransactionClient,
     saleId: number,
-    paidAmount: Decimal,
   ): Promise<Decimal> {
     const agg = await tx.saleItem.aggregate({
       where: { saleId },
       _sum: { subtotal: true },
     });
     const newTotal = agg._sum.subtotal ?? new Decimal(0);
+
+    // paidAmount se relee DENTRO de la transacción.
+    // Antes llegaba por parámetro desde una lectura previa a la transacción: si
+    // un abono se registraba en ese intervalo, el balance se recalculaba con un
+    // pagado obsoleto y el abono desaparecía del saldo.
+    const { paidAmount } = await tx.sale.findUniqueOrThrow({
+      where: { id: saleId },
+      select: { paidAmount: true },
+    });
 
     await tx.sale.update({
       where: { id: saleId },
