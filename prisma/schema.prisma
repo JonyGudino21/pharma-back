@@ -138,6 +138,10 @@ model Sale {
   @@index([invoiceNumber])
   @@index([status])
   @@index([paymentMethod])
+  @@index([cashShiftId])
+  @@index([clientId])
+  @@index([userId])
+  @@index([flowStatus])
 }
 
 model SaleItem {
@@ -206,6 +210,7 @@ model SaleReturn {
 
   items          SaleReturnItem[]
   refund         SaleRefund[]
+  @@index([saleId])
 }
 
 model SaleReturnItem {
@@ -220,6 +225,8 @@ model SaleReturnItem {
   unitPrice     Decimal   @db.Decimal(10, 2)
   subtotal      Decimal   @db.Decimal(12, 2)
   reason        String?
+  @@index([saleItemId])
+  @@index([saleReturnId])
 }
 
 model SaleRefund {
@@ -235,6 +242,7 @@ model SaleRefund {
   reference    String?
 
   createdAt    DateTime  @default(now())
+  @@index([saleId])
 }
 
 //TODO: Registrar el vuelto en un futuro: CashMovement, CashMovementType, CashMovementCategory 
@@ -416,6 +424,8 @@ model Purchase {
   @@index([status])
   @@index([deliveryStatus])
   @@index([invoiceNumber])
+  @@index([supplierId])
+  @@index([createdAt])
 }
 
 model PurchaseItem {
@@ -436,6 +446,8 @@ model PurchaseItem {
   expiryDate  DateTime?   @db.Date
 
   batches     ProductBatch[]
+  @@index([purchaseId])
+  @@index([productId])
 }
 
 model PurchasePayment {
@@ -486,6 +498,7 @@ model ClientProductPriceHistory {
 
   startDate   DateTime      @default(now())
   endDate     DateTime?
+  @@index([clientId, productId])
 }
 
 model UserToken {
@@ -494,7 +507,9 @@ model UserToken {
   user          User      @relation(fields: [userId], references: [id])
   userId        Int
 
-  token         String    @unique
+  // sha256 del refresh token. El token en claro NUNCA se persiste: un dump de
+  // esta tabla no debe entregar sesiones usables. Ver TokenService.
+  tokenHash     String    @unique
   type          TokenType @default(REFRESH)
   ipAddress     String?
   userAgent     String?
@@ -506,8 +521,11 @@ model UserToken {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
-  @@index([token])
+  // Sin @@index([tokenHash]): la columna ya es @unique y Postgres crea su propio
+  // índice. El índice extra que existía sobre `token` sólo duplicaba el B-tree y
+  // encarecía cada rotación.
   @@index([userId])
+  @@index([expiresAt])
 }
 
 model CashShift {
@@ -592,7 +610,12 @@ model InventoryMovement {
 // reintroduce el read-modify-write que P0-1 cerró.
 model ProductBatch {
   id             Int      @id @default(autoincrement())
-  product        Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  // Restrict, NO Cascade: un lote es un registro financiero y regulatorio.
+  // Con Cascade, un borrado físico de producto destruiría los lotes y dejaría
+  // en NULL el batchId de los asientos del libro de controlados, anulando la
+  // trazabilidad exigida en una inspección. Hoy el borrado es lógico
+  // (isActive = false), así que esto sella una mina latente.
+  product        Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
   productId      Int
   lotNumber      String
   expiryDate     DateTime @db.Date
