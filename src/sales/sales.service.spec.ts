@@ -26,8 +26,19 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
   let service: SalesService;
 
   const tx = {
-    sale: { updateMany: jest.fn(), findUnique: jest.fn(), update: jest.fn() },
-    saleItem: { findMany: jest.fn(), aggregate: jest.fn() },
+    sale: {
+      updateMany: jest.fn(),
+      findUnique: jest.fn(),
+      findUniqueOrThrow: jest.fn(),
+      update: jest.fn(),
+    },
+    saleItem: {
+      findMany: jest.fn(),
+      aggregate: jest.fn(),
+      upsert: jest.fn(),
+      update: jest.fn(),
+      findUniqueOrThrow: jest.fn(),
+    },
     client: { update: jest.fn() },
     // Ramas de cancel() con pagos reales (reembolso y salida de caja)
     saleReturn: { create: jest.fn() },

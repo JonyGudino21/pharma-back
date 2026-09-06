@@ -25,7 +25,12 @@ describe('SalesService — devoluciones', () => {
 
   const tx = {
     $queryRaw: jest.fn(),
-    sale: { findUnique: jest.fn(), update: jest.fn(), updateMany: jest.fn() },
+    sale: {
+      findUnique: jest.fn(),
+      findUniqueOrThrow: jest.fn(),
+      update: jest.fn(),
+      updateMany: jest.fn(),
+    },
     saleItem: { findMany: jest.fn() },
     saleReturn: { create: jest.fn() },
     saleReturnItem: { create: jest.fn(), groupBy: jest.fn() },

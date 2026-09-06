@@ -17,6 +17,7 @@
  *   4. El costo promedio se restaura al cancelar una compra recibida.
  */
 import { Test, TestingModule } from '@nestjs/testing';
+import { ConfigModule } from '@nestjs/config';
 import { PaymentMethod } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { PrismaService } from '../prisma/prisma.service';
@@ -46,6 +47,10 @@ describe('Concurrencia de inventario y ventas (integración)', () => {
 
   beforeAll(async () => {
     moduleRef = await Test.createTestingModule({
+      // CashShiftService lee TOLERANCE_THRESHOLD del ConfigService (antes usaba
+      // process.env, donde una variable ausente dejaba el umbral en NaN y la
+      // auditoría de caja nunca se disparaba).
+      imports: [ConfigModule.forRoot({ isGlobal: true })],
       providers: [
         PrismaService,
         SalesService,

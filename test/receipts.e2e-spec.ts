@@ -15,6 +15,7 @@
  *   5. copyNumber 1 = original, 2 = primera reimpresión.
  */
 import { Test, TestingModule } from '@nestjs/testing';
+import { ConfigModule } from '@nestjs/config';
 import { BadRequestException } from '@nestjs/common';
 import {
   PrintChannel,
@@ -46,6 +47,10 @@ describe('Tickets: empresa, plantillas e impresiones (integración)', () => {
 
   beforeAll(async () => {
     moduleRef = await Test.createTestingModule({
+      // CashShiftService lee TOLERANCE_THRESHOLD del ConfigService (antes usaba
+      // process.env, donde una variable ausente dejaba el umbral en NaN y la
+      // auditoría de caja nunca se disparaba).
+      imports: [ConfigModule.forRoot({ isGlobal: true })],
       providers: [
         PrismaService,
         CompanyService,
