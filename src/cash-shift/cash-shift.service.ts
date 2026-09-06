@@ -15,11 +15,15 @@ import { OpenShiftDto } from './dto/open-shift.dto';
 import { CloseShiftDto } from './dto/close-shift.dto';
 import { Decimal } from '@prisma/client/runtime/library';
 import { Prisma } from '@prisma/client';
+import { ConfigService } from '@nestjs/config';
 import { GetShiftsFilterDto } from './dto/get-shifts-filter.dto';
 
 @Injectable()
 export class CashShiftService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private readonly config: ConfigService,
+  ) {}
 
   /**
    * Abre un turno de caja
@@ -62,8 +66,13 @@ export class CashShiftService {
    * @param userId el ID del usuario
    * @returns el turno de caja actual o null si no hay turno abierto
    */
-  async getCurrentShift(userId: number) {
-    const shift = await this.prisma.cashShift.findFirst({
+  async getCurrentShift(userId: number, tx?: Prisma.TransactionClient) {
+    // Acepta la transacción del llamador (mismo patrón que registerMovement).
+    // Cuando se invocaba desde dentro de una transacción usando su propia
+    // conexión, se retenían DOS conexiones del pool a la vez: con varias cajas
+    // concurrentes eso agota el pool y bloquea el sistema entero.
+    const db = tx ?? this.prisma;
+    const shift = await db.cashShift.findFirst({
       where: { userId, status: ShiftStatus.OPEN },
     });
 
@@ -122,6 +131,28 @@ export class CashShiftService {
 
     // TRANSACCIÓN DE PRISMA: Aseguramos consistencia de datos
     return await this.prisma.$transaction(async (tx) => {
+      // ─────────────────────────────────────────────────────────────────────
+      // CLAIM ATÓMICO DEL CIERRE (compare-and-swap)
+      //
+      // La verificación de "turno abierto" ocurre FUERA de la transacción, así
+      // que dos cierres simultáneos (doble clic, reintento de red) la pasaban
+      // ambos y el segundo sobrescribía el arqueo del primero: se perdía el
+      // realAmount contado y la diferencia real quedaba sin rastro.
+      //
+      // Reclamamos la transición OPEN -> (cerrado) con un UPDATE condicional.
+      // El estado final (CLOSED o AUDIT_REQUIRED) se fija en el paso F.
+      // ─────────────────────────────────────────────────────────────────────
+      const claim = await tx.cashShift.updateMany({
+        where: { id: shift.id, status: ShiftStatus.OPEN },
+        data: { closedAt: new Date() },
+      });
+
+      if (claim.count === 0) {
+        throw new ConflictException(
+          'Este turno ya fue cerrado por otra operación.',
+        );
+      }
+
       // A. Sumar todas las ventas en EFECTIVO asociadas a este turno
       const salesAggregate = await tx.salePayment.aggregate({
         where: { cashShiftId: shift.id, method: PaymentMethod.CASH },
@@ -157,14 +188,18 @@ export class CashShiftService {
       const difference = new Decimal(dto.realAmount).sub(expectedAmount);
 
       // E. Determinar estado final (Si falta mucho dinero, marcamos AUDIT_REQUIRED)
-      // Umbral de tolerancia: Ejemplo $10 pesos
-      let finalStatus: ShiftStatus = ShiftStatus.CLOSED;
-      if (
-        Math.abs(difference.toNumber()) >
-        Number(process.env.TOLERANCE_THRESHOLD)
-      ) {
-        finalStatus = ShiftStatus.AUDIT_REQUIRED;
-      }
+      //
+      // El umbral se lee de la configuración VALIDADA, no de process.env.
+      // Con process.env, si la variable no estaba definida el resultado era
+      // Number(undefined) = NaN, y `|diferencia| > NaN` es SIEMPRE falso: el
+      // control antifraude quedaba silenciosamente desactivado.
+      // La comparación se hace en Decimal para no pasar por float.
+      const tolerance = new Decimal(
+        this.config.get<number>('TOLERANCE_THRESHOLD') ?? 20,
+      );
+      const finalStatus: ShiftStatus = difference.abs().gt(tolerance)
+        ? ShiftStatus.AUDIT_REQUIRED
+        : ShiftStatus.CLOSED;
 
       // F. Cerrar
       await tx.cashShift.update({
