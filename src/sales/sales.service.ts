@@ -31,6 +31,7 @@ import { InventoryBatchesService } from 'src/inventory/inventory-batches.service
 import { CompleteSaleDto } from './dto/complete-sale.dto';
 import { CashShiftService } from 'src/cash-shift/cash-shift.service';
 import { PaymentService } from 'src/payment/payment.service';
+import { retryOnWriteConflict } from 'src/common/utils/retry-on-conflict.util';
 import { FindAllSalesQueryDto } from './dto/find-all-sales-query.dto';
 import { money } from 'src/common/utils/decimal.util';
 import { isUniqueConstraintError } from 'src/common/utils/prisma-error.util';
@@ -968,6 +969,28 @@ export class SalesService {
    * @returns la venta cerrada
    */
   async completeSale(
+    saleId: number,
+    userId: number,
+    dto: CompleteSaleDto = {},
+  ) {
+    // REINTENTO ANTE CONFLICTO DE ESCRITURA (P2034).
+    //
+    // Es la ruta más caliente del sistema: varias cajas cerrando ventas que
+    // tocan los mismos productos. El orden determinista por productId reduce
+    // los deadlocks pero no los elimina, y un deadlock es transitorio: la
+    // misma operación funcionaría al segundo intento.
+    //
+    // Es seguro reintentar porque la transacción empieza con un claim atómico:
+    // si la pasada fallida hubiera alcanzado a reclamar el cierre, el reintento
+    // encontraría la venta ya COMPLETED y devolvería un conflicto de negocio
+    // limpio en lugar de descontar stock dos veces.
+    return await retryOnWriteConflict(
+      () => this.completeSaleOnce(saleId, userId, dto),
+      { label: `cierre de venta #${saleId}` },
+    );
+  }
+
+  private async completeSaleOnce(
     saleId: number,
     userId: number,
     dto: CompleteSaleDto = {},
