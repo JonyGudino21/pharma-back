@@ -158,6 +158,10 @@ model SaleItem {
 
   batches       SaleItemBatch[]
 
+  // Una sola línea por producto dentro de una venta.
+  // Habilita el upsert atómico de addItem: sin esta restricción, dos escaneos
+  // simultáneos del mismo producto creaban dos líneas y se perdían unidades.
+  @@unique([saleId, productId])
   @@index([saleId])
   @@index([productId])
 }
@@ -175,6 +179,12 @@ model SalePayment {
   // Si es en efectivo, ¿a qué caja entró?
   cashShiftId   Int?
   isDeposit     Boolean     @default(true) // true = Pago, false = Reembolso
+
+  // Clave de idempotencia enviada por el cliente (header Idempotency-Key).
+  // Si una respuesta se pierde y el cajero reintenta, el UNIQUE impide un
+  // segundo cobro: el reintento devuelve el pago ya registrado.
+  // Nullable para no romper los pagos históricos ni los abonos internos.
+  idempotencyKey String?    @unique
 
   createdAt     DateTime    @default(now())
 
