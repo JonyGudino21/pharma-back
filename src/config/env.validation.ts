@@ -42,6 +42,13 @@ export const envValidationSchema = Joi.object({
 
   TOLERANCE_THRESHOLD: Joi.number().default(20),
 
+  // Regla sanitaria, no decisión de implementación: ¿un lote cuya caducidad es
+  // HOY sigue siendo vendible? Por defecto sí (la fecha impresa es el último día
+  // de validez, criterio habitual en farmacia). Ponerlo en 'false' sólo si el
+  // PNO o el responsable sanitario define que esa fecha es el primer día NO
+  // válido. Ver src/inventory/fefo.ts → isExpiryInclusive().
+  EXPIRY_INCLUSIVE: Joi.boolean().truthy('true').falsy('false').default(true),
+
   // Rate limiting. El limite global protege contra abuso sin estorbar al POS:
   // un cajero genera una peticion por producto escaneado y varias cajas suelen
   // compartir la misma IP publica.

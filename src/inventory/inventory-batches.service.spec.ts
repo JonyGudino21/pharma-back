@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { BadRequestException } from '@nestjs/common';
 import { ConflictException } from '@nestjs/common';
 import { MovementType, Prisma } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
@@ -24,6 +25,7 @@ describe('InventoryBatchesService — consumo FEFO', () => {
     product: { findUnique: jest.fn() },
     productBatch: { findMany: jest.fn() },
     saleItemBatch: { createMany: jest.fn(), findMany: jest.fn() },
+    controlledSaleLog: { create: jest.fn() },
     $queryRaw: jest.fn(),
   };
 
@@ -185,4 +187,77 @@ describe('InventoryBatchesService — consumo FEFO', () => {
 
     expect(mockInventory.registerMovement).not.toHaveBeenCalled();
   });
+
+  describe('guardia de completitud del libro de controlados (COFEPRIS)', () => {
+    it('rechaza una DISPENSACIÓN sin datos de receta', async () => {
+      await expect(
+        service.writeControlledLog(txClient, {
+          entryType: ControlledLogEntryType.DISPENSE,
+          productId: 1,
+          quantity: 1,
+          soldById: 9,
+          prescription: null,
+        }),
+      ).rejects.toThrow(BadRequestException);
+
+      // Lo esencial: no queda un asiento no conforme en el libro.
+      expect(tx.controlledSaleLog.create).not.toHaveBeenCalled();
+    });
+
+    it('el mensaje enumera exactamente qué datos faltan', async () => {
+      await expect(
+        service.writeControlledLog(txClient, {
+          entryType: ControlledLogEntryType.DISPENSE,
+          productId: 1,
+          quantity: 1,
+          soldById: 9,
+          prescription: {
+            prescriptionNo: 'RX-1',
+            doctorName: 'Dra. López',
+            doctorLicense: '',
+            patientName: '',
+          },
+        }),
+      ).rejects.toThrow(/cédula profesional.*paciente|paciente.*cédula/i);
+    });
+
+    it('acepta una DISPENSACIÓN con la receta completa', async () => {
+      tx.controlledSaleLog.create.mockResolvedValue({ id: 1 });
+
+      await service.writeControlledLog(txClient, {
+        entryType: ControlledLogEntryType.DISPENSE,
+        productId: 1,
+        quantity: 2,
+        soldById: 9,
+        prescription: {
+          prescriptionNo: 'RX-001',
+          doctorName: 'Dra. López',
+          doctorLicense: '12345678',
+          patientName: 'Juan Pérez',
+        },
+      });
+
+      expect(tx.controlledSaleLog.create).toHaveBeenCalled();
+    });
+
+    it('NO exige receta en devoluciones ni destrucciones', async () => {
+      tx.controlledSaleLog.create.mockResolvedValue({ id: 1 });
+
+      for (const entryType of [
+        ControlledLogEntryType.RETURN,
+        ControlledLogEntryType.DESTRUCTION,
+      ]) {
+        await expect(
+          service.writeControlledLog(txClient, {
+            entryType,
+            productId: 1,
+            quantity: 1,
+            soldById: 9,
+            prescription: null,
+          }),
+        ).resolves.toBeDefined();
+      }
+    });
+  });
+
 });

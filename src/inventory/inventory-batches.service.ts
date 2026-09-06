@@ -3,6 +3,7 @@ import {
   BadRequestException,
   ConflictException,
   NotFoundException,
+  Logger,
 } from '@nestjs/common';
 import {
   ControlledLogEntryType,
@@ -15,6 +16,7 @@ import { InventoryService } from './inventory.service';
 import {
   allocateFefo,
   daysUntilExpiry,
+  isExpiryInclusive,
   expiryTrafficLight,
   normalizeLotNumber,
   restoreFefo,
@@ -31,6 +33,8 @@ export type PrescriptionData = {
 
 @Injectable()
 export class InventoryBatchesService {
+  private readonly logger = new Logger(InventoryBatchesService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly inventory: InventoryService,
@@ -48,11 +52,19 @@ export class InventoryBatchesService {
     if (!product) throw new NotFoundException('Producto no encontrado');
 
     const today = todayInMexico();
+    // El criterio de caducidad DEBE ser el mismo que usa allocateFefo, o el
+    // stock vendible que se muestra al cajero no coincidiría con el que el
+    // sistema acepta despachar (con el flag en `false`, un lote que caduca hoy
+    // se contaría como vendible aquí y se rechazaría al cerrar la venta).
+    const expiredFilter = isExpiryInclusive()
+      ? { lt: today } // vale su propio día: caducado sólo si es anterior a hoy
+      : { lte: today }; // la fecha impresa es el primer día no válido
+
     const expired = await db.productBatch.aggregate({
       where: {
         productId,
         quantity: { gt: 0 },
-        expiryDate: { lt: today },
+        expiryDate: expiredFilter,
       },
       _sum: { quantity: true },
     });
@@ -135,12 +147,29 @@ export class InventoryBatchesService {
     }
 
     if (unbatchedTake > 0) {
+      // VENTA SIN TRAZABILIDAD DE LOTE.
+      //
+      // Es una vía de transición para el stock que existía antes de implementar
+      // lotes. Funciona, pero significa que esas unidades se dispensan SIN poder
+      // decir de qué lote salieron: si mañana hay un retiro sanitario de un lote
+      // concreto, no hay forma de saber a quién se le vendió.
+      //
+      // Antes ocurría en absoluto silencio. Ahora queda registrado con nivel
+      // WARN y marcado en el motivo del asiento del Kardex, para que sea
+      // medible cuánto queda por regularizar y se pueda fijar una fecha para
+      // eliminar esta vía. Los controlados nunca llegan aquí: se rechazan arriba.
+      this.logger.warn(
+        `Venta sin trazabilidad de lote: ${unbatchedTake} u. de "${params.productName}" ` +
+          `(producto #${params.productId}) en la venta #${params.saleId}. ` +
+          `Stock sin lote restante: ${unbatched - unbatchedTake}. Regularizar con un conteo por lotes.`,
+      );
+
       const movement = await this.inventory.registerMovement(
         {
           productId: params.productId,
           type: MovementType.SALE,
           quantity: unbatchedTake,
-          reason: params.reason,
+          reason: `${params.reason} [SIN LOTE]`,
           referenceId: params.saleId,
         },
         userId,
@@ -544,6 +573,31 @@ export class InventoryBatchesService {
       prescription?: PrescriptionData | null;
     },
   ) {
+    // GUARDIA DE COMPLETITUD (COFEPRIS).
+    //
+    // Un asiento de DISPENSACIÓN sin receta, médico, cédula y paciente es un
+    // registro no conforme. La base de datos ya lo rechaza con un CHECK, pero
+    // ese error llegaría al cajero como un fallo de infraestructura sin
+    // explicación. Aquí falla temprano y con un mensaje que dice qué falta.
+    //
+    // Las devoluciones y destrucciones legítimamente no llevan receta, así que
+    // la exigencia se aplica sólo a DISPENSE.
+    if (params.entryType === ControlledLogEntryType.DISPENSE) {
+      const p = params.prescription;
+      const faltantes = [
+        !p?.prescriptionNo && 'folio de receta',
+        !p?.doctorName && 'nombre del médico',
+        !p?.doctorLicense && 'cédula profesional',
+        !p?.patientName && 'nombre del paciente',
+      ].filter(Boolean);
+
+      if (faltantes.length > 0) {
+        throw new BadRequestException(
+          `No se puede registrar la dispensación de un medicamento controlado sin: ${faltantes.join(', ')}.`,
+        );
+      }
+    }
+
     return tx.controlledSaleLog.create({
       data: {
         entryType: params.entryType,

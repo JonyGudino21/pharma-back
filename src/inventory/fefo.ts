@@ -3,6 +3,28 @@ import { Decimal } from '@prisma/client/runtime/library';
 const LOT_MAX_LEN = 40;
 
 /**
+ * ¿Un lote cuya caducidad es HOY sigue siendo vendible?
+ *
+ * DECISIÓN DE NEGOCIO QUE REQUIERE VALIDACIÓN SANITARIA.
+ *
+ * Por defecto `true`: el lote vale todo su día calendario. Es el criterio
+ * habitual en farmacia, donde la caducidad impresa suele indicar el ÚLTIMO día
+ * (o mes) de validez, y comparar contra medianoche UTC rechazaría un lote que
+ * caduca "hoy" y todavía se puede dispensar a las 18:00.
+ *
+ * Si el PNO de la farmacia o el responsable sanitario define lo contrario —que
+ * la fecha impresa es el primer día NO válido— hay que poner
+ * `EXPIRY_INCLUSIVE=false` en el entorno. Con `true` y ese criterio, el sistema
+ * dispensaría producto caducado.
+ *
+ * No se deja como constante en el código a propósito: es una regla sanitaria,
+ * no una decisión de implementación, y debe poder cambiarse sin recompilar.
+ */
+export function isExpiryInclusive(): boolean {
+  return process.env.EXPIRY_INCLUSIVE !== 'false';
+}
+
+/**
  * Fecha de caducidad vendible: el lote vale TODO el día calendario en
  * America/Mexico_City. Comparar con `new Date()` a medianoche UTC rechazaría
  * un lote que caduca "hoy" a las 18:00 en farmacia.
@@ -58,10 +80,15 @@ export function allocateFefo(
   }
 
   const todayDay = toUtcDateOnly(today);
+  const inclusive = isExpiryInclusive();
   const sellable = batches
-    .filter(
-      (b) => b.quantity > 0 && toUtcDateOnly(b.expiryDate) >= todayDay,
-    )
+    .filter((b) => {
+      if (b.quantity <= 0) return false;
+      const expiry = toUtcDateOnly(b.expiryDate);
+      // inclusive: el lote vale su propio día de caducidad (>=).
+      // exclusive: la fecha impresa es el primer día NO válido (>).
+      return inclusive ? expiry >= todayDay : expiry > todayDay;
+    })
     .sort((a, b) => {
       const byExpiry =
         toUtcDateOnly(a.expiryDate).getTime() -
