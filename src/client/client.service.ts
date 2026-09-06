@@ -409,7 +409,7 @@ export class ClientService {
       // 1. Validar Caja (Solo si es efectivo)
       let cashShiftId: number | null = null;
       if (dto.method === PaymentMethod.CASH) {
-        const shift = await this.cashShiftService.getCurrentShift(userId);
+        const shift = await this.cashShiftService.getCurrentShift(userId, tx);
         if (!shift)
           throw new ConflictException(
             'Se requiere caja abierta para recibir efectivo.',

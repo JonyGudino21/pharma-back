@@ -104,7 +104,7 @@ export class PurchaseService {
       if (dto.payments && dto.payments.length > 0) {
         for (const p of dto.payments) {
           if (p.method === PaymentMethod.CASH) {
-            const shift = await this.cashShiftService.getCurrentShift(userId);
+            const shift = await this.cashShiftService.getCurrentShift(userId, tx);
             if (!shift)
               throw new ConflictException(
                 'ALERTA! Se requiere caja abierta para pagar en efectivo al proveedor.',
@@ -367,7 +367,7 @@ export class PurchaseService {
       if (fresh.paidAmount.gt(0)) {
         if (returnToCash) {
           // ESCENARIO A: El proveedor sacó dinero de su cartera y nos lo dio.
-          const shift = await this.cashShiftService.getCurrentShift(userId);
+          const shift = await this.cashShiftService.getCurrentShift(userId, tx);
           if (!shift)
             throw new ConflictException(
               'Se requiere caja abierta para recibir el reembolso en efectivo físico.',
@@ -621,7 +621,7 @@ export class PurchaseService {
     return await this.prisma.$transaction(async (tx) => {
       // 1. Control de caja (Saida de dineru)
       if (dto.method === PaymentMethod.CASH) {
-        const shift = await this.cashShiftService.getCurrentShift(userId);
+        const shift = await this.cashShiftService.getCurrentShift(userId, tx);
         if (!shift)
           throw new ConflictException(
             'ALERTA! Se requiere caja abierta para pagar en efectivo al proveedor.',
@@ -697,7 +697,7 @@ export class PurchaseService {
     return await this.prisma.$transaction(async (tx) => {
       // 1. REVERSIÓN DE CAJA (Si fue en efectivo)
       if (payment.method === PaymentMethod.CASH) {
-        const shift = await this.cashShiftService.getCurrentShift(userId);
+        const shift = await this.cashShiftService.getCurrentShift(userId, tx);
         if (!shift)
           throw new ConflictException(
             'No tienes caja abierta para registrar la devolución de este efectivo.',
