@@ -28,6 +28,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CompanyService } from '../src/company/company.service';
 import { SalesService } from '../src/sales/sales.service';
 import { InventoryService } from '../src/inventory/inventory.service';
+import { InventoryBatchesService } from '../src/inventory/inventory-batches.service';
 import { CashShiftService } from '../src/cash-shift/cash-shift.service';
 import { PaymentService } from '../src/payment/payment.service';
 
@@ -56,6 +57,8 @@ describe('Tickets: empresa, plantillas e impresiones (integración)', () => {
         CompanyService,
         SalesService,
         InventoryService,
+        // SalesService y PurchaseService dependen del despacho FEFO por lotes.
+        InventoryBatchesService,
         CashShiftService,
         PaymentService,
       ],
