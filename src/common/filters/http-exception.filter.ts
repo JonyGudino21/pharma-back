@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { ApiResponse } from '../dto/response.dto';
+import { mapPrismaError } from '../utils/prisma-error.util';
 
 type RequestWithId = Request & { id?: string };
 
@@ -25,7 +26,22 @@ export class AllExceptionsFilter implements ExceptionFilter {
     let message = 'Internal server error';
     let error: Record<string, unknown> = {};
 
-    if (exception instanceof HttpException) {
+    // Los errores de Prisma se traducen ANTES de la rama genérica de Error.
+    // Antes caían todos en 500 con el texto crudo de Prisma, que además revela
+    // la tabla y la columna del constraint violado. El detalle técnico va al
+    // log (más abajo); al cliente sólo el mensaje seguro y el código correcto.
+    const prismaMapped = mapPrismaError(exception);
+
+    if (prismaMapped) {
+      status = prismaMapped.status;
+      message = prismaMapped.message;
+      error = {
+        name: 'PrismaError',
+        // El frontend usa esta bandera para decidir si ofrece "reintentar"
+        // en lugar de presentar un fallo definitivo al cajero.
+        retryable: prismaMapped.retryable,
+      };
+    } else if (exception instanceof HttpException) {
       status = exception.getStatus();
       const res: unknown = exception.getResponse();
       if (typeof res === 'string') {
@@ -61,6 +77,14 @@ export class AllExceptionsFilter implements ExceptionFilter {
     }
 
     const linea = `HTTP ${status} ${request.method} ${request.url} rid=${requestId ?? '-'}`;
+
+    // El detalle crudo de Prisma (código, tabla, columna) se registra SIEMPRE en
+    // el servidor, incluso cuando la respuesta al cliente es un 404 o un 409
+    // limpio: es lo que permite diagnosticar desde el requestId del ticket.
+    if (prismaMapped && exception instanceof Error) {
+      this.logger.warn(`${linea} prisma: ${exception.message.split('\n').join(' ')}`);
+    }
+
     if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
       this.logger.error(
         `${linea} ${message}`,
