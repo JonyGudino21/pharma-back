@@ -5,6 +5,7 @@ import * as bcrypt from 'bcrypt';
 import { UserRole } from '@prisma/client';
 import { AuthService } from './auth.service';
 import { TokenService } from './token.service';
+import { AuthAuditService } from './auth-audit.service';
 import { PrismaService } from '../../prisma/prisma.service';
 
 /**
@@ -64,6 +65,11 @@ describe('AuthService · emision de tokens', () => {
               return Promise.resolve({ id: emitidos.length });
             }),
           },
+        },
+        {
+          // La auditoría de acceso es un colaborador nuevo de AuthService.
+          provide: AuthAuditService,
+          useValue: { record: jest.fn() },
         },
         {
           provide: ConfigService,

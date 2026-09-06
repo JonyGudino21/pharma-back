@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TokenService } from './token.service';
+import { AuthAuditService } from './auth-audit.service';
 import { LoginDto } from './dto/login.dto';
 import { UserRole } from '@prisma/client';
 import { UserPermissions } from './types/user-permissions.types';
@@ -26,6 +27,7 @@ export class AuthService {
     private readonly jwt: JwtService,
     private readonly tokens: TokenService,
     private readonly config: ConfigService,
+    private readonly audit: AuthAuditService,
   ) {}
 
   /**
@@ -106,13 +108,38 @@ export class AuthService {
       // El hash se trae SOLO para compararlo aqui; nunca sale de este metodo.
       select: { ...USER_PUBLIC_SELECT, password: true },
     });
-    if (!user) throw new UnauthorizedException('Credenciales incorrectas');
-    if (!user.isActive) throw new UnauthorizedException('Usuario inactivo');
+    if (!user) {
+      this.audit.record('login.failed', {
+        email: data.email,
+        ipAddress,
+        userAgent,
+        reason: 'usuario-inexistente',
+      });
+      throw new UnauthorizedException('Credenciales incorrectas');
+    }
+    if (!user.isActive) {
+      this.audit.record('login.inactive', {
+        userId: user.id,
+        email: data.email,
+        ipAddress,
+        userAgent,
+      });
+      throw new UnauthorizedException('Usuario inactivo');
+    }
 
     const isValid = await this.validatePassword(data.password, user.password);
     // Mismo mensaje que el usuario inexistente: distinguirlos permite enumerar
     // correos validos de la farmacia.
-    if (!isValid) throw new UnauthorizedException('Credenciales incorrectas');
+    if (!isValid) {
+      this.audit.record('login.failed', {
+        userId: user.id,
+        email: data.email,
+        ipAddress,
+        userAgent,
+        reason: 'password-incorrecta',
+      });
+      throw new UnauthorizedException('Credenciales incorrectas');
+    }
 
     const payload: JwtPayload = {
       sub: user.id,
@@ -133,6 +160,8 @@ export class AuthService {
     // limite de intentos y fuera del alcance del rate limiting.
     const { password, ...safeUser } = user;
 
+    this.audit.record('login.success', { userId: user.id, ipAddress, userAgent });
+
     return { user: safeUser, accessToken, refreshToken };
   }
 
@@ -144,8 +173,15 @@ export class AuthService {
    * @returns el nuevo token de acceso y el nuevo token de refresco
    */
   async refresh(refreshToken: string, ip?: string, ua?: string) {
+    // findValidateRefreshToken devuelve null si no existe, está revocado o
+    // expiró: la decisión de qué hacer es de esta capa, no del almacén.
     const stored = await this.tokens.findValidateRefreshToken(refreshToken);
-    if (!stored || stored.revoked || stored.expiresAt < new Date()) {
+    if (!stored) {
+      this.audit.record('refresh.rejected', {
+        ipAddress: ip,
+        userAgent: ua,
+        reason: 'token-desconocido-revocado-o-expirado',
+      });
       throw new UnauthorizedException('Refresh Token Invalido');
     }
 
@@ -159,11 +195,23 @@ export class AuthService {
     } catch {
       // firma inválida → revoca por seguridad
       await this.tokens.revokeRefreshToken(refreshToken, ip, ua);
+      this.audit.record('refresh.rejected', {
+        userId: stored.userId,
+        ipAddress: ip,
+        userAgent: ua,
+        reason: 'firma-invalida',
+      });
       throw new UnauthorizedException('Refresh Token Invalido');
     }
 
     if (payload.type !== 'refresh') {
       await this.tokens.revokeRefreshToken(refreshToken, ip, ua);
+      this.audit.record('refresh.rejected', {
+        userId: stored.userId,
+        ipAddress: ip,
+        userAgent: ua,
+        reason: 'tipo-de-token-incorrecto',
+      });
       throw new UnauthorizedException('Refresh Token Invalido');
     }
 
@@ -177,6 +225,12 @@ export class AuthService {
 
     if (!user || !user.isActive) {
       await this.tokens.revokeRefreshToken(refreshToken, ip, ua);
+      this.audit.record('refresh.rejected', {
+        userId: payload.sub,
+        ipAddress: ip,
+        userAgent: ua,
+        reason: 'usuario-inactivo-o-inexistente',
+      });
       throw new UnauthorizedException('Usuario inactivo o inexistente');
     }
 
@@ -204,12 +258,26 @@ export class AuthService {
    * @returns true si el token de refresco se revoco correctamente
    */
   async logout(refreshToken: string, ip?: string, ua?: string) {
-    await this.tokens.revokeRefreshToken(refreshToken, ip, ua);
+    // IDEMPOTENTE: revokeRefreshToken ya no lanza si el token no existe, así que
+    // un doble clic o un reintento devuelven éxito en lugar de un 401 por una
+    // operación que en realidad ya estaba hecha.
+    const { revoked } = await this.tokens.revokeRefreshToken(refreshToken, ip, ua);
+    this.audit.record('logout', {
+      ipAddress: ip,
+      userAgent: ua,
+      reason: revoked === 0 ? 'sesion-ya-cerrada' : undefined,
+    });
     return true;
   }
 
   async logoutAll(userId: number, ip?: string, au?: string) {
-    await this.tokens.revokeAllUserRefreshTokens(userId, ip, au);
+    const result = await this.tokens.revokeAllUserRefreshTokens(userId, ip, au);
+    this.audit.record('logout.all', {
+      userId,
+      ipAddress: ip,
+      userAgent: au,
+      reason: `sesiones=${result.count}`,
+    });
     return true;
   }
 
