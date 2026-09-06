@@ -6,9 +6,14 @@ import {
   Param,
   Query,
   UseGuards,
+  Res,
 } from '@nestjs/common';
 import { InventoryService } from './inventory.service';
 import { InventoryBatchesService } from './inventory-batches.service';
+import { ControlledLogExportService } from './controlled-log-export.service';
+import { ControlledLogExportQueryDto } from './dto/controlled-log-export-query.dto';
+import type { Response } from 'express';
+import type { AuthenticatedUser } from 'src/auth/types/authenticated-user.type';
 import { GetUser } from 'src/common/decorators/get-user.decorator';
 import { ApiResponse } from 'src/common/dto/response.dto';
 import { RegisterAdjustmentDto } from './dto/register-adjustment.dto';
@@ -26,6 +31,7 @@ export class InventoryController {
   constructor(
     private readonly inventoryService: InventoryService,
     private readonly batches: InventoryBatchesService,
+    private readonly controlledExport: ControlledLogExportService,
   ) {}
 
   /**
@@ -92,6 +98,35 @@ export class InventoryController {
   /**
    * [REGULATORIO] Libro de controlados COFEPRIS. Append-only, con PII del paciente.
    */
+  /**
+   * [CUMPLIMIENTO] Descarga el libro de controlados para inspección sanitaria.
+   *
+   * Va ANTES de 'controlled-log' porque Nest resuelve por orden de declaración.
+   * Restringido a gerencia: es un documento con datos de pacientes.
+   */
+  @Get('controlled-log/export')
+  @Roles(UserRole.MANAGER)
+  async exportControlledLog(
+    @Query() query: ControlledLogExportQueryDto,
+    @GetUser() user: AuthenticatedUser,
+    @Res() res: Response,
+  ) {
+    const file = await this.controlledExport.exportCsv(query, {
+      id: user.userId,
+      userName: user.userName,
+    });
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${file.filename}"`,
+    );
+    // Se expone para que el front pueda mostrar la huella al usuario.
+    res.setHeader('X-Integrity-Hash', file.integrityHash);
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(file.content);
+  }
+
   @Get('controlled-log')
   @Roles(UserRole.MANAGER, UserRole.PHARMACIST)
   async getControlledLog(@Query() query: ControlledLogQueryDto) {
