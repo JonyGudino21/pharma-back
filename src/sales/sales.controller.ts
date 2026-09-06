@@ -8,6 +8,7 @@ import {
   Query,
   UseGuards,
   ParseIntPipe,
+  Headers,
 } from '@nestjs/common';
 import { SalesService } from './sales.service';
 import { CreateSaleDto, SaleItemDto } from './dto/create-sale.dto';
@@ -152,11 +153,14 @@ export class SalesController {
     @Param('id') id: number,
     @Body() addPaymentDto: AddPaymentDto,
     @GetUser() user: AuthenticatedUser,
+    // Clave de idempotencia: un reintento tras timeout NO debe cobrar dos veces.
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     const data = await this.salesService.addPayment(
       id,
       addPaymentDto,
       user.userId,
+      idempotencyKey,
     );
     return ApiResponse.ok(data, 'Pago agregado correctamente');
   }

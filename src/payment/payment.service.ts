@@ -16,6 +16,7 @@ import {
 import { Decimal } from '@prisma/client/runtime/library';
 import { PrismaService } from 'prisma/prisma.service';
 import { CashShiftService } from 'src/cash-shift/cash-shift.service';
+import { isUniqueConstraintError } from 'src/common/utils/prisma-error.util';
 import { money } from 'src/common/utils/decimal.util';
 
 export interface ApplyPaymentParams {
@@ -25,6 +26,12 @@ export interface ApplyPaymentParams {
   references?: string | null;
   /** Caja a la que entra el efectivo. Usar `resolveCashShiftId` para obtenerlo. */
   cashShiftId?: number | null;
+  /**
+   * Clave de idempotencia del cliente (header Idempotency-Key).
+   * Si la respuesta se pierde y el cajero reintenta, el mismo valor devuelve el
+   * pago ya registrado en lugar de cobrar dos veces.
+   */
+  idempotencyKey?: string | null;
 }
 
 export interface AppliedPayment {
@@ -35,6 +42,8 @@ export interface AppliedPayment {
   isFullyPaid: boolean;
   /** Cuánto se descontó de la deuda del cliente (0 si la venta aún no estaba cerrada). */
   clientDebtDecremented: Decimal;
+  /** true si la petición era un reintento y se devolvió el cobro original. */
+  replayed: boolean;
 }
 
 /**
@@ -97,6 +106,27 @@ export class PaymentService {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // 0. REPLAY IDEMPOTENTE
+    //
+    // Un timeout de red es indistinguible de un fallo real: el cajero reintenta
+    // y, sin esta guardia, se cobraba dos veces. Si la clave ya existe, este
+    // cobro YA se aplicó: devolvemos el asiento original sin tocar el dinero.
+    // La unicidad la garantiza la BD, así que dos reintentos simultáneos con la
+    // misma clave tampoco pueden duplicar (ver el catch de P2002 más abajo).
+    // ─────────────────────────────────────────────────────────────────────────
+    if (params.idempotencyKey) {
+      const previo = await tx.salePayment.findUnique({
+        where: { idempotencyKey: params.idempotencyKey },
+      });
+      if (previo) {
+        this.logger.log(
+          `Reintento idempotente del pago ${previo.id} (venta #${previo.saleId}): se devuelve el cobro original.`,
+        );
+        return this.describeReplay(tx, previo);
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // 1. APLICACIÓN ATÓMICA DEL DINERO
     // La condición `balance >= amount` la evalúa la BD en la misma sentencia que
     // hace el descuento: es imposible que dos cobros concurrentes sobrepaguen.
@@ -145,16 +175,31 @@ export class PaymentService {
       },
     });
 
-    // 3. Asiento del pago (trazabilidad: a qué caja entró)
-    const payment = await tx.salePayment.create({
-      data: {
-        saleId: params.saleId,
-        method: params.method,
-        amount,
-        references: params.references ?? undefined,
-        cashShiftId: params.cashShiftId ?? null,
-      },
-    });
+    // 3. Asiento del pago (trazabilidad: a qué caja entró y clave de idempotencia)
+    let payment: SalePayment;
+    try {
+      payment = await tx.salePayment.create({
+        data: {
+          saleId: params.saleId,
+          method: params.method,
+          amount,
+          references: params.references ?? undefined,
+          cashShiftId: params.cashShiftId ?? null,
+          idempotencyKey: params.idempotencyKey ?? null,
+        },
+      });
+    } catch (error) {
+      // Dos reintentos EXACTAMENTE simultáneos: ambos pasaron el paso 0 antes de
+      // que ninguno insertara. El UNIQUE de la BD deja pasar solo a uno.
+      // Al propagar, la transacción revierte el descuento del saldo: el
+      // invariante "no se cobra dos veces" se mantiene intacto.
+      if (isUniqueConstraintError(error) && params.idempotencyKey) {
+        throw new ConflictException(
+          'Este cobro ya se está procesando. Consulta la venta antes de reintentar.',
+        );
+      }
+      throw error;
+    }
 
     // ─────────────────────────────────────────────────────────────────────────
     // 4. SINCRONIZAR LA DEUDA DEL CLIENTE
@@ -179,6 +224,33 @@ export class PaymentService {
       newStatus,
       isFullyPaid,
       clientDebtDecremented,
+      replayed: false,
+    };
+  }
+
+  /**
+   * Reconstruye la respuesta de un cobro YA aplicado, para un reintento
+   * idempotente. No toca dinero: solo describe el estado actual de la venta.
+   */
+  private async describeReplay(
+    tx: Prisma.TransactionClient,
+    payment: SalePayment,
+  ): Promise<AppliedPayment> {
+    const sale = await tx.sale.findUniqueOrThrow({
+      where: { id: payment.saleId },
+      select: { balance: true, status: true },
+    });
+
+    return {
+      payment,
+      appliedAmount: payment.amount,
+      newBalance: sale.balance,
+      newStatus: sale.status,
+      isFullyPaid: sale.balance.lte(0),
+      // El descuento de deuda ocurrió en la petición original; reportar el monto
+      // otra vez daría a entender que se aplicó dos veces.
+      clientDebtDecremented: new Decimal(0),
+      replayed: true,
     };
   }
 
