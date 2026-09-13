@@ -142,6 +142,11 @@ model Sale {
   @@index([clientId])
   @@index([userId])
   @@index([flowStatus])
+
+  // Recuperación del carrito en curso (GET /sales/draft). Corre en cada carga
+  // del POS: sin el compuesto, filtrar por (userId, flowStatus) obligaba a
+  // ordenar en memoria todo el histórico del cajero para devolver una fila.
+  @@index([userId, flowStatus, createdAt])
 }
 
 model SaleItem {
