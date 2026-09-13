@@ -148,10 +148,15 @@ export class AuthService {
     };
     const { accessToken, refreshToken } = this.generateTokens(payload);
 
+    // Una sola fuente para la caducidad: la misma fecha se guarda en la fila y
+    // se devuelve al cliente. Calcularla dos veces abre la puerta a que la
+    // cookie y la base discrepen por unos milisegundos... o por días.
+    const refreshExpiresAt = this.refreshExpiryDate(data.rememberMe);
+
     await this.tokens.createRefreshToken({
       userId: user.id,
       token: refreshToken,
-      expiresAt: this.refreshExpiryDate(data.rememberMe),
+      expiresAt: refreshExpiresAt,
       ipAddress,
       userAgent,
     });
@@ -162,7 +167,7 @@ export class AuthService {
 
     this.audit.record('login.success', { userId: user.id, ipAddress, userAgent });
 
-    return { user: safeUser, accessToken, refreshToken };
+    return { user: safeUser, accessToken, refreshToken, refreshExpiresAt };
   }
 
   /**
@@ -239,15 +244,52 @@ export class AuthService {
       role: user.role,
       userName: user.userName,
     });
-    await this.tokens.rotateRefreshToken(
+    // VENTANA ABSOLUTA DE SESIÓN: la rotación conserva el `expiresAt` original
+    // en lugar de recalcularlo.
+    //
+    // Antes se pasaba `refreshExpiryDate(false)`, con dos consecuencias:
+    //   1. Un "recordarme" de 7 días caducaba a las 24 h, porque la primera
+    //      renovación —que ocurre a los 15 min— lo degradaba al valor por
+    //      defecto sin que nadie lo pidiera.
+    //   2. En el otro sentido, cada renovación empujaba la caducidad hacia
+    //      delante: una pestaña abierta renovando cada 15 min mantenía la sesión
+    //      viva indefinidamente. Una sesión sin límite absoluto es exactamente
+    //      lo que un token robado necesita para volverse permanente.
+    //
+    // Conservar la fecha original cierra ambos: la sesión dura lo que se pactó al
+    // iniciarla, ni más ni menos, y al vencer exige credenciales de nuevo.
+    const rotated = await this.tokens.rotateRefreshToken(
       refreshToken,
       newTokens.refreshToken,
-      this.refreshExpiryDate(false),
+      stored.expiresAt,
       ip,
       ua,
     );
 
-    return newTokens;
+    // `null` = otra petición rotó esta misma huella primero (reuso o carrera).
+    // Sin esta comprobación devolvíamos tokens nuevos que NO estaban guardados:
+    // el cliente los daba por buenos y el siguiente refresh lo expulsaba con un
+    // 401 inexplicable.
+    if (!rotated) {
+      this.audit.record('refresh.rejected', {
+        userId: user.id,
+        ipAddress: ip,
+        userAgent: ua,
+        reason: 'token-ya-rotado-por-otra-peticion',
+      });
+      throw new UnauthorizedException('Refresh Token Invalido');
+    }
+
+    this.audit.record('refresh.success', {
+      userId: user.id,
+      ipAddress: ip,
+      userAgent: ua,
+    });
+
+    // `refreshExpiresAt` viaja al cliente para que la cookie caduque junto con la
+    // fila de la base. Sin este dato el front tenía que adivinar la duración y
+    // acababa guardando una cookie que sobrevivía al token que contiene.
+    return { ...newTokens, refreshExpiresAt: rotated.expiresAt };
   }
 
   /**
