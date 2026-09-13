@@ -6,6 +6,10 @@ import { EditUserDto } from './dto/edit-user.dto';
 import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
 import { USER_PUBLIC_SELECT } from './user.select';
 import { Prisma } from '@prisma/client';
+import {
+  buildPaginationMeta,
+  resolvePagination,
+} from 'src/common/utils/pagination.util';
 
 @Injectable()
 export class UserService {
@@ -42,13 +46,7 @@ export class UserService {
    * @returns  Lista de usuarios
    */
   async getAllUsers(active?: boolean, pagination?: PaginationParamsDto) {
-    const hasPagination =
-      pagination &&
-      (pagination.page !== undefined || pagination.limit !== undefined);
-
-    const page = hasPagination ? (pagination?.page ?? 1) : 1;
-    const limit = hasPagination ? (pagination?.limit ?? 20) : 20;
-    const skip = (page - 1) * limit;
+    const paginacion = resolvePagination(pagination);
 
     let whereClause = {};
     if (active === true) {
@@ -57,21 +55,11 @@ export class UserService {
       whereClause = { isActive: false };
     }
 
-    // Si NO hay paginación, devolver todos sin paginar
-    if (!hasPagination) {
-      const users = await this.prisma.user.findMany({
-        where: whereClause,
-        orderBy: { userName: 'desc' },
-        select: USER_PUBLIC_SELECT,
-      });
-      return { users: users };
-    }
-
     const [users, total] = await Promise.all([
       this.prisma.user.findMany({
         where: whereClause,
-        skip: skip,
-        take: limit,
+        skip: paginacion.skip,
+        take: paginacion.take,
         orderBy: { userName: 'desc' },
         select: USER_PUBLIC_SELECT,
       }),
@@ -80,12 +68,7 @@ export class UserService {
 
     return {
       users: users,
-      pagination: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
-      },
+      pagination: buildPaginationMeta(total, paginacion),
     };
   }
 
@@ -119,12 +102,7 @@ export class UserService {
     active?: boolean,
     pagination?: PaginationParamsDto,
   ) {
-    const hasPagination =
-      pagination &&
-      (pagination.page !== undefined || pagination.limit !== undefined);
-    const page = hasPagination ? (pagination?.page ?? 1) : 1;
-    const limit = hasPagination ? (pagination?.limit ?? 20) : 20;
-    const skip = (page - 1) * limit;
+    const paginacion = resolvePagination(pagination);
 
     // 1. Condiciones de BÚSQUEDA (OR) - texto
     const searchConditions: Prisma.UserWhereInput[] = [];
@@ -156,22 +134,12 @@ export class UserService {
 
     // Si no hay condiciones, where será un objeto vacío {}
 
-    // Si NO hay paginación, devolver todos sin paginar
-    if (!hasPagination) {
-      const users = await this.prisma.user.findMany({
-        where,
-        orderBy: { userName: 'desc' },
-        select: USER_PUBLIC_SELECT,
-      });
-      return { users };
-    }
-
     // CON paginación
     const [users, total] = await Promise.all([
       this.prisma.user.findMany({
         where,
-        skip: skip,
-        take: limit,
+        skip: paginacion.skip,
+        take: paginacion.take,
         orderBy: { userName: 'desc' },
         select: USER_PUBLIC_SELECT,
       }),
@@ -180,12 +148,7 @@ export class UserService {
 
     return {
       users,
-      pagination: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
-      },
+      pagination: buildPaginationMeta(total, paginacion),
     };
   }
 

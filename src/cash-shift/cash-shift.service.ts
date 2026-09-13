@@ -17,6 +17,10 @@ import { Decimal } from '@prisma/client/runtime/library';
 import { Prisma } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
 import { GetShiftsFilterDto } from './dto/get-shifts-filter.dto';
+import {
+  buildPaginationMeta,
+  resolvePagination,
+} from 'src/common/utils/pagination.util';
 
 @Injectable()
 export class CashShiftService {
@@ -238,11 +242,7 @@ export class CashShiftService {
    * @returns todos los turnos de caja
    */
   async findAll(filters?: GetShiftsFilterDto) {
-    const hasPagination =
-      filters && (filters.page !== undefined || filters.limit !== undefined);
-    const page = hasPagination ? (filters?.page ?? 1) : 1;
-    const limit = hasPagination ? (filters?.limit ?? 20) : 20;
-    const skip = (page - 1) * limit;
+    const paginacion = resolvePagination(filters);
 
     const where: Prisma.CashShiftWhereInput = {};
     if (filters?.userId) {
@@ -268,19 +268,11 @@ export class CashShiftService {
       where.openedAt = openedAt;
     }
 
-    if (!hasPagination) {
-      const shifts = await this.prisma.cashShift.findMany({
-        where,
-        orderBy: { openedAt: 'desc' },
-      });
-      return { shifts: shifts };
-    }
-
     const [shifts, total] = await Promise.all([
       this.prisma.cashShift.findMany({
         where,
-        skip,
-        take: limit,
+        skip: paginacion.skip,
+        take: paginacion.take,
         orderBy: { openedAt: 'desc' },
       }),
       this.prisma.cashShift.count({ where }),
@@ -288,12 +280,7 @@ export class CashShiftService {
 
     return {
       shifts,
-      pagination: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
-      },
+      pagination: buildPaginationMeta(total, paginacion),
     };
   }
 

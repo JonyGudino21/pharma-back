@@ -13,6 +13,14 @@ import { Decimal } from '@prisma/client/runtime/library';
 import { PurchaseStatus } from '@prisma/client';
 import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
 import { money } from 'src/common/utils/decimal.util';
+import {
+  buildPaginationMeta,
+  resolvePagination,
+} from 'src/common/utils/pagination.util';
+import {
+  SELECTOR_TAKE,
+  buildSelectorOptions,
+} from 'src/common/utils/selector-options.util';
 
 @Injectable()
 export class SuppliersService {
@@ -60,12 +68,7 @@ export class SuppliersService {
     isActive: boolean | undefined,
     pagination?: PaginationParamsDto,
   ) {
-    const hasPagination =
-      pagination &&
-      (pagination.page !== undefined || pagination.limit !== undefined);
-    const page = hasPagination ? (pagination.page ?? 1) : 1;
-    const limit = hasPagination ? (pagination.limit ?? 20) : 20;
-    const skip = (page - 1) * limit;
+    const paginacion = resolvePagination(pagination);
 
     let whereClause = {};
     // Ahora isActive es un booleano puro o undefined. ¡La lógica funcionará perfecto!
@@ -73,21 +76,12 @@ export class SuppliersService {
       whereClause = { isActive };
     }
 
-    // Si no hay paginación, devolver todos sin paginar
-    if (!hasPagination) {
-      const suppliers = await this.prisma.supplier.findMany({
-        where: whereClause,
-        orderBy: { name: 'asc' },
-      });
-      return { suppliers };
-    }
-
     // CON paginación
     const [suppliers, total] = await Promise.all([
       this.prisma.supplier.findMany({
         where: whereClause,
-        skip,
-        take: limit,
+        skip: paginacion.skip,
+        take: paginacion.take,
         orderBy: { name: 'asc' },
         // Incluimos conteo de compras pendientes para visualización rápida
         include: {
@@ -101,13 +95,29 @@ export class SuppliersService {
 
     return {
       suppliers,
-      pagination: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
-      },
+      pagination: buildPaginationMeta(total, paginacion),
     };
+  }
+
+  /**
+   * Opciones para selectores: sólo proveedores ACTIVOS, sólo `{id, name}`.
+   *
+   * El combo de creación de órdenes de compra usaba `findAll` con `limit: 10`:
+   * a partir del proveedor número 11 no había manera de seleccionarlo. Era un
+   * bloqueo operativo real, no un detalle de interfaz.
+   *
+   * Sólo activos: a un proveedor dado de baja no se le compra, aunque siga
+   * existiendo para el histórico de compras.
+   */
+  async findOptions() {
+    const filas = await this.prisma.supplier.findMany({
+      where: { isActive: true },
+      orderBy: { name: 'asc' },
+      select: { id: true, name: true },
+      take: SELECTOR_TAKE,
+    });
+
+    return buildSelectorOptions(filas);
   }
 
   /**
@@ -205,12 +215,7 @@ export class SuppliersService {
       );
     }
 
-    const hasPagination =
-      searchSupplierDto?.page !== undefined ||
-      searchSupplierDto?.limit !== undefined;
-    const page = hasPagination ? (searchSupplierDto?.page ?? 1) : 1;
-    const limit = hasPagination ? (searchSupplierDto?.limit ?? 20) : 20;
-    const skip = (page - 1) * limit;
+    const paginacion = resolvePagination(searchSupplierDto);
 
     const conditions: Array<{
       [key: string]: { contains: string; mode: 'insensitive' };
@@ -227,19 +232,11 @@ export class SuppliersService {
 
     const where = { OR: conditions };
 
-    if (!hasPagination) {
-      const suppliers = await this.prisma.supplier.findMany({
-        where,
-        orderBy: { name: 'asc' },
-      });
-      return { suppliers };
-    }
-
     const [suppliers, total] = await Promise.all([
       this.prisma.supplier.findMany({
         where,
-        skip,
-        take: limit,
+        skip: paginacion.skip,
+        take: paginacion.take,
         orderBy: { name: 'asc' },
       }),
       this.prisma.supplier.count({ where }),
@@ -247,12 +244,7 @@ export class SuppliersService {
 
     return {
       suppliers,
-      pagination: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
-      },
+      pagination: buildPaginationMeta(total, paginacion),
     };
   }
 

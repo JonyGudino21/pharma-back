@@ -22,6 +22,10 @@ import {
 } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { money } from 'src/common/utils/decimal.util';
+import {
+  buildPaginationMeta,
+  resolvePagination,
+} from 'src/common/utils/pagination.util';
 
 @Injectable()
 export class ClientService {
@@ -71,14 +75,8 @@ export class ClientService {
    * @returns
    */
   async findAll(active?: boolean, pagination?: PaginationParamsDto) {
-    // Verificar si realmente vienen parámetros de paginación en el query
-    const hasPagination =
-      pagination &&
-      (pagination.page !== undefined || pagination.limit !== undefined);
-
-    const page = hasPagination ? (pagination?.page ?? 1) : 1;
-    const limit = hasPagination ? (pagination?.limit ?? 20) : 20;
-    const skip = (page - 1) * limit;
+    // La paginación ya no es opcional: si no llega, se aplica la de por defecto.
+    const paginacion = resolvePagination(pagination);
 
     let whereClause = {};
     if (active === true) {
@@ -87,20 +85,11 @@ export class ClientService {
       whereClause = { isActive: false };
     }
 
-    // Si NO hay paginación, devolver todos sin paginar
-    if (!hasPagination) {
-      const data = await this.prisma.client.findMany({
-        where: whereClause,
-        orderBy: { name: 'asc' },
-      });
-      return { clients: data };
-    }
-
     const [data, total] = await Promise.all([
       this.prisma.client.findMany({
         where: whereClause,
-        skip,
-        take: limit,
+        skip: paginacion.skip,
+        take: paginacion.take,
         orderBy: { name: 'asc' },
       }),
       this.prisma.client.count({ where: whereClause }),
@@ -108,12 +97,7 @@ export class ClientService {
 
     return {
       clients: data,
-      pagination: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
-      },
+      pagination: buildPaginationMeta(total, paginacion),
     };
   }
 
@@ -212,14 +196,8 @@ export class ClientService {
     phone?: string,
     pagination?: PaginationParamsDto,
   ) {
-    // Verificar si realmente vienen parámetros de paginación en el query
-    const hasPagination =
-      pagination &&
-      (pagination.page !== undefined || pagination.limit !== undefined);
-
-    const page = hasPagination ? (pagination?.page ?? 1) : 1;
-    const limit = hasPagination ? (pagination?.limit ?? 20) : 20;
-    const skip = (page - 1) * limit;
+    // La paginación ya no es opcional: si no llega, se aplica la de por defecto.
+    const paginacion = resolvePagination(pagination);
 
     const conditions: Array<{
       [key: string]: { contains: string; mode: 'insensitive' };
@@ -245,21 +223,12 @@ export class ClientService {
 
     const where = conditions.length > 0 ? { OR: conditions } : {};
 
-    // Si NO hay paginación, devolver todos sin paginar
-    if (!hasPagination) {
-      const clients = await this.prisma.client.findMany({
-        where,
-        orderBy: { name: 'asc' },
-      });
-      return { clients };
-    }
-
     // CON paginación
     const [clients, total] = await Promise.all([
       this.prisma.client.findMany({
         where,
-        skip,
-        take: limit,
+        skip: paginacion.skip,
+        take: paginacion.take,
         orderBy: { name: 'asc' },
       }),
       this.prisma.client.count({ where }),
@@ -267,12 +236,7 @@ export class ClientService {
 
     return {
       clients, // ← Mismo nombre de propiedad que findAll
-      pagination: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
-      },
+      pagination: buildPaginationMeta(total, paginacion),
     };
   }
 
@@ -309,13 +273,7 @@ export class ClientService {
    * @returns debtors, totalCompanyDebt y pagination (si aplica)
    */
   async getDebtors(pagination?: PaginationParamsDto) {
-    const hasPagination =
-      pagination &&
-      (pagination.page !== undefined || pagination.limit !== undefined);
-
-    const page = hasPagination ? (pagination?.page ?? 1) : 1;
-    const limit = hasPagination ? (pagination?.limit ?? 20) : 20;
-    const skip = (page - 1) * limit;
+    const paginacion = resolvePagination(pagination);
 
     const where = {
       isActive: true,
@@ -344,25 +302,12 @@ export class ClientService {
       _sum: { currentDebt: true },
     });
 
-    if (!hasPagination) {
-      const [totalCompanyDebtAgg, debtors] = await Promise.all([
-        aggregatePromise,
-        this.prisma.client.findMany({
-          where,
-          orderBy: { currentDebt: 'desc' },
-          select: debtorSelect,
-        }),
-      ]);
-      const totalCompanyDebt = totalCompanyDebtAgg._sum.currentDebt ?? 0;
-      return { debtors, totalCompanyDebt };
-    }
-
     const [totalCompanyDebtAgg, debtors, total] = await Promise.all([
       aggregatePromise,
       this.prisma.client.findMany({
         where,
-        skip,
-        take: limit,
+        skip: paginacion.skip,
+        take: paginacion.take,
         orderBy: { currentDebt: 'desc' },
         select: debtorSelect,
       }),
@@ -373,14 +318,7 @@ export class ClientService {
     return {
       debtors,
       totalCompanyDebt,
-      pagination: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
-        hasNext: page * limit < total,
-        hasPrev: page > 1,
-      },
+      pagination: buildPaginationMeta(total, paginacion),
     };
   }
 
@@ -531,11 +469,7 @@ export class ClientService {
     const client = await this.findOne(clientId);
     if (!client) throw new NotFoundException('Cliente no encontrado');
 
-    const hasPagination =
-      query && (query.page !== undefined || query.limit !== undefined);
-    const page = hasPagination ? (query?.page ?? 1) : 1;
-    const limit = hasPagination ? (query?.limit ?? 20) : 20;
-    const skip = (page - 1) * limit;
+    const paginacion = resolvePagination(query);
 
     const hasDateRange = Boolean(query?.startDate ?? query?.endDate);
     const startDate = query?.startDate ? new Date(query.startDate) : undefined;
@@ -597,33 +531,11 @@ export class ClientService {
         ? { startDate: query?.startDate, endDate: query?.endDate }
         : undefined;
 
-    if (!hasPagination) {
-      const [movements, totalsInPeriod] = await Promise.all([
-        this.prisma.sale.findMany({
-          where: whereWithDates,
-          orderBy: { createdAt: 'desc' },
-          select: movementSelect,
-        }),
-        hasDateRange
-          ? this.getAccountStatementTotals(clientId, startDate, endDate)
-          : Promise.resolve(null),
-      ]);
-
-      const result: Record<string, unknown> = {
-        client: clientSummary,
-        movements,
-        totalMovements: movements.length,
-      };
-      if (period) result.period = period;
-      if (totalsInPeriod) result.totals = totalsInPeriod;
-      return result;
-    }
-
     const [movements, total, totalsInPeriod] = await Promise.all([
       this.prisma.sale.findMany({
         where: whereWithDates,
-        skip,
-        take: limit,
+        skip: paginacion.skip,
+        take: paginacion.take,
         orderBy: { createdAt: 'desc' },
         select: movementSelect,
       }),
@@ -637,14 +549,7 @@ export class ClientService {
       client: clientSummary,
       movements,
       totalMovements: total,
-      pagination: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
-        hasNext: page * limit < total,
-        hasPrev: page > 1,
-      },
+      pagination: buildPaginationMeta(total, paginacion),
     };
     if (period) result.period = period;
     if (totalsInPeriod) result.totals = totalsInPeriod;

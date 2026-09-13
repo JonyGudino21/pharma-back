@@ -19,6 +19,10 @@ import {
   CashTransactionType,
 } from '@prisma/client';
 import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
+import {
+  buildPaginationMeta,
+  resolvePagination,
+} from 'src/common/utils/pagination.util';
 import { UpdatePurchaseItemDto } from './dto/update-item.dto';
 import { InventoryService } from 'src/inventory/inventory.service';
 import { InventoryBatchesService } from 'src/inventory/inventory-batches.service';
@@ -176,12 +180,11 @@ export class PurchaseService {
     status?: PurchaseStatus,
     pagination?: PaginationParamsDto,
   ) {
-    const hasPagination =
-      pagination &&
-      (pagination.page !== undefined || pagination.limit !== undefined);
-    const page = hasPagination ? (pagination?.page ?? 1) : 1;
-    const limit = hasPagination ? (pagination?.limit ?? 20) : 20;
-    const skip = (page - 1) * limit;
+    // PAGINACIÓN OBLIGATORIA. Antes, omitir `page` y `limit` devolvía la tabla
+    // completa de compras con su proveedor incluido: una sola petición podía
+    // ocupar una conexión del pool durante segundos, y el pool es el mismo que
+    // usan los cobros del mostrador.
+    const paginacion = resolvePagination(pagination);
 
     const where: Prisma.PurchaseWhereInput = {};
     if (supplierId) {
@@ -191,22 +194,11 @@ export class PurchaseService {
       where.status = status;
     }
 
-    if (!hasPagination) {
-      const purchases = await this.prisma.purchase.findMany({
-        where,
-        include: {
-          supplier: { select: { name: true, id: true } },
-        },
-        orderBy: { createdAt: 'desc' },
-      });
-      return { purchases };
-    }
-
     const [purchases, total] = await Promise.all([
       this.prisma.purchase.findMany({
         where,
-        skip,
-        take: limit,
+        skip: paginacion.skip,
+        take: paginacion.take,
         orderBy: { createdAt: 'desc' },
         include: {
           supplier: { select: { name: true, id: true } },
@@ -215,14 +207,12 @@ export class PurchaseService {
       this.prisma.purchase.count({ where }),
     ]);
 
+    // Una sola forma de respuesta, siempre con `pagination`. Antes la clave
+    // aparecía o no según los parámetros, y cada consumidor tenía que manejar
+    // dos contratos del mismo endpoint.
     return {
       purchases,
-      pagination: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
-      },
+      pagination: buildPaginationMeta(total, paginacion),
     };
   }
 

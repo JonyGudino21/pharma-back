@@ -5,6 +5,10 @@ import { PrismaService } from 'prisma/prisma.service';
 import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
 import { NotFoundException } from '@nestjs/common';
 import { MovementType, Prisma } from '@prisma/client';
+import {
+  buildPaginationMeta,
+  resolvePagination,
+} from 'src/common/utils/pagination.util';
 
 @Injectable()
 export class ProductService {
@@ -104,13 +108,8 @@ export class ProductService {
   }
 
   async findAll(active?: boolean, pagination?: PaginationParamsDto) {
-    //Verificar si tiene parametros de paginacion
-    const hasPagination =
-      pagination &&
-      (pagination.page !== undefined || pagination.limit !== undefined);
-    const page = hasPagination ? (pagination.page ?? 1) : 1;
-    const limit = hasPagination ? (pagination.limit ?? 20) : 20;
-    const skip = (page - 1) * limit;
+    // La paginación ya no es opcional: si no llega, se aplica la de por defecto.
+    const paginacion = resolvePagination(pagination);
 
     let whereClause = {};
     if (active === true) {
@@ -119,26 +118,11 @@ export class ProductService {
       whereClause = { isActive: false };
     }
 
-    //Si no tiene parametros de paginacion, devolver todos sin paginar
-    if (!hasPagination) {
-      const products = await this.prisma.product.findMany({
-        where: whereClause,
-        orderBy: { name: 'asc' },
-        include: {
-          categories: {
-            include: { category: true },
-            orderBy: { order: 'asc' },
-          },
-        },
-      });
-      return { products };
-    }
-
     const [products, total] = await Promise.all([
       this.prisma.product.findMany({
         where: whereClause,
-        skip: skip,
-        take: limit,
+        skip: paginacion.skip,
+        take: paginacion.take,
         orderBy: { name: 'asc' },
         include: {
           categories: {
@@ -152,12 +136,7 @@ export class ProductService {
 
     return {
       products,
-      pagination: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
-      },
+      pagination: buildPaginationMeta(total, paginacion),
     };
   }
 
@@ -356,12 +335,7 @@ export class ProductService {
     letters?: string[],
     pagination?: PaginationParamsDto,
   ) {
-    const hasPagination =
-      pagination &&
-      (pagination.page !== undefined || pagination.limit !== undefined);
-    const page = hasPagination ? (pagination?.page ?? 1) : 1;
-    const limit = hasPagination ? (pagination?.limit ?? 20) : 20;
-    const skip = (page - 1) * limit;
+    const paginacion = resolvePagination(pagination);
 
     const conditions: Array<{ [key: string]: any }> = [];
 
@@ -378,26 +352,11 @@ export class ProductService {
 
     const where = conditions.length > 0 ? { OR: conditions } : {};
 
-    //Si no tiene parametros de paginacion, devolver todos sin paginar
-    if (!hasPagination) {
-      const products = await this.prisma.product.findMany({
-        where,
-        orderBy: { name: 'asc' },
-        include: {
-          categories: {
-            include: { category: true },
-            orderBy: { order: 'asc' },
-          },
-        },
-      });
-      return { products };
-    }
-
     const [products, total] = await Promise.all([
       this.prisma.product.findMany({
         where,
-        skip,
-        take: limit,
+        skip: paginacion.skip,
+        take: paginacion.take,
         orderBy: { name: 'asc' },
         include: {
           categories: {
@@ -411,12 +370,7 @@ export class ProductService {
 
     return {
       products,
-      pagination: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
-      },
+      pagination: buildPaginationMeta(total, paginacion),
     };
   }
 
