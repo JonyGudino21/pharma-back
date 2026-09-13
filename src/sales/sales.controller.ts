@@ -56,6 +56,31 @@ export class SalesController {
   }
 
   /**
+   * [OPERATIVO/POS] Recupera el carrito DRAFT abierto del cajero autenticado.
+   *
+   * El carrito vivo sólo existía en la memoria de Pinia. Un F5, un corte de luz
+   * o una sesión caducada lo borraban de la pantalla mientras la venta DRAFT
+   * seguía en la base con sus 30 líneas capturadas: invisible para el cajero,
+   * imposible de cobrar y acumulándose como basura en la tabla.
+   *
+   * Devuelve `null` (no 404) cuando no hay carrito: "no tengo nada abierto" es
+   * una respuesta legítima, no un error, y un 404 obligaría al front a tratar
+   * el caso normal dentro de un catch.
+   *
+   * Debe declararse ANTES de `@Get(':id')`: Nest resuelve por orden de
+   * declaración y "draft" acabaría entrando por el parámetro `:id`, donde
+   * ParseIntPipe lo rechazaría con un 400.
+   */
+  @Get('draft')
+  async findMyDraft(@GetUser() user: AuthenticatedUser) {
+    const data = await this.salesService.findOpenDraftForUser(user.userId);
+    return ApiResponse.ok(
+      data,
+      data ? 'Carrito recuperado correctamente' : 'Sin carrito abierto',
+    );
+  }
+
+  /**
    * [OPERATIVO] Obtiene una venta por número de factura (exacto).
    */
   @Get('by-invoice/:invoiceNumber')

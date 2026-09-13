@@ -1320,6 +1320,36 @@ export class SalesService {
   }
 
   /**
+   * Devuelve el carrito DRAFT abierto de un cajero, o null si no tiene ninguno.
+   *
+   * Acotado a `userId` a propósito: el carrito es de quien lo está capturando.
+   * Sin ese filtro, dos cajeros en dos terminales se robarían el carrito entre
+   * ellos al recargar la página, y cada uno cobraría los productos del otro.
+   *
+   * Si por un fallo previo quedaron varios DRAFT del mismo usuario, se recupera
+   * el MÁS RECIENTE: es el que el cajero tenía delante. Los anteriores quedan
+   * como basura identificable por esta misma consulta y los limpia el proceso de
+   * mantenimiento, nunca este camino (borrar aquí ocultaría el problema).
+   *
+   * @param userId el cajero autenticado
+   * @returns la venta DRAFT enriquecida (misma forma que findOne) o null
+   */
+  async findOpenDraftForUser(userId: number) {
+    const draft = await this.prisma.sale.findFirst({
+      where: { userId, flowStatus: SaleFlowStatus.DRAFT },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true },
+    });
+
+    if (!draft) return null;
+
+    // Reutilizamos findOne para que el front reciba EXACTAMENTE la misma forma
+    // que ya sabe consumir (items con producto, pagos, cliente). Duplicar el
+    // `include` aquí garantizaría que las dos formas se separen con el tiempo.
+    return await this.findOne(draft.id);
+  }
+
+  /**
    * Busca una venta por número de factura (exacto).
    * Útil para consultas desde front (búsqueda por folio).
    * @param invoiceNumber número de factura, ej: FAC-20250208-000001
