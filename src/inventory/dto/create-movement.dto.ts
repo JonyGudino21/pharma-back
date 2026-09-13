@@ -31,4 +31,8 @@ export class CreateInventoryMovementDto {
   @IsOptional()
   @IsInt()
   referenceId?: number; // ID de la venta o compra si aplica
+
+  @IsOptional()
+  @IsInt()
+  batchId?: number;
 }

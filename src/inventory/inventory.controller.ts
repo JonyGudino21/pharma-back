@@ -1,18 +1,38 @@
-import { Controller, Post, Body, Get, Param } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  Get,
+  Param,
+  Query,
+  UseGuards,
+  Res,
+} from '@nestjs/common';
 import { InventoryService } from './inventory.service';
+import { InventoryBatchesService } from './inventory-batches.service';
+import { ControlledLogExportService } from './controlled-log-export.service';
+import { ControlledLogExportQueryDto } from './dto/controlled-log-export-query.dto';
+import type { Response } from 'express';
+import type { AuthenticatedUser } from 'src/auth/types/authenticated-user.type';
 import { GetUser } from 'src/common/decorators/get-user.decorator';
 import { ApiResponse } from 'src/common/dto/response.dto';
 import { RegisterAdjustmentDto } from './dto/register-adjustment.dto';
+import { ExpiringBatchesQueryDto } from './dto/expiring-batches-query.dto';
+import { ControlledLogQueryDto } from './dto/controlled-log-query.dto';
+import { DestroyBatchDto } from './dto/destroy-batch.dto';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
-import { UseGuards } from '@nestjs/common';
 
 @Controller('inventory')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class InventoryController {
-  constructor(private readonly inventoryService: InventoryService) {}
+  constructor(
+    private readonly inventoryService: InventoryService,
+    private readonly batches: InventoryBatchesService,
+    private readonly controlledExport: ControlledLogExportService,
+  ) {}
 
   /**
    * [ALMACÉN] Registra un ajuste de inventario manual (Sobra o Falta).
@@ -34,6 +54,25 @@ export class InventoryController {
   }
 
   /**
+   * [ALMACÉN] Merma o destrucción de un lote concreto (caducado, roto).
+   * No se ajusta el total a ciegas: hay que decir qué lote sale.
+   */
+  @Post('batches/adjustment')
+  @Roles(UserRole.MANAGER)
+  async destroyBatch(
+    @Body() body: DestroyBatchDto,
+    @GetUser('id') userId: number,
+  ) {
+    const data = await this.batches.destroyBatch(
+      body.batchId,
+      body.quantity,
+      body.reason,
+      userId,
+    );
+    return ApiResponse.ok(data, 'Merma de lote registrada');
+  }
+
+  /**
    * [COMPRAS/ALMACÉN] Obtiene productos por debajo del stock mínimo.
    */
   @Get('alerts/low-stock')
@@ -44,6 +83,55 @@ export class InventoryController {
       data,
       'Alertas de stock bajo obtenidas correctamente',
     );
+  }
+
+  /**
+   * [ALMACÉN] Lotes que caducan en 30/60/90 días, más los ya vencidos.
+   */
+  @Get('batches/expiring')
+  @Roles(UserRole.MANAGER, UserRole.PHARMACIST)
+  async getExpiring(@Query() query: ExpiringBatchesQueryDto) {
+    const data = await this.batches.listExpiring(query);
+    return ApiResponse.ok(data, 'Lotes por caducar obtenidos correctamente');
+  }
+
+  /**
+   * [REGULATORIO] Libro de controlados COFEPRIS. Append-only, con PII del paciente.
+   */
+  /**
+   * [CUMPLIMIENTO] Descarga el libro de controlados para inspección sanitaria.
+   *
+   * Va ANTES de 'controlled-log' porque Nest resuelve por orden de declaración.
+   * Restringido a gerencia: es un documento con datos de pacientes.
+   */
+  @Get('controlled-log/export')
+  @Roles(UserRole.MANAGER)
+  async exportControlledLog(
+    @Query() query: ControlledLogExportQueryDto,
+    @GetUser() user: AuthenticatedUser,
+    @Res() res: Response,
+  ) {
+    const file = await this.controlledExport.exportCsv(query, {
+      id: user.userId,
+      userName: user.userName,
+    });
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${file.filename}"`,
+    );
+    // Se expone para que el front pueda mostrar la huella al usuario.
+    res.setHeader('X-Integrity-Hash', file.integrityHash);
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(file.content);
+  }
+
+  @Get('controlled-log')
+  @Roles(UserRole.MANAGER, UserRole.PHARMACIST)
+  async getControlledLog(@Query() query: ControlledLogQueryDto) {
+    const data = await this.batches.listControlledLog(query);
+    return ApiResponse.ok(data, 'Libro de controlados obtenido correctamente');
   }
 
   /**
@@ -76,12 +164,7 @@ export class InventoryController {
    */
   @Get('stock/:productId')
   async getStock(@Param('productId') productId: number) {
-    const data = await this.inventoryService.getStock(productId);
+    const data = await this.batches.getSellableQuantity(productId);
     return ApiResponse.ok(data, 'Stock obtenido correctamente');
   }
-
-  /**
-   * POST /inventory/stocktake	Toma de Inventario Masiva (Futuro): Ajustar múltiples productos a la vez tras un conteo físico anual.
-   *
-   * */
 }

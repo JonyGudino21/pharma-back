@@ -19,12 +19,14 @@
  *   5. El listado cuenta las devoluciones sin cargarlas.
  */
 import { Test, TestingModule } from '@nestjs/testing';
+import { ConfigModule } from '@nestjs/config';
 import { ForbiddenException } from '@nestjs/common';
 import { PaymentMethod, SaleFlowStatus, UserRole } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { PrismaService } from '../prisma/prisma.service';
 import { SalesService } from '../src/sales/sales.service';
 import { InventoryService } from '../src/inventory/inventory.service';
+import { InventoryBatchesService } from '../src/inventory/inventory-batches.service';
 import { CashShiftService } from '../src/cash-shift/cash-shift.service';
 import { PaymentService } from '../src/payment/payment.service';
 
@@ -46,10 +48,16 @@ describe('Historial de ventas y devoluciones (integración)', () => {
 
   beforeAll(async () => {
     moduleRef = await Test.createTestingModule({
+      // CashShiftService lee TOLERANCE_THRESHOLD del ConfigService (antes usaba
+      // process.env, donde una variable ausente dejaba el umbral en NaN y la
+      // auditoría de caja nunca se disparaba).
+      imports: [ConfigModule.forRoot({ isGlobal: true })],
       providers: [
         PrismaService,
         SalesService,
         InventoryService,
+        // SalesService y PurchaseService dependen del despacho FEFO por lotes.
+        InventoryBatchesService,
         CashShiftService,
         PaymentService,
       ],

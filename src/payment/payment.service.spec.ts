@@ -28,7 +28,7 @@ describe('PaymentService — aplicación de dinero a una venta', () => {
       findUniqueOrThrow: jest.fn(),
       update: jest.fn(),
     },
-    salePayment: { create: jest.fn() },
+    salePayment: { create: jest.fn(), findUnique: jest.fn() },
     client: { update: jest.fn() },
   };
 
@@ -71,6 +71,8 @@ describe('PaymentService — aplicación de dinero a una venta', () => {
         Promise.resolve({ id: 77, ...data }),
     );
     tx.client.update.mockResolvedValue({ currentDebt: new Decimal(0) });
+    // Por defecto no hay cobro previo con la misma clave de idempotencia.
+    tx.salePayment.findUnique.mockResolvedValue(null);
   });
 
   describe('prevención de sobrepago', () => {
@@ -325,4 +327,82 @@ describe('PaymentService — aplicación de dinero a una venta', () => {
       expect(mockCashShift.getCurrentShift).not.toHaveBeenCalled();
     });
   });
+
+  describe('idempotencia del cobro', () => {
+    it('sin clave previa, aplica el dinero normalmente', async () => {
+      const res = await service.applyToSale(txClient, {
+        saleId: 1,
+        amount: 100,
+        method: 'CASH',
+        idempotencyKey: 'llave-nueva',
+      });
+
+      expect(tx.sale.updateMany).toHaveBeenCalled();
+      expect(res.replayed).toBe(false);
+      // La clave queda guardada en el asiento para reconocer reintentos.
+      expect(tx.salePayment.create).toHaveBeenCalledWith({
+        data: conteniendo({ idempotencyKey: 'llave-nueva' }),
+      });
+    });
+
+    it('con la clave ya usada, devuelve el cobro original SIN volver a cobrar', async () => {
+      tx.salePayment.findUnique.mockResolvedValue({
+        id: 77,
+        saleId: 1,
+        amount: new Decimal(100),
+        method: 'CASH',
+      });
+      tx.sale.findUniqueOrThrow.mockResolvedValue({
+        balance: new Decimal(0),
+        status: 'COMPLETED',
+      });
+
+      const res = await service.applyToSale(txClient, {
+        saleId: 1,
+        amount: 100,
+        method: 'CASH',
+        idempotencyKey: 'llave-repetida',
+      });
+
+      // Lo esencial: el dinero NO se mueve por segunda vez.
+      expect(tx.sale.updateMany).not.toHaveBeenCalled();
+      expect(tx.salePayment.create).not.toHaveBeenCalled();
+      expect(res.replayed).toBe(true);
+      expect(res.payment.id).toBe(77);
+      // No se reporta descuento de deuda: eso ocurrió en la peticion original.
+      expect(res.clientDebtDecremented.toString()).toBe('0');
+    });
+
+    it('dos reintentos exactamente simultáneos: el UNIQUE deja pasar solo a uno', async () => {
+      // Ambos pasaron el pre-chequeo; el segundo choca contra la restricción.
+      const p2002 = new Prisma.PrismaClientKnownRequestError('dup', {
+        code: 'P2002',
+        clientVersion: 'test',
+      });
+      tx.salePayment.create.mockRejectedValue(p2002);
+
+      await expect(
+        service.applyToSale(txClient, {
+          saleId: 1,
+          amount: 100,
+          method: 'CASH',
+          idempotencyKey: 'llave-en-carrera',
+        }),
+      ).rejects.toThrow(ConflictException);
+      // Al propagar, la transacción revierte el descuento del saldo:
+      // el invariante "no se cobra dos veces" se mantiene.
+    });
+
+    it('sin clave de idempotencia el comportamiento no cambia', async () => {
+      const res = await service.applyToSale(txClient, {
+        saleId: 1,
+        amount: 100,
+        method: 'CASH',
+      });
+
+      expect(tx.salePayment.findUnique).not.toHaveBeenCalled();
+      expect(res.replayed).toBe(false);
+    });
+  });
+
 });

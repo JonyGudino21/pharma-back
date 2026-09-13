@@ -74,11 +74,27 @@ export class InventoryService {
         : new Decimal(product.cost);
     const totalCost = unitCost.mul(new Decimal(Math.abs(quantityChange)));
 
-    // 4. MUTACIÓN ATÓMICA DEL STOCK.
+    // 4. MUTACIÓN ATÓMICA DEL STOCK (lote primero, luego total del producto).
     // Se hace ANTES de crear el asiento: si no hay existencias, la operación aborta
     // sin haber escrito nada en el Kardex.
     if (quantityChange < 0) {
       const required = Math.abs(quantityChange);
+
+      if (dto.batchId != null) {
+        const batchGuard = await tx.productBatch.updateMany({
+          where: {
+            id: dto.batchId,
+            productId: dto.productId,
+            quantity: { gte: required },
+          },
+          data: { quantity: { decrement: required } },
+        });
+        if (batchGuard.count === 0) {
+          throw new ConflictException(
+            'Conflicto de concurrencia al reservar el lote',
+          );
+        }
+      }
 
       // UPDATE ... WHERE stock >= required  → la BD garantiza que el stock jamás
       // queda negativo, incluso con N cajas vendiendo el mismo producto a la vez.
@@ -98,6 +114,12 @@ export class InventoryService {
         );
       }
     } else {
+      if (dto.batchId != null) {
+        await tx.productBatch.update({
+          where: { id: dto.batchId },
+          data: { quantity: { increment: quantityChange } },
+        });
+      }
       // Las entradas no requieren guardia (no hay límite superior), pero el
       // incremento también se delega a la BD para no perder escrituras paralelas.
       await tx.product.update({
@@ -117,6 +139,7 @@ export class InventoryService {
         reason: dto.reason,
         createdBy: userId,
         referenceId: dto.referenceId,
+        batchId: dto.batchId,
       },
     });
   }
@@ -191,6 +214,16 @@ export class InventoryService {
 
       const product = await tx.product.findUnique({ where: { id: productId } });
       if (!product) throw new NotFoundException('Producto no encontrado');
+
+      const batched = await tx.productBatch.aggregate({
+        where: { productId, quantity: { gt: 0 } },
+        _sum: { quantity: true },
+      });
+      if ((batched._sum.quantity ?? 0) > 0) {
+        throw new BadRequestException(
+          'Este producto tiene existencias por lote. Ajusta o da de baja el lote concreto (caducidad / merma), no el total.',
+        );
+      }
 
       const difference = realQuantity - product.stock;
 

@@ -8,6 +8,7 @@ import {
   Query,
   UseGuards,
   ParseIntPipe,
+  Headers,
 } from '@nestjs/common';
 import { SalesService } from './sales.service';
 import { CreateSaleDto, SaleItemDto } from './dto/create-sale.dto';
@@ -19,6 +20,7 @@ import { GetUser } from 'src/common/decorators/get-user.decorator';
 import { ReturnSaleDto } from './dto/return-sale.dto';
 import { FindAllSalesQueryDto } from './dto/find-all-sales-query.dto';
 import { RegisterSalePrintDto } from './dto/register-sale-print.dto';
+import { CompleteSaleDto } from './dto/complete-sale.dto';
 import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
@@ -151,11 +153,14 @@ export class SalesController {
     @Param('id') id: number,
     @Body() addPaymentDto: AddPaymentDto,
     @GetUser() user: AuthenticatedUser,
+    // Clave de idempotencia: un reintento tras timeout NO debe cobrar dos veces.
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     const data = await this.salesService.addPayment(
       id,
       addPaymentDto,
       user.userId,
+      idempotencyKey,
     );
     return ApiResponse.ok(data, 'Pago agregado correctamente');
   }
@@ -166,9 +171,14 @@ export class SalesController {
   @Post(':id/complete')
   async completeSale(
     @Param('id') id: number,
+    @Body() dto: CompleteSaleDto,
     @GetUser() user: AuthenticatedUser,
   ) {
-    const data = await this.salesService.completeSale(id, user.userId);
+    const data = await this.salesService.completeSale(
+      id,
+      user.userId,
+      dto,
+    );
     return ApiResponse.ok(data, 'Venta completada correctamente');
   }
 
