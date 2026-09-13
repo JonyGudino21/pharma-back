@@ -1,7 +1,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException } from '@nestjs/common';
 import { ConflictException } from '@nestjs/common';
-import { MovementType, Prisma } from '@prisma/client';
+import {
+  ControlledLogEntryType,
+  MovementType,
+  Prisma,
+} from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { InventoryBatchesService } from './inventory-batches.service';
 import { InventoryService } from './inventory.service';
