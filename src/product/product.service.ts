@@ -1,10 +1,15 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+} from '@nestjs/common';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { PrismaService } from 'prisma/prisma.service';
 import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
 import { NotFoundException } from '@nestjs/common';
-import { MovementType, Prisma } from '@prisma/client';
+import { MovementType, Prisma, UserRole } from '@prisma/client';
+import { Decimal } from '@prisma/client/runtime/library';
 import {
   buildPaginationMeta,
   resolvePagination,
@@ -81,7 +86,9 @@ export class ProductService {
             type: MovementType.ADJUSTMENT,
             quantity: initialStock,
             unitCost: createProductDto.cost,
-            totalCost: initialStock * createProductDto.cost,
+            // Decimal y no `*` de JavaScript: 3 × 0.1 da 0.30000000000000004 en
+            // coma flotante, y ese valor queda para siempre en la valuación.
+            totalCost: new Decimal(createProductDto.cost).mul(initialStock),
             reason: 'Inventario inicial al Crear el producto',
             createdBy: userId,
           },
@@ -170,9 +177,48 @@ export class ProductService {
    * @param userId ID del usuario que realiza la actualización
    * @returns el producto actualizado o error si no existe
    */
-  async update(id: number, updateProductDto: UpdateProductDto, userId: number) {
+  async update(
+    id: number,
+    updateProductDto: UpdateProductDto,
+    userId: number,
+    role?: UserRole,
+  ) {
     // Validar que el producto existe
     const existingProduct = await this.validateProduct(id);
+
+    // CAMPOS SENSIBLES: sólo gerencia puede CAMBIARLOS.
+    //
+    // El PATCH está abierto a PHARMACIST para que pueda corregir nombres,
+    // presentaciones o precios de venta. Pero dos campos no son "datos de
+    // catálogo":
+    //   - `controlled`: quitar la marca elimina la exigencia de receta y la
+    //     anotación en el libro COFEPRIS. Es una decisión regulatoria.
+    //   - `cost`: es el costo promedio ponderado que mantienen las compras.
+    //     Editarlo a mano falsea la valuación del inventario y la utilidad de
+    //     cada venta desde ese momento.
+    //
+    // Se compara contra el valor ACTUAL, no contra la presencia del campo: el
+    // formulario del front manda la ficha completa en cada guardado, y rechazar
+    // un `cost` idéntico impediría al farmacéutico guardar cualquier cosa.
+    const esGerencia = role === UserRole.MANAGER || role === UserRole.ADMIN;
+    if (!esGerencia) {
+      const cambiaControlado =
+        updateProductDto.controlled !== undefined &&
+        updateProductDto.controlled !== existingProduct.controlled;
+      const cambiaCosto =
+        updateProductDto.cost !== undefined &&
+        !new Decimal(updateProductDto.cost).equals(
+          new Decimal(existingProduct.cost),
+        );
+
+      if (cambiaControlado || cambiaCosto) {
+        throw new ForbiddenException(
+          cambiaControlado
+            ? 'Sólo un gerente puede cambiar si un medicamento es controlado.'
+            : 'Sólo un gerente puede modificar el costo. El costo se actualiza solo al recibir compras.',
+        );
+      }
+    }
 
     // Validar categorías si se proporcionan
     if (updateProductDto.categories) {
@@ -252,7 +298,8 @@ export class ProductService {
       format: updateProductDto.format,
       presentation: updateProductDto.presentation,
       strength: updateProductDto.strength,
-      stock: updateProductDto.stock,
+      // `stock` ya no se toca aquí: sólo lo mueven compras, ventas, devoluciones
+      // y ajustes, que dejan asiento en el Kardex. Ver UpdateProductDto.
       minStock: updateProductDto.minStock,
       price: updateProductDto.price,
       cost: updateProductDto.cost,
