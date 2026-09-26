@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { Decimal } from '@prisma/client/runtime/library';
 import { CashShiftService } from './cash-shift.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { dataDe } from '../common/testing/mock-inspect.util';
 
 /**
  * Contrato del CIERRE DE CAJA (Fase 1 · hallazgos A-1, A-5).
@@ -25,7 +26,11 @@ describe('CashShiftService — cierre de turno', () => {
 
   const mockPrisma = {
     $transaction: jest.fn((cb: (client: typeof tx) => unknown) => cb(tx)),
-    cashShift: { findFirst: jest.fn(), create: jest.fn(), findUnique: jest.fn() },
+    cashShift: {
+      findFirst: jest.fn(),
+      create: jest.fn(),
+      findUnique: jest.fn(),
+    },
   };
 
   // Umbral de tolerancia por defecto en las pruebas: $20
@@ -54,7 +59,10 @@ describe('CashShiftService — cierre de turno', () => {
 
     mockPrisma.cashShift.findFirst.mockResolvedValue(turnoAbierto);
     tx.cashShift.updateMany.mockResolvedValue({ count: 1 }); // claim exitoso
-    tx.cashShift.update.mockResolvedValue({ ...turnoAbierto, status: 'CLOSED' });
+    tx.cashShift.update.mockResolvedValue({
+      ...turnoAbierto,
+      status: 'CLOSED',
+    });
     // Sin ventas en efectivo ni movimientos manuales: esperado = fondo inicial
     tx.salePayment.aggregate.mockResolvedValue({ _sum: { amount: null } });
     tx.cashTransaction.findMany.mockResolvedValue([]);
@@ -74,9 +82,9 @@ describe('CashShiftService — cierre de turno', () => {
     it('rechaza el segundo cierre simultáneo con ConflictException', async () => {
       tx.cashShift.updateMany.mockResolvedValue({ count: 0 }); // otro ya lo cerró
 
-      await expect(
-        service.closeShift(99, { realAmount: 900 }),
-      ).rejects.toThrow(ConflictException);
+      await expect(service.closeShift(99, { realAmount: 900 })).rejects.toThrow(
+        ConflictException,
+      );
 
       // Lo crítico: no se sobrescribe el arqueo del cierre ganador.
       expect(tx.cashShift.update).not.toHaveBeenCalled();
@@ -84,9 +92,9 @@ describe('CashShiftService — cierre de turno', () => {
 
     it('rechaza cerrar cuando no hay turno abierto', async () => {
       mockPrisma.cashShift.findFirst.mockResolvedValue(null);
-      await expect(
-        service.closeShift(99, { realAmount: 100 }),
-      ).rejects.toThrow(BadRequestException);
+      await expect(service.closeShift(99, { realAmount: 100 })).rejects.toThrow(
+        BadRequestException,
+      );
     });
   });
 
@@ -95,20 +103,16 @@ describe('CashShiftService — cierre de turno', () => {
       // Esperado 1000, contado 1010 => diferencia 10, tolerancia 20
       await service.closeShift(99, { realAmount: 1010 });
 
-      const arg = tx.cashShift.update.mock.calls[0][0] as {
-        data: { status: string };
-      };
-      expect(arg.data.status).toBe('CLOSED');
+      const data = dataDe<{ status: string }>(tx.cashShift.update);
+      expect(data.status).toBe('CLOSED');
     });
 
     it('marca AUDIT_REQUIRED cuando la diferencia excede la tolerancia', async () => {
       // Esperado 1000, contado 900 => faltan 100, muy por encima de 20
       await service.closeShift(99, { realAmount: 900 });
 
-      const arg = tx.cashShift.update.mock.calls[0][0] as {
-        data: { status: string };
-      };
-      expect(arg.data.status).toBe('AUDIT_REQUIRED');
+      const data = dataDe<{ status: string }>(tx.cashShift.update);
+      expect(data.status).toBe('AUDIT_REQUIRED');
     });
 
     it('lee el umbral del ConfigService, NO de process.env', async () => {
@@ -123,10 +127,8 @@ describe('CashShiftService — cierre de turno', () => {
 
       await service.closeShift(99, { realAmount: 500 }); // faltan $500
 
-      const arg = tx.cashShift.update.mock.calls[0][0] as {
-        data: { status: string };
-      };
-      expect(arg.data.status).toBe('AUDIT_REQUIRED');
+      const data = dataDe<{ status: string }>(tx.cashShift.update);
+      expect(data.status).toBe('AUDIT_REQUIRED');
     });
   });
 
@@ -143,11 +145,11 @@ describe('CashShiftService — cierre de turno', () => {
       // Esperado = 1000 + 500 + 200 - 150 = 1550
       const res = await service.closeShift(99, { realAmount: 1550 });
 
-      const arg = tx.cashShift.update.mock.calls[0][0] as {
-        data: { expectedAmount: Decimal; difference: Decimal };
-      };
-      expect(arg.data.expectedAmount.toString()).toBe('1550');
-      expect(arg.data.difference.toString()).toBe('0');
+      const data = dataDe<{ expectedAmount: Decimal; difference: Decimal }>(
+        tx.cashShift.update,
+      );
+      expect(data.expectedAmount.toString()).toBe('1550');
+      expect(data.difference.toString()).toBe('0');
       expect(res).toBeDefined();
     });
   });

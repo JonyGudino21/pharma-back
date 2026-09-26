@@ -7,6 +7,7 @@ import { InventoryService } from '../inventory/inventory.service';
 import { InventoryBatchesService } from '../inventory/inventory-batches.service';
 import { CashShiftService } from '../cash-shift/cash-shift.service';
 import { PaymentService } from '../payment/payment.service';
+import { argDe, dataDe } from '../common/testing/mock-inspect.util';
 
 /**
  * Contrato del CARRITO ATÓMICO (Fase 1 · hallazgos C-1, C-2, A-4).
@@ -46,7 +47,10 @@ describe('SalesService — carrito atómico', () => {
     sale: { findUnique: jest.fn() },
   };
 
-  const mockInventory = { registerMovement: jest.fn(), lockProductRow: jest.fn() };
+  const mockInventory = {
+    registerMovement: jest.fn(),
+    lockProductRow: jest.fn(),
+  };
   const mockBatches = {
     consumeForSale: jest.fn(),
     restoreFromSaleItem: jest.fn(),
@@ -139,23 +143,19 @@ describe('SalesService — carrito atómico', () => {
       // La BD reporta 3 unidades acumuladas a $50 => $150
       await service.addItem(10, { productId: 55, quantity: 1 });
 
-      expect(tx.saleItem.update).toHaveBeenCalledWith({
-        where: { id: 77 },
-        data: { subtotal: expect.anything() },
-      });
-      const arg = tx.saleItem.update.mock.calls[0][0] as {
-        data: { subtotal: Decimal };
-      };
-      expect(arg.data.subtotal.toString()).toBe('150');
+      const { where } = argDe<{ where: unknown }>(tx.saleItem.update);
+      expect(where).toEqual({ id: 77 });
+      const data = dataDe<{ subtotal: Decimal }>(tx.saleItem.update);
+      expect(data.subtotal.toString()).toBe('150');
     });
 
     it('crea la línea con la cantidad inicial cuando el producto no estaba', async () => {
       await service.addItem(10, { productId: 55, quantity: 4 });
 
-      const arg = tx.saleItem.upsert.mock.calls[0][0] as {
-        create: Record<string, unknown>;
-      };
-      expect(arg.create).toMatchObject({ productId: 55, quantity: 4 });
+      const { create } = argDe<{ create: Record<string, unknown> }>(
+        tx.saleItem.upsert,
+      );
+      expect(create).toMatchObject({ productId: 55, quantity: 4 });
     });
   });
 
@@ -194,10 +194,8 @@ describe('SalesService — carrito atómico', () => {
         where: { id: 10 },
         select: { paidAmount: true },
       });
-      const arg = tx.sale.update.mock.calls[0][0] as {
-        data: { balance: Decimal };
-      };
-      expect(arg.data.balance.toString()).toBe('50');
+      const data = dataDe<{ balance: Decimal }>(tx.sale.update);
+      expect(data.balance.toString()).toBe('50');
     });
   });
 });
