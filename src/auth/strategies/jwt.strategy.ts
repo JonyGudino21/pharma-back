@@ -5,6 +5,8 @@ import { ExtractJwt, Strategy } from 'passport-jwt';
 import { UserRole } from '@prisma/client';
 import { PrismaService } from 'prisma/prisma.service';
 import type { AuthenticatedUser } from 'src/auth/types/authenticated-user.type';
+import type { Request } from 'express';
+import { ACCESS_COOKIE, leerCookie } from '../session-cookies';
 
 type JwtPayload = {
   sub: number;
@@ -20,7 +22,19 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     private readonly prisma: PrismaService,
   ) {
     super({
-      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(), // Authorization: Bearer <toke>
+      // ORDEN DELIBERADO: primero la cookie httpOnly, luego la cabecera.
+      //
+      // La cookie es el canal del navegador desde la Fase 4: el token ya no es
+      // legible por JavaScript, así que un XSS no puede exfiltrarlo.
+      //
+      // La cabecera `Authorization` se conserva como respaldo para los clientes
+      // que no son un navegador —las pruebas e2e, `curl`, un futuro cliente
+      // móvil, un script de integración—, donde no hay nada que proteger de un
+      // XSS y exigir cookies sólo complicaría la vida sin ganar seguridad.
+      jwtFromRequest: ExtractJwt.fromExtractors([
+        (req: Request) => leerCookie(req, ACCESS_COOKIE),
+        ExtractJwt.fromAuthHeaderAsBearerToken(),
+      ]),
       ignoreExpiration: false, // no ignorar la expiracion del token
       secretOrKey: config.getOrThrow<string>('JWT_SECRET'),
     });

@@ -46,8 +46,29 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Pruebas unitarias
-        run: npm test -- --ci
+      # Se ejecuta con cobertura para que `coverageThreshold` sea BLOQUEANTE.
+      # Con `npm test` a secas el umbral nunca se evaluaba: un PR podía añadir
+      # 500 lineas sin una sola prueba y pasar en verde.
+      #
+      # Los umbrales de package.json son un TRINQUETE, no una meta: estan fijados
+      # en la cobertura medida hoy menos ~2 puntos de tolerancia. La regla es que
+      # solo se suben, nunca se bajan. Un PR que baje la cobertura de un modulo ya
+      # cubierto falla aqui; un PR que la suba deberia subir tambien el piso.
+      #
+      # Los controladores estan fuera del denominador a proposito: son adaptadores
+      # HTTP delgados y quien los valida de verdad es el job e2e con PostgreSQL
+      # real. Incluirlos solo premiaria escribir pruebas de delegacion sin valor.
+      - name: Pruebas unitarias y umbral de cobertura
+        run: npm run test:ci
+
+      # El reporte queda disponible en el PR para ver QUÉ bajó, no solo que bajó.
+      - name: Publicar reporte de cobertura
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 7
 
   e2e:
     name: Integracion de concurrencia (PostgreSQL real)

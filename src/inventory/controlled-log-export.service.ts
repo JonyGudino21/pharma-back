@@ -51,11 +51,50 @@ export class ControlledLogExportService {
    */
   private csvField(value: unknown): string {
     if (value === null || value === undefined) return '';
-    const text = String(value);
+
+    const text = this.aTexto(value);
     if (/[",\n\r;]/.test(text)) {
       return `"${text.replace(/"/g, '""')}"`;
     }
     return text;
+  }
+
+  /**
+   * Convierte un valor a texto SIN caer en "[object Object]".
+   *
+   * `String(value)` sobre un `unknown` acepta cualquier cosa: un objeto suelto
+   * o un arreglo acababan escritos como `[object Object]` dentro del libro de
+   * controlados. En un archivo que se entrega a COFEPRIS eso no es un detalle
+   * cosmético — es un renglón ilegible en un documento regulatorio, y nadie se
+   * entera hasta que lo revisa el inspector.
+   *
+   * Se cubren explícitamente los tipos que sí aparecen (texto, número, booleano,
+   * fecha y los `Decimal` de Prisma, que traen su propio `toString`). Cualquier
+   * otra cosa se marca de forma VISIBLE y deja registro, en lugar de disfrazarse
+   * de dato válido.
+   */
+  private aTexto(value: unknown): string {
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return String(value);
+    }
+    if (typeof value === 'bigint') return value.toString();
+    if (value instanceof Date) return value.toISOString();
+
+    // Decimal de Prisma y cualquier objeto con un toString propio y útil.
+    if (
+      typeof value === 'object' &&
+      typeof (value as { toString?: unknown }).toString === 'function' &&
+      (value as object).toString !== Object.prototype.toString
+    ) {
+      return (value as { toString: () => string }).toString();
+    }
+
+    this.logger.warn(
+      `Valor no serializable en la exportación de controlados (${typeof value}). ` +
+        'Se escribe vacío para no corromper el archivo. REVISAR.',
+    );
+    return '';
   }
 
   private csvRow(fields: unknown[]): string {
@@ -101,9 +140,13 @@ export class ControlledLogExportService {
         where,
         orderBy: { createdAt: 'asc' }, // orden cronológico, como exige un libro
         include: {
-          product: { select: { name: true, sku: true, strength: true, format: true } },
+          product: {
+            select: { name: true, sku: true, strength: true, format: true },
+          },
           batch: { select: { lotNumber: true, expiryDate: true } },
-          soldBy: { select: { firstName: true, lastName: true, userName: true } },
+          soldBy: {
+            select: { firstName: true, lastName: true, userName: true },
+          },
           sale: { select: { invoiceNumber: true } },
         },
       }),
@@ -114,10 +157,16 @@ export class ControlledLogExportService {
 
     // ── Encabezado del documento ─────────────────────────────────────────────
     lineas.push(this.csvRow(['LIBRO DE MEDICAMENTOS CONTROLADOS']));
-    lineas.push(this.csvRow(['Establecimiento', company?.tradeName ?? 'No configurado']));
-    lineas.push(this.csvRow(['Razón social', company?.legalName ?? 'No configurada']));
+    lineas.push(
+      this.csvRow(['Establecimiento', company?.tradeName ?? 'No configurado']),
+    );
+    lineas.push(
+      this.csvRow(['Razón social', company?.legalName ?? 'No configurada']),
+    );
     lineas.push(this.csvRow(['RFC', company?.rfc ?? 'No configurado']));
-    lineas.push(this.csvRow(['Domicilio', company?.address ?? 'No configurado']));
+    lineas.push(
+      this.csvRow(['Domicilio', company?.address ?? 'No configurado']),
+    );
     lineas.push(
       this.csvRow([
         'Periodo',
@@ -171,7 +220,8 @@ export class ControlledLogExportService {
           e.doctorName ?? '',
           e.doctorLicense ?? '',
           e.patientName ?? '',
-          `${e.soldBy.firstName} ${e.soldBy.lastName}`.trim() || e.soldBy.userName,
+          `${e.soldBy.firstName} ${e.soldBy.lastName}`.trim() ||
+            e.soldBy.userName,
           e.sale?.invoiceNumber ?? '',
         ]),
       );
@@ -181,18 +231,31 @@ export class ControlledLogExportService {
     // El inspector no suma a mano: pide el consolidado por medicamento.
     const porProducto = new Map<
       string,
-      { nombre: string; sku: string; dispensado: number; devuelto: number; destruido: number }
+      {
+        nombre: string;
+        sku: string;
+        dispensado: number;
+        devuelto: number;
+        destruido: number;
+      }
     >();
 
     for (const e of entries) {
       const clave = e.product.sku;
-      const acc =
-        porProducto.get(clave) ??
-        { nombre: e.product.name, sku: e.product.sku, dispensado: 0, devuelto: 0, destruido: 0 };
+      const acc = porProducto.get(clave) ?? {
+        nombre: e.product.name,
+        sku: e.product.sku,
+        dispensado: 0,
+        devuelto: 0,
+        destruido: 0,
+      };
 
-      if (e.entryType === ControlledLogEntryType.DISPENSE) acc.dispensado += e.quantity;
-      else if (e.entryType === ControlledLogEntryType.RETURN) acc.devuelto += e.quantity;
-      else if (e.entryType === ControlledLogEntryType.DESTRUCTION) acc.destruido += e.quantity;
+      if (e.entryType === ControlledLogEntryType.DISPENSE)
+        acc.dispensado += e.quantity;
+      else if (e.entryType === ControlledLogEntryType.RETURN)
+        acc.devuelto += e.quantity;
+      else if (e.entryType === ControlledLogEntryType.DESTRUCTION)
+        acc.destruido += e.quantity;
 
       porProducto.set(clave, acc);
     }
@@ -200,9 +263,18 @@ export class ControlledLogExportService {
     lineas.push('');
     lineas.push(this.csvRow(['RESUMEN POR MEDICAMENTO']));
     lineas.push(
-      this.csvRow(['SKU', 'Medicamento', 'Dispensado', 'Devuelto', 'Destruido', 'Neto dispensado']),
+      this.csvRow([
+        'SKU',
+        'Medicamento',
+        'Dispensado',
+        'Devuelto',
+        'Destruido',
+        'Neto dispensado',
+      ]),
     );
-    for (const r of [...porProducto.values()].sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'))) {
+    for (const r of [...porProducto.values()].sort((a, b) =>
+      a.nombre.localeCompare(b.nombre, 'es'),
+    )) {
       lineas.push(
         this.csvRow([
           r.sku,
@@ -219,7 +291,9 @@ export class ControlledLogExportService {
     // Se calcula sobre el cuerpo y se añade al final, de modo que recalcularla
     // sobre el archivo (sin la última línea) permite verificar que nada cambió.
     const cuerpo = lineas.join('\r\n');
-    const integrityHash = createHash('sha256').update(cuerpo, 'utf8').digest('hex');
+    const integrityHash = createHash('sha256')
+      .update(cuerpo, 'utf8')
+      .digest('hex');
 
     const contenido =
       '﻿' + // BOM: sin esto Excel en Windows rompe los acentos
@@ -237,6 +311,11 @@ export class ControlledLogExportService {
         `huella ${integrityHash.slice(0, 12)}.`,
     );
 
-    return { filename, content: contenido, integrityHash, totalEntries: entries.length };
+    return {
+      filename,
+      content: contenido,
+      integrityHash,
+      totalEntries: entries.length,
+    };
   }
 }

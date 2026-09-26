@@ -7,7 +7,9 @@ export type AuthEvent =
   | 'refresh.success'
   | 'refresh.rejected'
   | 'logout'
-  | 'logout.all';
+  | 'logout.all'
+  | 'password.changed'
+  | 'password.change_failed';
 
 export interface AuthEventContext {
   /** Identificador del usuario cuando se conoce. */
@@ -63,7 +65,11 @@ export class AuthAuditService {
 
     // Los fallos van a WARN para que se puedan alertar por separado; los
     // eventos normales a INFO, donde no compiten con los errores reales.
-    if (event.endsWith('.failed') || event.endsWith('.rejected') || event === 'login.inactive') {
+    if (
+      event.endsWith('.failed') ||
+      event.endsWith('.rejected') ||
+      event === 'login.inactive'
+    ) {
       this.logger.warn(linea);
     } else {
       this.logger.log(linea);

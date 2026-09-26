@@ -1,4 +1,10 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { BCRYPT_ROUNDS } from '../common/utils/password.util';
 import { randomUUID } from 'node:crypto';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -22,6 +28,8 @@ type RefreshPayload = { sub: number; type: TokenType; jti?: string };
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
@@ -35,6 +43,74 @@ export class AuthService {
    */
   private async validatePassword(password: string, hash: string) {
     return bcrypt.compare(password, hash);
+  }
+
+  /**
+   * Cambia la contraseña del propio usuario y CIERRA TODAS sus sesiones.
+   *
+   * Cerrar todas —incluida la actual— es deliberado: la razón más común para
+   * cambiar la contraseña es sospechar que alguien más la conoce. Si las
+   * sesiones abiertas siguieran vivas, el intruso seguiría dentro con su
+   * refresh token durante días, y el cambio no habría servido de nada.
+   *
+   * @throws UnauthorizedException si la contraseña actual no coincide
+   * @throws BadRequestException si la nueva es igual a la actual
+   */
+  async changePassword(
+    userId: number,
+    currentPassword: string,
+    newPassword: string,
+    ip?: string,
+    ua?: string,
+  ): Promise<{ sessionsClosed: number }> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, password: true, isActive: true },
+    });
+
+    if (!user || !user.isActive) {
+      throw new UnauthorizedException('Usuario inactivo o inexistente');
+    }
+
+    const coincide = await this.validatePassword(
+      currentPassword,
+      user.password,
+    );
+    if (!coincide) {
+      this.audit.record('password.change_failed', {
+        userId,
+        ipAddress: ip,
+        userAgent: ua,
+        reason: 'contrasena-actual-incorrecta',
+      });
+      // 401 y no 400: es una verificación de identidad fallida, y el throttler
+      // del endpoint la trata como tal.
+      throw new UnauthorizedException('La contraseña actual no es correcta.');
+    }
+
+    if (await this.validatePassword(newPassword, user.password)) {
+      throw new BadRequestException(
+        'La nueva contraseña debe ser distinta de la actual.',
+      );
+    }
+
+    const hash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+
+    const revocadas = await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({ where: { id: userId }, data: { password: hash } });
+      return tx.userToken.updateMany({
+        where: { userId, revoked: false },
+        data: { revoked: true, revokedAt: new Date() },
+      });
+    });
+
+    this.audit.record('password.changed', {
+      userId,
+      ipAddress: ip,
+      userAgent: ua,
+    });
+
+    return { sessionsClosed: revocadas.count };
   }
 
   /**
@@ -79,6 +155,41 @@ export class AuthService {
     );
 
     return { accessToken, refreshToken };
+  }
+
+  /**
+   * Vida del access token en MILISEGUNDOS, para el `maxAge` de la cookie.
+   *
+   * Se deriva de `JWT_EXPIRES_IN` —la misma variable con la que se firma el
+   * token— en lugar de escribir un número aparte. Dos fuentes para el mismo
+   * plazo acaban divergiendo: una cookie que sobrevive a su token produce 401
+   * hasta que el usuario borra cookies a mano, y una que muere antes tira una
+   * sesión todavía válida.
+   *
+   * Acepta el formato de `jsonwebtoken` ('15m', '2h', '7d', o segundos sueltos).
+   */
+  accessTokenMaxAgeMs(): number {
+    const crudo = this.config.get<string>('JWT_EXPIRES_IN', '15m').trim();
+
+    const coincidencia = /^(\d+)\s*([smhd])?$/i.exec(crudo);
+    if (!coincidencia) {
+      this.logger.warn(
+        `JWT_EXPIRES_IN="${crudo}" no tiene un formato reconocible. ` +
+          'Se usan 15 minutos para la cookie de acceso.',
+      );
+      return 15 * 60 * 1000;
+    }
+
+    const cantidad = Number(coincidencia[1]);
+    const unidad = (coincidencia[2] ?? 's').toLowerCase();
+    const factorMs: Record<string, number> = {
+      s: 1_000,
+      m: 60_000,
+      h: 3_600_000,
+      d: 86_400_000,
+    };
+
+    return cantidad * (factorMs[unidad] ?? 1_000);
   }
 
   /**
@@ -148,10 +259,15 @@ export class AuthService {
     };
     const { accessToken, refreshToken } = this.generateTokens(payload);
 
+    // Una sola fuente para la caducidad: la misma fecha se guarda en la fila y
+    // se devuelve al cliente. Calcularla dos veces abre la puerta a que la
+    // cookie y la base discrepen por unos milisegundos... o por días.
+    const refreshExpiresAt = this.refreshExpiryDate(data.rememberMe);
+
     await this.tokens.createRefreshToken({
       userId: user.id,
       token: refreshToken,
-      expiresAt: this.refreshExpiryDate(data.rememberMe),
+      expiresAt: refreshExpiresAt,
       ipAddress,
       userAgent,
     });
@@ -160,9 +276,13 @@ export class AuthService {
     // limite de intentos y fuera del alcance del rate limiting.
     const { password, ...safeUser } = user;
 
-    this.audit.record('login.success', { userId: user.id, ipAddress, userAgent });
+    this.audit.record('login.success', {
+      userId: user.id,
+      ipAddress,
+      userAgent,
+    });
 
-    return { user: safeUser, accessToken, refreshToken };
+    return { user: safeUser, accessToken, refreshToken, refreshExpiresAt };
   }
 
   /**
@@ -239,15 +359,52 @@ export class AuthService {
       role: user.role,
       userName: user.userName,
     });
-    await this.tokens.rotateRefreshToken(
+    // VENTANA ABSOLUTA DE SESIÓN: la rotación conserva el `expiresAt` original
+    // en lugar de recalcularlo.
+    //
+    // Antes se pasaba `refreshExpiryDate(false)`, con dos consecuencias:
+    //   1. Un "recordarme" de 7 días caducaba a las 24 h, porque la primera
+    //      renovación —que ocurre a los 15 min— lo degradaba al valor por
+    //      defecto sin que nadie lo pidiera.
+    //   2. En el otro sentido, cada renovación empujaba la caducidad hacia
+    //      delante: una pestaña abierta renovando cada 15 min mantenía la sesión
+    //      viva indefinidamente. Una sesión sin límite absoluto es exactamente
+    //      lo que un token robado necesita para volverse permanente.
+    //
+    // Conservar la fecha original cierra ambos: la sesión dura lo que se pactó al
+    // iniciarla, ni más ni menos, y al vencer exige credenciales de nuevo.
+    const rotated = await this.tokens.rotateRefreshToken(
       refreshToken,
       newTokens.refreshToken,
-      this.refreshExpiryDate(false),
+      stored.expiresAt,
       ip,
       ua,
     );
 
-    return newTokens;
+    // `null` = otra petición rotó esta misma huella primero (reuso o carrera).
+    // Sin esta comprobación devolvíamos tokens nuevos que NO estaban guardados:
+    // el cliente los daba por buenos y el siguiente refresh lo expulsaba con un
+    // 401 inexplicable.
+    if (!rotated) {
+      this.audit.record('refresh.rejected', {
+        userId: user.id,
+        ipAddress: ip,
+        userAgent: ua,
+        reason: 'token-ya-rotado-por-otra-peticion',
+      });
+      throw new UnauthorizedException('Refresh Token Invalido');
+    }
+
+    this.audit.record('refresh.success', {
+      userId: user.id,
+      ipAddress: ip,
+      userAgent: ua,
+    });
+
+    // `refreshExpiresAt` viaja al cliente para que la cookie caduque junto con la
+    // fila de la base. Sin este dato el front tenía que adivinar la duración y
+    // acababa guardando una cookie que sobrevivía al token que contiene.
+    return { ...newTokens, refreshExpiresAt: rotated.expiresAt };
   }
 
   /**
@@ -261,7 +418,11 @@ export class AuthService {
     // IDEMPOTENTE: revokeRefreshToken ya no lanza si el token no existe, así que
     // un doble clic o un reintento devuelven éxito en lugar de un 401 por una
     // operación que en realidad ya estaba hecha.
-    const { revoked } = await this.tokens.revokeRefreshToken(refreshToken, ip, ua);
+    const { revoked } = await this.tokens.revokeRefreshToken(
+      refreshToken,
+      ip,
+      ua,
+    );
     this.audit.record('logout', {
       ipAddress: ip,
       userAgent: ua,

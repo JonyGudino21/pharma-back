@@ -23,20 +23,18 @@ describe('FEFO — despacho y restauración de lotes', () => {
   it('consume primero la caducidad más cercana (y vigente)', () => {
     const { takes, missing } = allocateFefo(lotes, 2, today);
     expect(missing).toBe(0);
-    expect(takes).toEqual([
-      { batchId: 1, quantity: 2, unitCost: cost(8) },
-    ]);
+    expect(takes).toEqual([{ batchId: 1, quantity: 2, unitCost: cost(8) }]);
   });
 
   it('parte el consumo entre dos lotes cuando el primero no alcanza', () => {
     const { takes, missing } = allocateFefo(lotes, 5, today);
     expect(missing).toBe(0);
-    expect(takes.map((t) => ({ batchId: t.batchId, quantity: t.quantity }))).toEqual(
-      [
-        { batchId: 1, quantity: 3 },
-        { batchId: 2, quantity: 2 },
-      ],
-    );
+    expect(
+      takes.map((t) => ({ batchId: t.batchId, quantity: t.quantity })),
+    ).toEqual([
+      { batchId: 1, quantity: 3 },
+      { batchId: 2, quantity: 2 },
+    ]);
   });
 
   it('no despacha un lote caducado aunque sea el único con existencia', () => {
@@ -75,12 +73,8 @@ describe('FEFO — despacho y restauración de lotes', () => {
       { batchId: 1, quantity: 3 },
       { batchId: 2, quantity: 2 },
     ];
-    expect(restoreFefo(original, 0, 2)).toEqual([
-      { batchId: 2, quantity: 2 },
-    ]);
-    expect(restoreFefo(original, 2, 3)).toEqual([
-      { batchId: 1, quantity: 3 },
-    ]);
+    expect(restoreFefo(original, 0, 2)).toEqual([{ batchId: 2, quantity: 2 }]);
+    expect(restoreFefo(original, 2, 3)).toEqual([{ batchId: 1, quantity: 3 }]);
   });
 
   it('normaliza el lote: recorta, colapsa espacios y mayúsculas', () => {
@@ -103,8 +97,8 @@ describe('FEFO — despacho y restauración de lotes', () => {
   });
 
   it('toUtcDateOnly ignora la hora', () => {
-    expect(toUtcDateOnly(new Date('2026-09-03T18:30:00.000Z')).toISOString()).toBe(
-      '2026-09-03T00:00:00.000Z',
-    );
+    expect(
+      toUtcDateOnly(new Date('2026-09-03T18:30:00.000Z')).toISOString(),
+    ).toBe('2026-09-03T00:00:00.000Z');
   });
 });

@@ -19,6 +19,10 @@ import {
   CashTransactionType,
 } from '@prisma/client';
 import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
+import {
+  buildPaginationMeta,
+  resolvePagination,
+} from 'src/common/utils/pagination.util';
 import { UpdatePurchaseItemDto } from './dto/update-item.dto';
 import { InventoryService } from 'src/inventory/inventory.service';
 import { InventoryBatchesService } from 'src/inventory/inventory-batches.service';
@@ -75,7 +79,10 @@ export class PurchaseService {
         productId: item.productId,
         quantity: item.quantity,
         cost: item.cost,
-        subtotal: Number(item.quantity) * Number(item.cost),
+        // Decimal, no `*` de JavaScript: el subtotal en coma flotante se
+        // guardaba con residuos (0.30000000000000004) y el total de la compra
+        // dejaba de cuadrar con la suma de sus líneas.
+        subtotal: new Decimal(item.quantity).mul(new Decimal(item.cost)),
         lotNumber: lot.lotNumber,
         expiryDate: lot.expiryDate,
       };
@@ -104,7 +111,10 @@ export class PurchaseService {
       if (dto.payments && dto.payments.length > 0) {
         for (const p of dto.payments) {
           if (p.method === PaymentMethod.CASH) {
-            const shift = await this.cashShiftService.getCurrentShift(userId, tx);
+            const shift = await this.cashShiftService.getCurrentShift(
+              userId,
+              tx,
+            );
             if (!shift)
               throw new ConflictException(
                 'ALERTA! Se requiere caja abierta para pagar en efectivo al proveedor.',
@@ -176,12 +186,11 @@ export class PurchaseService {
     status?: PurchaseStatus,
     pagination?: PaginationParamsDto,
   ) {
-    const hasPagination =
-      pagination &&
-      (pagination.page !== undefined || pagination.limit !== undefined);
-    const page = hasPagination ? (pagination?.page ?? 1) : 1;
-    const limit = hasPagination ? (pagination?.limit ?? 20) : 20;
-    const skip = (page - 1) * limit;
+    // PAGINACIÓN OBLIGATORIA. Antes, omitir `page` y `limit` devolvía la tabla
+    // completa de compras con su proveedor incluido: una sola petición podía
+    // ocupar una conexión del pool durante segundos, y el pool es el mismo que
+    // usan los cobros del mostrador.
+    const paginacion = resolvePagination(pagination);
 
     const where: Prisma.PurchaseWhereInput = {};
     if (supplierId) {
@@ -191,22 +200,11 @@ export class PurchaseService {
       where.status = status;
     }
 
-    if (!hasPagination) {
-      const purchases = await this.prisma.purchase.findMany({
-        where,
-        include: {
-          supplier: { select: { name: true, id: true } },
-        },
-        orderBy: { createdAt: 'desc' },
-      });
-      return { purchases };
-    }
-
     const [purchases, total] = await Promise.all([
       this.prisma.purchase.findMany({
         where,
-        skip,
-        take: limit,
+        skip: paginacion.skip,
+        take: paginacion.take,
         orderBy: { createdAt: 'desc' },
         include: {
           supplier: { select: { name: true, id: true } },
@@ -215,14 +213,12 @@ export class PurchaseService {
       this.prisma.purchase.count({ where }),
     ]);
 
+    // Una sola forma de respuesta, siempre con `pagination`. Antes la clave
+    // aparecía o no según los parámetros, y cada consumidor tenía que manejar
+    // dos contratos del mismo endpoint.
     return {
       purchases,
-      pagination: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
-      },
+      pagination: buildPaginationMeta(total, paginacion),
     };
   }
 
@@ -618,58 +614,96 @@ export class PurchaseService {
     if (purchase.balance.lte(0))
       throw new BadRequestException('Esta compra ya está pagada completamente');
 
+    const monto = new Decimal(dto.amount);
+
     return await this.prisma.$transaction(async (tx) => {
-      // 1. Control de caja (Saida de dineru)
+      // 1. GUARDA ATÓMICA DEL SALDO.
+      //
+      // La versión anterior leía `paidAmount` FUERA de la transacción y lo
+      // sumaba en JavaScript. Dos pagos simultáneos leían el mismo saldo y el
+      // segundo pisaba al primero: la compra quedaba con la mitad de lo pagado
+      // registrado y el proveedor con deuda de más. Además no había tope, así
+      // que pagar $5,000 sobre una factura de $2,000 dejaba el saldo en -$3,000.
+      //
+      // Ahora la base evalúa la condición y aplica el cambio en la MISMA
+      // sentencia: sólo afecta la fila si el saldo alcanza. Si otra operación
+      // cambió la compra entre la validación y este punto, count = 0.
+      const aplicado = await tx.purchase.updateMany({
+        where: {
+          id: purcharseId,
+          status: { not: PurchaseStatus.CANCELLED },
+          balance: { gte: monto },
+        },
+        data: {
+          paidAmount: { increment: monto },
+          balance: { decrement: monto },
+        },
+      });
+
+      if (aplicado.count === 0) {
+        throw new ConflictException(
+          `El pago de ${money(monto)} excede el saldo pendiente de la compra, o la compra cambió mientras se registraba. Actualiza la pantalla y verifica el saldo.`,
+        );
+      }
+
+      // Estado con el saldo YA actualizado, leído dentro de la transacción.
+      const fresh = await tx.purchase.findUniqueOrThrow({
+        where: { id: purcharseId },
+        select: {
+          balance: true,
+          supplierId: true,
+          deliveryStatus: true,
+          invoiceNumber: true,
+        },
+      });
+
+      await tx.purchase.update({
+        where: { id: purcharseId },
+        data: {
+          status: fresh.balance.lte(0)
+            ? PurchaseStatus.PAID
+            : PurchaseStatus.PARTIAL,
+        },
+      });
+
+      // 2. Control de caja (salida de efectivo)
       if (dto.method === PaymentMethod.CASH) {
         const shift = await this.cashShiftService.getCurrentShift(userId, tx);
         if (!shift)
           throw new ConflictException(
-            'ALERTA! Se requiere caja abierta para pagar en efectivo al proveedor.',
+            'Se requiere caja abierta para pagar en efectivo al proveedor.',
           );
 
         await tx.cashTransaction.create({
           data: {
             shiftId: shift.id,
             type: CashTransactionType.EXPENSE, // Gastos de compra
-            amount: dto.amount,
-            reason: `Pago de orden de compra #${purchase.invoiceNumber}`,
-            referenceId: purchase.id,
+            amount: monto,
+            reason: `Pago de orden de compra #${fresh.invoiceNumber}`,
+            referenceId: purcharseId,
             relatedTable: 'Purchase',
             createdBy: userId,
           },
         });
       }
 
-      // 2. Crear el pago
+      // 3. Asiento del pago
       const payment = await tx.purchasePayment.create({
         data: {
           purchaseId: purcharseId,
           method: dto.method,
-          amount: dto.amount,
+          amount: monto,
           references: dto.references,
         },
       });
 
-      // 3. Recalcular saldos de la compra
-      const newPaidAmount = new Decimal(purchase.paidAmount).add(dto.amount);
-      const newBalance = new Decimal(purchase.total).sub(newPaidAmount);
-      const isPaid = newBalance.lte(0);
-
-      await tx.purchase.update({
-        where: { id: purcharseId },
-        data: {
-          paidAmount: newPaidAmount,
-          balance: newBalance,
-          status: isPaid ? PurchaseStatus.PAID : PurchaseStatus.PARTIAL,
-        },
-      });
-
-      // 4. Si la compra ya había sido RECIBIDA, el proveedor ya tenía este saldo cargado.
-      // Debemos descontarle la deuda al proveedor.
-      if (purchase.deliveryStatus === PurchaseDeliveryStatus.RECEIVED) {
+      // 4. Si la mercancía ya se recibió, el proveedor ya tenía este saldo
+      // cargado: pagar le baja la deuda. Con el estado FRESCO, no con el leído
+      // antes de la transacción.
+      if (fresh.deliveryStatus === PurchaseDeliveryStatus.RECEIVED) {
         await tx.supplier.update({
-          where: { id: purchase.supplierId },
-          data: { balance: { decrement: dto.amount } },
+          where: { id: fresh.supplierId },
+          data: { balance: { decrement: monto } },
         });
       }
 

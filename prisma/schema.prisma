@@ -142,6 +142,11 @@ model Sale {
   @@index([clientId])
   @@index([userId])
   @@index([flowStatus])
+
+  // Recuperación del carrito en curso (GET /sales/draft). Corre en cada carga
+  // del POS: sin el compuesto, filtrar por (userId, flowStatus) obligaba a
+  // ordenar en memoria todo el histórico del cajero para devolver una fila.
+  @@index([userId, flowStatus, createdAt])
 }
 
 model SaleItem {
@@ -194,6 +199,9 @@ model SalePayment {
 
   @@index([saleId])
   @@index([method])
+  // Lo usa el `aggregate` de CADA cierre de caja para sumar el efectivo del
+  // turno. Sin índice, cerrar caja recorre todos los pagos históricos.
+  @@index([cashShiftId])
 }
 
 model SaleReturn { 
@@ -232,8 +240,13 @@ model SaleReturnItem {
 model SaleRefund {
   id           Int        @id @default(autoincrement())
 
+  // SIN @unique desde v1: una devolución de una venta pagada con varios medios
+  // (parte tarjeta, parte efectivo) genera UN reembolso POR MEDIO. Con el
+  // UNIQUE sólo cabía uno y todo se reembolsaba en efectivo, sacando del cajón
+  // dinero que había entrado por la terminal. La relación ya estaba declarada
+  // como lista (`SaleReturn.refund SaleRefund[]`); ahora la base coincide.
   saleReturn   SaleReturn @relation(fields: [saleReturnId], references: [id])
-  saleReturnId Int        @unique
+  saleReturnId Int
   sale         Sale       @relation(fields: [saleId], references: [id])
   saleId       Int
 
@@ -243,6 +256,7 @@ model SaleRefund {
 
   createdAt    DateTime  @default(now())
   @@index([saleId])
+  @@index([saleReturnId])
 }
 
 //TODO: Registrar el vuelto en un futuro: CashMovement, CashMovementType, CashMovementCategory 

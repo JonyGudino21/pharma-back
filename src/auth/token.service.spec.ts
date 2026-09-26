@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { createHash } from 'node:crypto';
 import { TokenService } from './token.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { argDe, dataDe } from '../common/testing/mock-inspect.util';
 
 /**
  * Contrato del ALMACÉN DE SESIONES (Fase 2 · hallazgos C-3, A-1).
@@ -50,13 +51,11 @@ describe('TokenService — sesiones hasheadas', () => {
         expiresAt: new Date('2026-12-31'),
       });
 
-      const arg = userToken.create.mock.calls[0][0] as {
-        data: Record<string, unknown>;
-      };
-      expect(arg.data.tokenHash).toBe(HUELLA);
+      const data = dataDe<Record<string, unknown>>(userToken.create);
+      expect(data.tokenHash).toBe(HUELLA);
       // Lo esencial: ninguna propiedad del insert contiene el token literal.
-      expect(JSON.stringify(arg.data)).not.toContain(TOKEN);
-      expect(arg.data).not.toHaveProperty('token');
+      expect(JSON.stringify(data)).not.toContain(TOKEN);
+      expect(data).not.toHaveProperty('token');
     });
 
     it('busca por huella, no por el token', async () => {
@@ -70,19 +69,20 @@ describe('TokenService — sesiones hasheadas', () => {
     it('revoca por huella, no por el token', async () => {
       await service.revokeRefreshToken(TOKEN);
 
-      const arg = userToken.updateMany.mock.calls[0][0] as {
-        where: Record<string, unknown>;
-      };
-      expect(arg.where.tokenHash).toBe(HUELLA);
-      expect(JSON.stringify(arg.where)).not.toContain(TOKEN);
+      const { where } = argDe<{ where: Record<string, unknown> }>(
+        userToken.updateMany,
+      );
+      expect(where.tokenHash).toBe(HUELLA);
+      expect(JSON.stringify(where)).not.toContain(TOKEN);
     });
 
     it('la huella es determinista: el mismo token da la misma clave', async () => {
       await service.findValidateRefreshToken(TOKEN);
       await service.findValidateRefreshToken(TOKEN);
 
-      const a = userToken.findUnique.mock.calls[0][0] as { where: { tokenHash: string } };
-      const b = userToken.findUnique.mock.calls[1][0] as { where: { tokenHash: string } };
+      type Busqueda = { where: { tokenHash: string } };
+      const a = argDe<Busqueda>(userToken.findUnique, 0);
+      const b = argDe<Busqueda>(userToken.findUnique, 1);
       expect(a.where.tokenHash).toBe(b.where.tokenHash);
     });
   });
@@ -138,10 +138,10 @@ describe('TokenService — sesiones hasheadas', () => {
 
     it('sólo revoca sesiones que aún estaban activas', async () => {
       await service.revokeRefreshToken(TOKEN);
-      const arg = userToken.updateMany.mock.calls[0][0] as {
-        where: Record<string, unknown>;
-      };
-      expect(arg.where.revoked).toBe(false);
+      const { where } = argDe<{ where: Record<string, unknown> }>(
+        userToken.updateMany,
+      );
+      expect(where.revoked).toBe(false);
     });
   });
 
@@ -152,14 +152,15 @@ describe('TokenService — sesiones hasheadas', () => {
 
       await service.rotateRefreshToken(TOKEN, NUEVO, new Date('2027-01-01'));
 
-      const arg = userToken.updateMany.mock.calls[0][0] as {
+      const { where, data } = argDe<{
         where: Record<string, unknown>;
         data: Record<string, unknown>;
-      };
+      }>(userToken.updateMany);
+
       // Condicional: si otro proceso ya rotó este token, afecta 0 filas.
-      expect(arg.where.tokenHash).toBe(HUELLA);
-      expect(arg.where.revoked).toBe(false);
-      expect(arg.data.tokenHash).toBe(
+      expect(where.tokenHash).toBe(HUELLA);
+      expect(where.revoked).toBe(false);
+      expect(data.tokenHash).toBe(
         createHash('sha256').update(NUEVO).digest('hex'),
       );
     });

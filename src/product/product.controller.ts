@@ -23,6 +23,7 @@ import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
+import type { AuthenticatedUser } from 'src/auth/types/authenticated-user.type';
 
 @Controller('products')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -96,9 +97,16 @@ export class ProductController {
   async update(
     @Param('id') id: number,
     @Body() updateProductDto: UpdateProductDto,
-    @GetUser('id') userId: number,
+    @GetUser() user: AuthenticatedUser,
   ) {
-    const res = await this.productService.update(id, updateProductDto, userId);
+    // El rol viaja al servicio: el PATCH está abierto a PHARMACIST, pero
+    // `controlled` y `cost` sólo los puede cambiar gerencia.
+    const res = await this.productService.update(
+      id,
+      updateProductDto,
+      user.id,
+      user.role,
+    );
     return ApiResponse.ok(res, 'Producto actualizado exitosamente');
   }
 

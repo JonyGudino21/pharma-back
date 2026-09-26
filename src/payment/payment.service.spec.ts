@@ -404,5 +404,4 @@ describe('PaymentService — aplicación de dinero a una venta', () => {
       expect(res.replayed).toBe(false);
     });
   });
-
 });

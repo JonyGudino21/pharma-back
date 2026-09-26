@@ -8,6 +8,14 @@ import { UpdateCategoryDto } from './dto/update-category.dto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaginationParamsDto } from '../common/dto/pagination-params.dto';
 import { Prisma } from '@prisma/client';
+import {
+  buildPaginationMeta,
+  resolvePagination,
+} from 'src/common/utils/pagination.util';
+import {
+  SELECTOR_TAKE,
+  buildSelectorOptions,
+} from 'src/common/utils/selector-options.util';
 
 @Injectable()
 export class CategoryService {
@@ -41,32 +49,17 @@ export class CategoryService {
    * @returns Todas las categorias
    */
   async findAll(active?: boolean, pagination?: PaginationParamsDto) {
-    //Verificar si vienen parametros de paginacion
-    const hasPagination =
-      pagination &&
-      (pagination.page !== undefined || pagination.limit !== undefined);
-
-    const page = hasPagination ? (pagination?.page ?? 1) : 1;
-    const limit = hasPagination ? (pagination?.limit ?? 20) : 20;
-    const skip = (page - 1) * limit;
+    // La paginación ya no es opcional: si no llega, se aplica la de por defecto.
+    const paginacion = resolvePagination(pagination);
 
     const whereClause: Prisma.CategoryWhereInput =
       active === undefined ? {} : { isActive: active };
 
-    //Si no vienen parametros de paginacion, devolver todas las categorias
-    if (!hasPagination) {
-      const data = await this.prisma.category.findMany({
-        where: whereClause,
-        orderBy: { name: 'asc' },
-      });
-      return { categories: data };
-    }
-
     const [data, total] = await Promise.all([
       await this.prisma.category.findMany({
         where: whereClause,
-        skip,
-        take: limit,
+        skip: paginacion.skip,
+        take: paginacion.take,
         orderBy: { name: 'asc' },
       }),
       await this.prisma.category.count({ where: whereClause }),
@@ -74,13 +67,29 @@ export class CategoryService {
 
     return {
       categories: data,
-      pagination: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
-      },
+      pagination: buildPaginationMeta(total, paginacion),
     };
+  }
+
+  /**
+   * Opciones para selectores: sólo categorías ACTIVAS, sólo `{id, name}`.
+   *
+   * El selector de categorías de un producto se alimentaba de `findAll` con
+   * `limit: 10`, así que con más de diez categorías dadas de alta las restantes
+   * eran inasignables desde la interfaz. No fallaba: faltaban en silencio.
+   *
+   * Sólo activas a propósito: una categoría dada de baja no debe poder
+   * asignarse a un producto nuevo, aunque siga existiendo para los históricos.
+   */
+  async findOptions() {
+    const filas = await this.prisma.category.findMany({
+      where: { isActive: true },
+      orderBy: { name: 'asc' },
+      select: { id: true, name: true },
+      take: SELECTOR_TAKE,
+    });
+
+    return buildSelectorOptions(filas);
   }
 
   /**
@@ -126,12 +135,7 @@ export class CategoryService {
   }
 
   async search(name: string, pagination?: PaginationParamsDto) {
-    const hasPagination =
-      pagination &&
-      (pagination.page !== undefined || pagination.limit !== undefined);
-    const page = hasPagination ? (pagination?.page ?? 1) : 1;
-    const limit = hasPagination ? (pagination?.limit ?? 20) : 20;
-    const skip = (page - 1) * limit;
+    const paginacion = resolvePagination(pagination);
 
     const conditions: Array<{
       [key: string]: { contains: string; mode: 'insensitive' };
@@ -142,20 +146,11 @@ export class CategoryService {
 
     const where = conditions.length > 0 ? { OR: conditions } : {};
 
-    // Si no hay paginacion devolvemos todas las categorias
-    if (!hasPagination) {
-      const categories = await this.prisma.category.findMany({
-        where,
-        orderBy: { name: 'asc' },
-      });
-      return { categories };
-    }
-
     const [categories, total] = await Promise.all([
       this.prisma.category.findMany({
         where,
-        skip,
-        take: limit,
+        skip: paginacion.skip,
+        take: paginacion.take,
         orderBy: { name: 'asc' },
       }),
       this.prisma.category.count({ where }),
@@ -163,12 +158,7 @@ export class CategoryService {
 
     return {
       categories,
-      pagination: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
-      },
+      pagination: buildPaginationMeta(total, paginacion),
     };
   }
 

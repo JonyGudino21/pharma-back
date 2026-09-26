@@ -21,6 +21,7 @@ import { ReturnSaleDto } from './dto/return-sale.dto';
 import { FindAllSalesQueryDto } from './dto/find-all-sales-query.dto';
 import { RegisterSalePrintDto } from './dto/register-sale-print.dto';
 import { CompleteSaleDto } from './dto/complete-sale.dto';
+import { SalesSummaryQueryDto } from './dto/sales-summary-query.dto';
 import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
@@ -47,12 +48,37 @@ export class SalesController {
    */
   @Get('summary')
   @Roles(UserRole.MANAGER)
-  async getSummary(
-    @Query('startDate') startDate?: string,
-    @Query('endDate') endDate?: string,
-  ) {
-    const data = await this.salesService.getSummary(startDate, endDate);
+  async getSummary(@Query() query: SalesSummaryQueryDto) {
+    const data = await this.salesService.getSummary(
+      query.startDate,
+      query.endDate,
+    );
     return ApiResponse.ok(data, 'Resumen de ventas obtenido correctamente');
+  }
+
+  /**
+   * [OPERATIVO/POS] Recupera el carrito DRAFT abierto del cajero autenticado.
+   *
+   * El carrito vivo sólo existía en la memoria de Pinia. Un F5, un corte de luz
+   * o una sesión caducada lo borraban de la pantalla mientras la venta DRAFT
+   * seguía en la base con sus 30 líneas capturadas: invisible para el cajero,
+   * imposible de cobrar y acumulándose como basura en la tabla.
+   *
+   * Devuelve `null` (no 404) cuando no hay carrito: "no tengo nada abierto" es
+   * una respuesta legítima, no un error, y un 404 obligaría al front a tratar
+   * el caso normal dentro de un catch.
+   *
+   * Debe declararse ANTES de `@Get(':id')`: Nest resuelve por orden de
+   * declaración y "draft" acabaría entrando por el parámetro `:id`, donde
+   * ParseIntPipe lo rechazaría con un 400.
+   */
+  @Get('draft')
+  async findMyDraft(@GetUser() user: AuthenticatedUser) {
+    const data = await this.salesService.findOpenDraftForUser(user.userId);
+    return ApiResponse.ok(
+      data,
+      data ? 'Carrito recuperado correctamente' : 'Sin carrito abierto',
+    );
   }
 
   /**
@@ -102,7 +128,11 @@ export class SalesController {
   async addProduct(
     @Param('id') id: number,
     @Body() addProductDto: SaleItemDto,
+    @GetUser() user: AuthenticatedUser,
   ) {
+    // Todas las mutaciones del carrito comprueban primero que el carrito sea de
+    // quien opera (o que opere gerencia). Ver SalesService.assertCanOperateDraft.
+    await this.salesService.assertCanOperateDraft(id, user);
     const data = await this.salesService.addItem(id, addProductDto);
     return ApiResponse.ok(data, 'Producto agregado correctamente');
   }
@@ -114,7 +144,9 @@ export class SalesController {
   async removeProduct(
     @Param('id') id: number,
     @Param('itemId') itemId: number,
+    @GetUser() user: AuthenticatedUser,
   ) {
+    await this.salesService.assertCanOperateDraft(id, user);
     const data = await this.salesService.deleteItem(id, itemId);
     return ApiResponse.ok(data, 'Producto eliminado correctamente');
   }
@@ -127,7 +159,9 @@ export class SalesController {
     @Param('id', ParseIntPipe) id: number,
     @Param('itemId', ParseIntPipe) itemId: number,
     @Body() dto: UpdateSaleItemDto,
+    @GetUser() user: AuthenticatedUser,
   ) {
+    await this.salesService.assertCanOperateDraft(id, user);
     const data = await this.salesService.updateItem(id, itemId, dto.quantity);
     return ApiResponse.ok(data, 'Cantidad actualizada correctamente');
   }
@@ -140,7 +174,9 @@ export class SalesController {
   async setClient(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: SetClientDto,
+    @GetUser() user: AuthenticatedUser,
   ) {
+    await this.salesService.assertCanOperateDraft(id, user);
     const data = await this.salesService.setClient(id, dto.clientId ?? null);
     return ApiResponse.ok(data, 'Cliente actualizado correctamente');
   }
@@ -156,6 +192,7 @@ export class SalesController {
     // Clave de idempotencia: un reintento tras timeout NO debe cobrar dos veces.
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
+    await this.salesService.assertCanOperateDraft(id, user);
     const data = await this.salesService.addPayment(
       id,
       addPaymentDto,
@@ -174,11 +211,8 @@ export class SalesController {
     @Body() dto: CompleteSaleDto,
     @GetUser() user: AuthenticatedUser,
   ) {
-    const data = await this.salesService.completeSale(
-      id,
-      user.userId,
-      dto,
-    );
+    await this.salesService.assertCanOperateDraft(id, user);
+    const data = await this.salesService.completeSale(id, user.userId, dto);
     return ApiResponse.ok(data, 'Venta completada correctamente');
   }
 

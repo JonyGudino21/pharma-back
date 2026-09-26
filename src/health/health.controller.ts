@@ -7,6 +7,7 @@ import {
 import { SkipThrottle } from '@nestjs/throttler';
 import { PrismaService } from '../../prisma/prisma.service';
 import { withTimeout } from './with-timeout';
+import { Public } from '../common/decorators/public.decorator';
 
 const DATABASE_PING_MS = 1500;
 
@@ -21,6 +22,7 @@ const DATABASE_PING_MS = 1500;
  * No usamos @nestjs/terminus: v12 es ESM puro (rompe Jest) y arrastra indicadores
  * que no usamos. El contrato HTTP es el mismo: 200 vs 503.
  */
+@Public()
 @SkipThrottle()
 @Controller('health')
 export class HealthController {

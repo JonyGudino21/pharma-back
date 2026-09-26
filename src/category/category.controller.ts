@@ -60,6 +60,22 @@ export class CategoryController {
   }
 
   /**
+   * [CATÁLOGO] Opciones para selectores: sólo activas, sólo `{id, name}`.
+   *
+   * Existe porque los selectores se alimentaban de `GET /category` con
+   * `limit: 10`: con más de diez categorías, las demás no aparecían y no había
+   * forma de asignarlas a un producto.
+   *
+   * Debe declararse ANTES de `@Get(':id')`: Nest resuelve por orden y "options"
+   * entraría por el parámetro `:id`.
+   */
+  @Get('options')
+  async findOptions() {
+    const res = await this.categoryService.findOptions();
+    return ApiResponse.ok(res, 'Opciones de categoría obtenidas correctamente');
+  }
+
+  /**
    * [CATÁLOGO] Obtiene detalle de una categoría.
    */
   @Get(':id')

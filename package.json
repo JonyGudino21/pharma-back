@@ -19,7 +19,13 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "test:ci": "jest --ci --coverage",
+    "seed": "prisma db seed",
+    "db:backup": "node scripts/backup.js"
+  },
+  "prisma": {
+    "seed": "ts-node --compiler-options {\"module\":\"CommonJS\"} prisma/seed.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
@@ -98,9 +104,75 @@
       "^prisma/(.*)$": "<rootDir>/../prisma/$1"
     },
     "collectCoverageFrom": [
-      "**/*.(t|j)s"
+      "**/*.(t|j)s",
+      "!**/*.spec.ts",
+      "!**/*.module.ts",
+      "!**/dto/**",
+      "!**/main.ts",
+      "!**/*.d.ts",
+      "!**/types/**",
+      "!**/*.controller.ts",
+      "!**/*.decorator.ts",
+      "!**/env.validation.ts",
+      "!**/testing/**"
     ],
     "coverageDirectory": "../coverage",
-    "testEnvironment": "node"
+    "testEnvironment": "node",
+    "coverageThreshold": {
+      "global": {
+        "branches": 4,
+        "functions": 9,
+        "lines": 8,
+        "statements": 8
+      },
+      "./src/payment/": {
+        "branches": 92,
+        "functions": 95,
+        "lines": 95,
+        "statements": 95
+      },
+      "./src/common/utils/": {
+        "branches": 92,
+        "functions": 95,
+        "lines": 95,
+        "statements": 95
+      },
+      "./src/purchase/": {
+        "branches": 54,
+        "functions": 75,
+        "lines": 68,
+        "statements": 68
+      },
+      "./src/sales/": {
+        "branches": 46,
+        "functions": 56,
+        "lines": 58,
+        "statements": 56
+      },
+      "./src/company/": {
+        "branches": 32,
+        "functions": 63,
+        "lines": 61,
+        "statements": 62
+      },
+      "./src/auth/": {
+        "branches": 30,
+        "functions": 58,
+        "lines": 61,
+        "statements": 60
+      },
+      "./src/cash-shift/": {
+        "branches": 38,
+        "functions": 48,
+        "lines": 51,
+        "statements": 53
+      },
+      "./src/inventory/": {
+        "branches": 30,
+        "functions": 47,
+        "lines": 42,
+        "statements": 41
+      }
+    }
   }
 }

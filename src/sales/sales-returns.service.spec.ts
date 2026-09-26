@@ -34,7 +34,10 @@ describe('SalesService — devoluciones', () => {
     saleItem: { findMany: jest.fn() },
     saleReturn: { create: jest.fn() },
     saleReturnItem: { create: jest.fn(), groupBy: jest.fn() },
-    saleRefund: { create: jest.fn() },
+    // Reparto del reembolso por método de pago (v1): el servicio agrupa lo
+    // cobrado y lo ya reembolsado por método para devolver por el mismo medio.
+    saleRefund: { create: jest.fn(), groupBy: jest.fn() },
+    salePayment: { groupBy: jest.fn() },
     cashTransaction: { create: jest.fn() },
     client: { update: jest.fn() },
   };
@@ -105,6 +108,10 @@ describe('SalesService — devoluciones', () => {
         Promise.resolve({ id: 9, ...data }),
     );
     mockCashShift.getCurrentShift.mockResolvedValue({ id: 42 });
+    tx.saleRefund.groupBy.mockResolvedValue([]);
+    tx.salePayment.groupBy.mockResolvedValue([
+      { method: 'CASH', _sum: { amount: new Decimal(100000) } },
+    ]);
     mockBatches.restoreFromSaleItem.mockResolvedValue(undefined);
   });
 

@@ -27,9 +27,9 @@ describe('retryOnWriteConflict', () => {
       .mockRejectedValueOnce(conflicto())
       .mockResolvedValue('ok-al-segundo');
 
-    await expect(
-      retryOnWriteConflict(fn, { baseDelayMs: 1 }),
-    ).resolves.toBe('ok-al-segundo');
+    await expect(retryOnWriteConflict(fn, { baseDelayMs: 1 })).resolves.toBe(
+      'ok-al-segundo',
+    );
     expect(fn).toHaveBeenCalledTimes(2);
   });
 
@@ -45,9 +45,9 @@ describe('retryOnWriteConflict', () => {
   it('NO reintenta un error que no sea conflicto de escritura', async () => {
     const fn = jest.fn().mockRejectedValue(new Error('stock insuficiente'));
 
-    await expect(
-      retryOnWriteConflict(fn, { baseDelayMs: 1 }),
-    ).rejects.toThrow('stock insuficiente');
+    await expect(retryOnWriteConflict(fn, { baseDelayMs: 1 })).rejects.toThrow(
+      'stock insuficiente',
+    );
     // Un error de negocio se propaga en el primer intento.
     expect(fn).toHaveBeenCalledTimes(1);
   });

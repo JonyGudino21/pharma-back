@@ -60,6 +60,25 @@ export class SuppliersController {
   }
 
   /**
+   * [DIRECTORIO] Opciones para selectores: sólo activos, sólo `{id, name}`.
+   *
+   * El combo de "Crear orden de compra" se alimentaba de `GET /suppliers` con
+   * `limit: 10`. Con treinta proveedores dados de alta, comprarle al número 11
+   * era imposible desde la aplicación: la lista se veía llena y no avisaba.
+   *
+   * Debe declararse ANTES de `@Get(':id')`: Nest resuelve por orden de
+   * declaración y "options" entraría por el parámetro `:id`.
+   */
+  @Get('options')
+  async findOptions() {
+    const data = await this.suppliersService.findOptions();
+    return ApiResponse.ok(
+      data,
+      'Opciones de proveedor obtenidas correctamente',
+    );
+  }
+
+  /**
    * [DIRECTORIO] Perfil de proveedor.
    */
   @Get(':id')

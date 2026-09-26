@@ -1,14 +1,16 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException } from '@nestjs/common';
 import { ConflictException } from '@nestjs/common';
-import { MovementType, Prisma } from '@prisma/client';
+import { ControlledLogEntryType, MovementType, Prisma } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { InventoryBatchesService } from './inventory-batches.service';
 import { InventoryService } from './inventory.service';
 import { PrismaService } from '../../prisma/prisma.service';
 
 jest.mock('./fefo', () => {
-  const actual = jest.requireActual('./fefo') as typeof import('./fefo');
+  // Sin `as`: `requireActual` ya está tipado por la firma genérica y el
+  // aserto era redundante (@typescript-eslint/no-unnecessary-type-assertion).
+  const actual = jest.requireActual<typeof import('./fefo')>('./fefo');
   return {
     ...actual,
     todayInMexico: () => new Date('2026-09-03T00:00:00.000Z'),
@@ -126,12 +128,12 @@ describe('InventoryBatchesService — consumo FEFO', () => {
       99,
     );
 
-    expect(res.takes.map((t) => ({ batchId: t.batchId, quantity: t.quantity }))).toEqual(
-      [
-        { batchId: 1, quantity: 2 },
-        { batchId: 2, quantity: 3 },
-      ],
-    );
+    expect(
+      res.takes.map((t) => ({ batchId: t.batchId, quantity: t.quantity })),
+    ).toEqual([
+      { batchId: 1, quantity: 2 },
+      { batchId: 2, quantity: 3 },
+    ]);
     // Deadlock: los decrementos se aplican por batchId ASC, no por FEFO.
     const llamadas = mockInventory.registerMovement.mock.calls as Array<
       [{ batchId?: number }]
@@ -259,5 +261,4 @@ describe('InventoryBatchesService — consumo FEFO', () => {
       }
     });
   });
-
 });
