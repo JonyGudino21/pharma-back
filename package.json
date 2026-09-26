@@ -20,7 +20,12 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
-    "test:ci": "jest --ci --coverage"
+    "test:ci": "jest --ci --coverage",
+    "seed": "prisma db seed",
+    "db:backup": "node scripts/backup.js"
+  },
+  "prisma": {
+    "seed": "ts-node --compiler-options {\"module\":\"CommonJS\"} prisma/seed.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
@@ -108,7 +113,8 @@
       "!**/types/**",
       "!**/*.controller.ts",
       "!**/*.decorator.ts",
-      "!**/env.validation.ts"
+      "!**/env.validation.ts",
+      "!**/testing/**"
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node",
