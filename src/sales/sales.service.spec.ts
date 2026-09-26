@@ -43,11 +43,27 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
     // Ramas de cancel() con pagos reales (reembolso y salida de caja)
     saleReturn: { create: jest.fn() },
     saleReturnItem: { groupBy: jest.fn() },
-    saleRefund: { create: jest.fn(), aggregate: jest.fn() },
+    // Reparto del reembolso por método de pago (v1): el servicio agrupa lo
+    // cobrado y lo ya reembolsado por método para devolver por el mismo medio.
+    saleRefund: { create: jest.fn(), aggregate: jest.fn(), groupBy: jest.fn() },
+    salePayment: { groupBy: jest.fn() },
     cashTransaction: { create: jest.fn() },
-    // updateClientPricesOnSaleComplete usa estos 4 métodos al cerrar una venta con cliente
-    clientProductPrice: { findUnique: jest.fn(), upsert: jest.fn() },
-    clientProductPriceHistory: { create: jest.fn(), updateMany: jest.fn() },
+    // updateClientPricesOnSaleComplete al cerrar una venta con cliente.
+    //
+    // `findMany` y `createMany` entraron con la corrección del N+1 (Fase 4): la
+    // rutina pasó de cuatro consultas por línea del ticket a una lectura en lote
+    // más escrituras agrupadas. Un mock incompleto aquí no falla con un mensaje
+    // útil, falla con "tx.clientProductPrice.findMany is not a function".
+    clientProductPrice: {
+      findUnique: jest.fn(),
+      findMany: jest.fn().mockResolvedValue([]),
+      upsert: jest.fn(),
+    },
+    clientProductPriceHistory: {
+      create: jest.fn(),
+      createMany: jest.fn(),
+      updateMany: jest.fn(),
+    },
   };
 
   const mockPrisma = {
@@ -132,8 +148,17 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
         Promise.resolve({ ...ventaBase, ...data }),
     );
     tx.saleItem.findMany.mockResolvedValue([]);
+    // Lectura en lote de precios especiales (Fase 4). Sin valor por defecto,
+    // el `.map()` sobre el resultado explota con "undefined is not iterable"
+    // en cada cierre de venta con cliente.
+    tx.clientProductPrice.findMany.mockResolvedValue([]);
     tx.saleReturnItem.groupBy.mockResolvedValue([]);
     tx.saleRefund.aggregate.mockResolvedValue({ _sum: { amount: null } });
+    tx.saleRefund.groupBy.mockResolvedValue([]);
+    // Por defecto la venta se cobró en efectivo con holgura: cubre cualquier reembolso.
+    tx.salePayment.groupBy.mockResolvedValue([
+      { method: 'CASH', _sum: { amount: new Decimal(100000) } },
+    ]);
     tx.saleReturn.create.mockResolvedValue({ id: 88 });
     mockInventory.registerMovement.mockResolvedValue({
       totalCost: new Decimal(60),
@@ -406,6 +431,11 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
       tx.saleItem.findMany.mockResolvedValue([]);
       tx.saleReturnItem.groupBy.mockResolvedValue([]);
       tx.saleRefund.aggregate.mockResolvedValue({ _sum: { amount: null } });
+      tx.saleRefund.groupBy.mockResolvedValue([]);
+      // Por defecto la venta se cobró en efectivo con holgura: cubre cualquier reembolso.
+      tx.salePayment.groupBy.mockResolvedValue([
+        { method: 'CASH', _sum: { amount: new Decimal(100000) } },
+      ]);
       tx.sale.update.mockImplementation(
         ({ data }: { data: Record<string, unknown> }) =>
           Promise.resolve({ ...ventaBase, ...data }),

@@ -333,46 +333,26 @@ export class SalesService {
           },
         });
 
-        // B. Crear el registro Financiero del Reembolso (SaleRefund)
-        await tx.saleRefund.create({
-          data: {
-            saleReturnId: saleReturn.id,
-            saleId: saleId,
-            amount: pendienteDeDevolver,
-            method: sale.paymentMethod,
-            reference: `Reembolso por Cancelación Venta #${saleId}`,
-          },
+        // B. Reembolso por el MISMO medio por el que se cobró.
+        //
+        // Antes: un único SaleRefund con `sale.paymentMethod` (el método de la
+        // cabecera, no el de cada pago) y SIEMPRE una salida de efectivo
+        // (MANUAL_WITHDRAW) por el total. Una venta cobrada con tarjeta sacaba
+        // dinero del cajón que nunca había entrado en él. Y si no había turno
+        // abierto, se seguía adelante sin asiento de caja.
+        const plan = await this.planearReembolsoPorMetodo(
+          tx,
+          saleId,
+          pendienteDeDevolver,
+        );
+
+        await this.ejecutarReembolso(tx, {
+          saleId,
+          saleReturnId: saleReturn.id,
+          userId,
+          plan,
+          motivo: `Reembolso por cancelación de la venta #${saleId}`,
         });
-
-        // C. Sacar el dinero FÍSICO de la caja (CashShift)
-        //  TODO: Implemntar logica de si fue tranferencia o con tarjeta no mover dinero fisico
-        // Solo podemos sacar dinero si hay una caja abierta.
-        const currentShift =
-          await this.cashShiftService.getCurrentShift(userId, tx);
-
-        if (currentShift) {
-          // Creamos la transacción de caja DIRECTAMENTE dentro de la misma 'tx' de Prisma
-          // para asegurar que si falla la venta, no se registre la salida de dinero.
-          await tx.cashTransaction.create({
-            data: {
-              shiftId: currentShift.id,
-              type: CashTransactionType.MANUAL_WITHDRAW, // O REFUND_OUT
-              amount: pendienteDeDevolver,
-              reason: `Reembolso automático Venta #${saleId}`,
-              relatedTable: 'SaleRefund',
-              referenceId: saleReturn.id,
-              createdBy: userId,
-            },
-          });
-        } else {
-          // DECISIÓN DE NEGOCIO:
-          // Si no hay caja abierta, registramos el reembolso en el sistema pero NO movemos dinero físico
-          // o lanzamos alerta. Por ahora, permitimos cancelar (el SaleRefund queda registrado)
-          // pero el cajero no verá salida en su corte porque no tiene turno.
-          this.logger.warn(
-            `Venta #${saleId} cancelada con reembolso, pero sin caja abierta para registrar salida de efectivo.`,
-          );
-        }
       }
 
       // 3. MARCAR COMO CANCELADA
@@ -578,6 +558,7 @@ export class SalesService {
       // saldo. Eso dejaba el balance de la venta en negativo y regalaba deuda.
       // ─────────────────────────────────────────────────────────────────────────
       let refundData: SaleRefund | null = null;
+      let refunds: SaleRefund[] = [];
       let debtApplied = new Decimal(0);
       let cashRefunded = new Decimal(0);
 
@@ -606,62 +587,52 @@ export class SalesService {
           }
         }
 
-        // (b) Tramo en efectivo: lo que el cliente ya había pagado
-        cashRefunded = totalRefundAmount.sub(debtApplied);
+        // (b) Tramo de dinero: lo que el cliente ya había pagado.
+        let aReembolsar = totalRefundAmount.sub(debtApplied);
 
-        // Salvaguarda: nunca devolver más efectivo del que realmente entró.
+        // Salvaguarda: nunca devolver más de lo que realmente entró.
         const paidAmount = new Decimal(sale.paidAmount);
-        if (cashRefunded.gt(paidAmount)) {
+        if (aReembolsar.gt(paidAmount)) {
           this.logger.warn(
-            `Devolución #${saleReturn.id}: el reembolso en efectivo (${money(cashRefunded)}) supera lo pagado ` +
+            `Devolución #${saleReturn.id}: el reembolso (${money(aReembolsar)}) supera lo pagado ` +
               `(${money(paidAmount)}) en la venta #${saleId}. Se limita a lo pagado. REVISAR consistencia.`,
           );
-          cashRefunded = paidAmount;
+          aReembolsar = paidAmount;
         }
 
-        if (cashRefunded.gt(0)) {
-          const currentShift =
-            await this.cashShiftService.getCurrentShift(userId, tx);
-          if (!currentShift) {
-            throw new ConflictException(
-              'Se requiere caja abierta para realizar reembolso en efectivo',
-            );
-          }
+        // Por el MISMO medio por el que se cobró. Antes el tramo salía siempre
+        // en efectivo (`method: CASH` fijo), aunque la venta se hubiera pagado
+        // con tarjeta: el cajón perdía dinero que nunca había entrado en él.
+        const plan = await this.planearReembolsoPorMetodo(
+          tx,
+          saleId,
+          aReembolsar,
+        );
+        const resultado = await this.ejecutarReembolso(tx, {
+          saleId,
+          saleReturnId: saleReturn.id,
+          userId,
+          plan,
+          motivo: `Reembolso por devolución #${saleReturn.id}`,
+        });
 
-          // Salida de dinero de la caja, dentro de la MISMA transacción para que
-          // un fallo posterior no deje el movimiento de caja huérfano.
-          await tx.cashTransaction.create({
-            data: {
-              shiftId: currentShift.id,
-              type: CashTransactionType.REFUND_OUT,
-              amount: cashRefunded,
-              reason: `Reembolso por Devolución #${saleReturn.id}`,
-              relatedTable: 'SaleReturn',
-              referenceId: saleReturn.id,
-              createdBy: userId,
-            },
-          });
-
-          refundData = await tx.saleRefund.create({
-            data: {
-              saleReturnId: saleReturn.id,
-              saleId: saleId,
-              amount: cashRefunded,
-              method: PaymentMethod.CASH,
-              reference: `Reembolso por Devolución #${saleReturn.id}`,
-            },
-          });
-        }
+        refunds = resultado.refunds;
+        refundData = refunds[0] ?? null;
+        cashRefunded = resultado.efectivo;
       }
 
       this.logger.log(
         `Devolución #${saleReturn.id} de la venta #${saleId}: total ${money(totalRefundAmount)} ` +
-          `(deuda cancelada ${money(debtApplied)}, efectivo devuelto ${money(cashRefunded)})`,
+          `(deuda cancelada ${money(debtApplied)}, efectivo devuelto ${money(cashRefunded)}, ` +
+          `${refunds.length} reembolso(s))`,
       );
 
       return {
         saleReturn,
+        // `refund` se conserva por compatibilidad con el front actual; `refunds`
+        // es el detalle completo cuando la venta se pagó con varios medios.
         refund: refundData,
+        refunds,
         totalReturned: totalRefundAmount,
         debtApplied,
         cashRefunded,
@@ -679,6 +650,160 @@ export class SalesService {
     saleId: number,
   ): Promise<void> {
     await tx.$queryRaw`SELECT id FROM "public"."Sale" WHERE id = ${saleId} FOR UPDATE`;
+  }
+
+  /**
+   * Reparte un reembolso entre los MÉTODOS con los que realmente se pagó.
+   *
+   * ─── EL PROBLEMA QUE CIERRA ───
+   * Toda devolución y toda cancelación sacaba el reembolso de la CAJA, en
+   * efectivo, sin importar cómo se había cobrado. Una venta de $800 pagada con
+   * tarjeta, al cancelarse, registraba $800 de salida de efectivo del cajón: el
+   * cajero no los había sacado (el reembolso va a la tarjeta), así que el arqueo
+   * del turno salía con $800 de SOBRANTE inexplicable — o, peor, el cajero sí
+   * los sacaba y el cliente recibía el dinero dos veces.
+   *
+   * ─── LA REGLA ───
+   * Se devuelve por el mismo medio por el que entró, hasta lo que queda
+   * disponible en cada medio (lo pagado menos lo ya reembolsado). Con pagos
+   * mixtos, primero los medios electrónicos y el efectivo al final: así nunca
+   * sale del cajón más efectivo del que entró por esa venta, y los reembolsos a
+   * tarjeta o transferencia quedan trazables en el estado de cuenta del cliente.
+   *
+   * Es una decisión de negocio, no técnica: si la farmacia prefiere devolver
+   * siempre en efectivo, se cambia el ORDEN aquí y en ningún otro sitio.
+   */
+  private async planearReembolsoPorMetodo(
+    tx: Prisma.TransactionClient,
+    saleId: number,
+    monto: Decimal,
+  ): Promise<{ method: PaymentMethod; amount: Decimal }[]> {
+    if (monto.lte(0)) return [];
+
+    const [pagado, reembolsado] = await Promise.all([
+      tx.salePayment.groupBy({
+        by: ['method'],
+        where: { saleId, isDeposit: true },
+        _sum: { amount: true },
+      }),
+      tx.saleRefund.groupBy({
+        by: ['method'],
+        where: { saleId },
+        _sum: { amount: true },
+      }),
+    ]);
+
+    const yaDevuelto = new Map(
+      reembolsado.map((r) => [r.method, new Decimal(r._sum.amount ?? 0)]),
+    );
+
+    const ORDEN: PaymentMethod[] = [
+      PaymentMethod.CARD,
+      PaymentMethod.TRANSFER,
+      PaymentMethod.CASH,
+    ];
+
+    const disponible = pagado
+      .map((p) => ({
+        method: p.method,
+        amount: Decimal.max(
+          new Decimal(p._sum.amount ?? 0).sub(
+            yaDevuelto.get(p.method) ?? new Decimal(0),
+          ),
+          new Decimal(0),
+        ),
+      }))
+      .filter((d) => d.amount.gt(0))
+      .sort((a, b) => ORDEN.indexOf(a.method) - ORDEN.indexOf(b.method));
+
+    const plan: { method: PaymentMethod; amount: Decimal }[] = [];
+    let restante = monto;
+
+    for (const d of disponible) {
+      if (restante.lte(0)) break;
+      const tramo = Decimal.min(restante, d.amount);
+      plan.push({ method: d.method, amount: tramo });
+      restante = restante.sub(tramo);
+    }
+
+    // Queda algo sin asignar: la venta no registra pagos suficientes para
+    // cubrir el reembolso (datos históricos anteriores a SalePayment, o una
+    // inconsistencia). Se devuelve en efectivo, que es lo que hacía el sistema
+    // antes, y se deja rastro para revisar.
+    if (restante.gt(0)) {
+      this.logger.warn(
+        `Venta #${saleId}: ${money(restante)} del reembolso no tienen pago de origen registrado. Se asignan a efectivo. REVISAR.`,
+      );
+      const efectivo = plan.find((p) => p.method === PaymentMethod.CASH);
+      if (efectivo) efectivo.amount = efectivo.amount.add(restante);
+      else plan.push({ method: PaymentMethod.CASH, amount: restante });
+    }
+
+    return plan;
+  }
+
+  /**
+   * Ejecuta un plan de reembolso: un SaleRefund por método y, SÓLO para el
+   * tramo en efectivo, la salida física de la caja.
+   *
+   * El tramo en efectivo EXIGE turno abierto. Antes, sin caja abierta, la
+   * cancelación seguía adelante y sólo dejaba un aviso en el log: el dinero
+   * salía del cajón sin asiento en ningún arqueo, y el siguiente corte de caja
+   * salía descuadrado sin explicación posible.
+   */
+  private async ejecutarReembolso(
+    tx: Prisma.TransactionClient,
+    params: {
+      saleId: number;
+      saleReturnId: number;
+      userId: number;
+      plan: { method: PaymentMethod; amount: Decimal }[];
+      motivo: string;
+    },
+  ): Promise<{ refunds: SaleRefund[]; efectivo: Decimal }> {
+    const refunds: SaleRefund[] = [];
+    let efectivo = new Decimal(0);
+
+    for (const { method, amount } of params.plan) {
+      if (method === PaymentMethod.CASH) {
+        const turno = await this.cashShiftService.getCurrentShift(
+          params.userId,
+          tx,
+        );
+        if (!turno) {
+          throw new ConflictException(
+            `Se requiere caja abierta para reembolsar ${money(amount)} en efectivo.`,
+          );
+        }
+
+        await tx.cashTransaction.create({
+          data: {
+            shiftId: turno.id,
+            type: CashTransactionType.REFUND_OUT,
+            amount,
+            reason: params.motivo,
+            relatedTable: 'SaleReturn',
+            referenceId: params.saleReturnId,
+            createdBy: params.userId,
+          },
+        });
+        efectivo = efectivo.add(amount);
+      }
+
+      refunds.push(
+        await tx.saleRefund.create({
+          data: {
+            saleReturnId: params.saleReturnId,
+            saleId: params.saleId,
+            amount,
+            method,
+            reference: params.motivo,
+          },
+        }),
+      );
+    }
+
+    return { refunds, efectivo };
   }
 
   /**
@@ -772,29 +897,63 @@ export class SalesService {
     this.ensureDraftSale(sale);
 
     return this.prisma.$transaction(async (tx) => {
-      const item = await tx.saleItem.findUnique({ where: { id: itemId } });
-      if (!item) throw new NotFoundException('Item no encontrado');
-
-      await tx.saleItem.delete({ where: { id: itemId } });
-
-      // Recálculo seguro
-      const agg = await tx.saleItem.aggregate({
-        where: { saleId },
-        _sum: { subtotal: true },
+      // La línea se busca DENTRO DE ESTA VENTA.
+      //
+      // Antes era `findUnique({ where: { id: itemId } })`: se validaba que la
+      // venta de la URL fuera un borrador, pero la línea podía ser de CUALQUIER
+      // venta. Con un borrador propio y el id de una línea ajena se borraba una
+      // partida de una venta YA COBRADA: el stock ya había salido, el ticket ya
+      // estaba impreso y el total quedaba reescrito. Bastaba cambiar un número
+      // en la petición.
+      const borrado = await tx.saleItem.deleteMany({
+        where: { id: itemId, saleId },
       });
-      const newTotal = agg._sum.subtotal ?? new Decimal(0);
+      if (borrado.count === 0) {
+        throw new NotFoundException('El producto no pertenece a esta venta.');
+      }
 
-      await tx.sale.update({
-        where: { id: saleId },
-        data: {
-          total: newTotal,
-          subtotal: newTotal,
-          balance: newTotal.sub(sale.paidAmount),
-        },
-      });
+      // Mismo recálculo que addItem: relee `paidAmount` dentro de la
+      // transacción. Antes se usaba el leído fuera de ella y un abono
+      // registrado en medio desaparecía del saldo.
+      const newTotal = await this.recalculateSaleTotals(tx, saleId);
 
       return { message: 'Producto eliminado', newTotal };
     });
+  }
+
+  /**
+   * Comprueba que quien opera sobre un carrito sea su dueño.
+   *
+   * Los borradores no tenían dueño: `addItem`, `deleteItem`, `setClient`,
+   * `addPayment` y `completeSale` nunca comparaban el cajero de la venta con el
+   * usuario autenticado. Cualquiera con el id de otra venta abierta podía
+   * meterle productos, cambiarle el cliente o cerrarla a su nombre — y en una
+   * farmacia con dos cajas, los ids son consecutivos y fáciles de adivinar.
+   *
+   * Gerencia puede operar cualquier carrito: es quien atiende cuando un cajero
+   * se va a media venta. Una venta que ya no es borrador no se valida aquí; la
+   * rechazan después las comprobaciones de estado de cada operación.
+   */
+  async assertCanOperateDraft(
+    saleId: number,
+    user: { id: number; role: UserRole },
+  ): Promise<void> {
+    const sale = await this.prisma.sale.findUnique({
+      where: { id: saleId },
+      select: { userId: true, flowStatus: true },
+    });
+
+    if (!sale) throw new NotFoundException('Venta no encontrada');
+    if (sale.flowStatus !== SaleFlowStatus.DRAFT) return;
+
+    const esGerencia =
+      user.role === UserRole.MANAGER || user.role === UserRole.ADMIN;
+
+    if (sale.userId !== null && sale.userId !== user.id && !esGerencia) {
+      throw new ForbiddenException(
+        'Esta venta la está capturando otro cajero. No puedes modificarla.',
+      );
+    }
   }
 
   /**
@@ -1162,9 +1321,7 @@ export class SalesService {
       !p.doctorLicense?.trim() ||
       !p.patientName?.trim()
     ) {
-      throw new BadRequestException(
-        'Información de receta médica obligatoria',
-      );
+      throw new BadRequestException('Información de receta médica obligatoria');
     }
     return {
       prescriptionNo: p.prescriptionNo.trim(),
@@ -1450,58 +1607,90 @@ export class SalesService {
   ) {
     // 1. Validar que la venta tenga un cliente
     if (!sale.clientId) return;
+    if (sale.items.length === 0) return;
 
-    for (const it of sale.items) {
-      const existing = await tx.clientProductPrice.findUnique({
-        where: {
-          clientId_productId: {
-            clientId: sale.clientId,
-            productId: it.productId,
-          },
-        },
+    const clientId = sale.clientId;
+    const ahora = new Date();
+
+    // ─────────────────────────────────────────────────────────────────────
+    // LECTURA EN LOTE (corrige el N+1).
+    //
+    // Esta función corre DENTRO de la transacción que cierra la venta, con las
+    // filas de stock ya bloqueadas. La versión anterior hacía cuatro consultas
+    // POR LÍNEA del ticket —findUnique, updateMany, upsert, create—, así que un
+    // ticket de 30 productos disparaba 120 idas y vueltas a PostgreSQL con los
+    // bloqueos retenidos todo ese tiempo. En el momento más sensible a latencia
+    // del sistema: el cajero esperando a que se cierre el cobro, y cualquier
+    // otra caja que tocara esos productos esperando detrás.
+    //
+    // Ahora se leen todos los precios vigentes de una vez.
+    // ─────────────────────────────────────────────────────────────────────
+    const productIds = sale.items.map((it) => it.productId);
+
+    const vigentes = await tx.clientProductPrice.findMany({
+      where: { clientId, productId: { in: productIds } },
+      select: { productId: true, price: true },
+    });
+
+    const precioVigente = new Map(
+      vigentes.map((p) => [p.productId, new Decimal(p.price)]),
+    );
+
+    // Sólo las líneas cuyo precio REALMENTE cambió generan escrituras. En la
+    // operación normal de una farmacia eso son cero: el precio especial del
+    // cliente ya estaba aplicado. El caso frecuente pasa de 120 consultas a UNA.
+    const cambios = sale.items
+      .map((it) => ({ productId: it.productId, precio: new Decimal(it.price) }))
+      .filter(({ productId, precio }) => {
+        const actual = precioVigente.get(productId);
+        return !actual || !actual.equals(precio);
       });
 
-      const newPrice = new Decimal(it.price);
-      if (existing && new Decimal(existing.price).equals(newPrice)) continue; // Si el precio es el mismo, no actualizar
+    if (cambios.length === 0) return;
 
-      // cerrar historial previo
-      await tx.clientProductPriceHistory.updateMany({
-        where: {
-          clientId: sale.clientId,
-          productId: it.productId,
-          endDate: null,
-        },
-        data: {
-          endDate: new Date(),
-        },
-      });
+    const idsCambiados = cambios.map((c) => c.productId);
 
-      // upsert precio activo
+    // 2. Cerrar el historial abierto de TODOS los productos afectados de golpe.
+    await tx.clientProductPriceHistory.updateMany({
+      where: { clientId, productId: { in: idsCambiados }, endDate: null },
+      data: { endDate: ahora },
+    });
+
+    // 3. Fijar el precio activo.
+    //
+    // Prisma no tiene `upsertMany`, así que este bucle se queda — pero ahora
+    // recorre sólo lo que cambió, no la venta entera. Separar en updateMany +
+    // createMany daría una consulta menos a cambio de una condición de carrera
+    // entre la lectura y la escritura; no compensa.
+    for (const { productId, precio } of cambios) {
       await tx.clientProductPrice.upsert({
-        where: {
-          clientId_productId: {
-            clientId: sale.clientId,
-            productId: it.productId,
-          },
-        },
-        update: { price: newPrice, isActive: true },
-        create: {
-          clientId: sale.clientId,
-          productId: it.productId,
-          price: newPrice,
-        },
+        where: { clientId_productId: { clientId, productId } },
+        update: { price: precio, isActive: true },
+        create: { clientId, productId, price: precio },
       });
+    }
 
-      // crear nuevo historial
-      await tx.clientProductPriceHistory.create({
-        data: {
-          clientId: sale.clientId,
-          productId: it.productId,
-          changedById: userId!,
-          price: newPrice,
-          startDate: new Date(),
-        },
+    // 4. Abrir el historial nuevo, también en lote.
+    //
+    // `changedById` puede venir sin valor si la venta la cerró un proceso
+    // automático. Antes se forzaba con `userId!`, lo que insertaba `undefined`
+    // en una columna obligatoria y reventaba con un error de Prisma que no
+    // mencionaba ni el usuario ni la venta.
+    if (userId !== undefined) {
+      await tx.clientProductPriceHistory.createMany({
+        data: cambios.map(({ productId, precio }) => ({
+          clientId,
+          productId,
+          changedById: userId,
+          price: precio,
+          startDate: ahora,
+        })),
       });
+    } else {
+      this.logger.warn(
+        `Venta #${sale.id}: precios especiales actualizados sin usuario responsable. ` +
+          'No se registra historial de cambio de precio.',
+      );
     }
   }
 
