@@ -4,6 +4,21 @@ import { GetDashboardDto } from './dto/get-dashboard.dto';
 import { Decimal } from '@prisma/client/runtime/library';
 import { SaleFlowStatus, SaleStatus, Prisma } from '@prisma/client';
 
+/**
+ * Forma cruda de una fila del top de productos.
+ *
+ * `totalRevenue` se declara con los tres tipos posibles porque el driver de
+ * PostgreSQL devuelve NUMERIC como `Decimal`, como cadena o como número según
+ * la versión y la configuración. Declararlo como `number` a secas sería una
+ * mentira que reaparecería como `[object Object]` en el dashboard.
+ */
+interface FilaTopProducto {
+  name: string;
+  sku: string;
+  totalQuantity: number | string;
+  totalRevenue: Decimal | string | number | null;
+}
+
 @Injectable()
 export class AnalyticsService {
   private readonly logger = new Logger(AnalyticsService.name);
@@ -145,25 +160,46 @@ export class AnalyticsService {
   private async getTopProducts(startDate: Date, endDate: Date) {
     // RAW QUERY: Máximo rendimiento para reportes complejos.
     // Evita cargar miles de filas a la memoria de Node.js
-    const result = await this.prisma.$queryRaw`
-      SELECT 
+    //
+    // ─── POR QUÉ YA NO HAY `CAST(... AS FLOAT)` ───
+    // `subtotal` es `Decimal(12,2)`. Convertirlo a coma flotante para sumarlo
+    // introduce el error de representación binaria de siempre: 0.1 + 0.2 no da
+    // 0.3. Sobre miles de líneas de venta la desviación se acumula y el
+    // dashboard acaba mostrando un total que NO cuadra con la suma de los
+    // tickets. El gerente ve dos cifras distintas para lo mismo y no sabe a
+    // cuál creerle — y eso, en un reporte de ingresos, destruye la confianza en
+    // todo el sistema, no sólo en ese número.
+    //
+    // Se mantiene NUMERIC en la base y se convierte a `Decimal` en JavaScript,
+    // igual que en el resto del proyecto. `::numeric` explícito para que el tipo
+    // sea inequívoco aunque cambie el esquema.
+    const result = await this.prisma.$queryRaw<FilaTopProducto[]>`
+      SELECT
         p."name",
         p."sku",
         CAST(SUM(si."quantity") AS INTEGER) as "totalQuantity",
-        CAST(SUM(si."subtotal") AS FLOAT) as "totalRevenue"
+        CAST(SUM(si."subtotal") AS NUMERIC(14,2)) as "totalRevenue"
       FROM "SaleItem" si
       JOIN "Product" p ON p."id" = si."productId"
       JOIN "Sale" s ON s."id" = si."saleId"
-      WHERE s."flowStatus" = 'COMPLETED' 
+      WHERE s."flowStatus" = 'COMPLETED'
         AND s."status" != 'CANCELLED'
-        AND s."createdAt" >= ${startDate} 
+        AND s."createdAt" >= ${startDate}
         AND s."createdAt" <= ${endDate}
       GROUP BY p."id", p."name", p."sku"
       ORDER BY "totalQuantity" DESC
       LIMIT 5
     `;
 
-    return result;
+    // El driver entrega el NUMERIC como Decimal o como cadena según la versión.
+    // Normalizar aquí evita que cada consumidor adivine: la API expone siempre
+    // una cadena con dos decimales, que es lo que el front sabe formatear.
+    return result.map((fila) => ({
+      name: fila.name,
+      sku: fila.sku,
+      totalQuantity: Number(fila.totalQuantity),
+      totalRevenue: new Decimal(fila.totalRevenue ?? 0).toFixed(2),
+    }));
   }
 
   // --- HELPER DE FECHAS ---
