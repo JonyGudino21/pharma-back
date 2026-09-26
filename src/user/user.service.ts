@@ -6,6 +6,7 @@ import { EditUserDto } from './dto/edit-user.dto';
 import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
 import { USER_PUBLIC_SELECT } from './user.select';
 import { Prisma } from '@prisma/client';
+import { BCRYPT_ROUNDS } from 'src/common/utils/password.util';
 import {
   buildPaginationMeta,
   resolvePagination,
@@ -23,8 +24,7 @@ export class UserService {
    * @returns  El usuario creado
    */
   async createUser(data: CreateUserDto) {
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(data.password, salt);
+    const hashedPassword = await bcrypt.hash(data.password, BCRYPT_ROUNDS);
 
     return this.prisma.user.create({
       data: {
@@ -167,22 +167,60 @@ export class UserService {
     //Validar password
     let hashedPassword: string | undefined = undefined;
     if (data.password) {
-      const salt = await bcrypt.genSalt(10);
-      hashedPassword = await bcrypt.hash(data.password, salt);
+      hashedPassword = await bcrypt.hash(data.password, BCRYPT_ROUNDS);
     }
 
-    return await this.prisma.user.update({
-      where: { id },
-      data: {
-        firstName: data.firstName,
-        lastName: data.lastName,
-        userName: data.userName,
-        email: data.email,
-        role: data.role,
-        isActive: data.isActive,
-        password: hashedPassword ? hashedPassword : undefined,
-      },
-      select: USER_PUBLIC_SELECT,
+    // ¿Este cambio invalida las sesiones abiertas?
+    //
+    // Antes, cambiarle la contraseña a un usuario —o bajarle el rol, o darlo de
+    // baja— no cerraba sus sesiones. Si el cambio se hacía PORQUE su cuenta
+    // estaba comprometida, el atacante seguía dentro con su refresh token
+    // durante días. Y un cajero degradado conservaba permisos de gerente hasta
+    // que su token caducaba.
+    const invalidaSesiones =
+      hashedPassword !== undefined ||
+      (data.role !== undefined && data.role !== user.role) ||
+      data.isActive === false;
+
+    return await this.prisma.$transaction(async (tx) => {
+      const actualizado = await tx.user.update({
+        where: { id },
+        data: {
+          firstName: data.firstName,
+          lastName: data.lastName,
+          userName: data.userName,
+          email: data.email,
+          role: data.role,
+          isActive: data.isActive,
+          password: hashedPassword ? hashedPassword : undefined,
+        },
+        select: USER_PUBLIC_SELECT,
+      });
+
+      if (invalidaSesiones) {
+        await this.revocarSesiones(tx, id);
+      }
+
+      return actualizado;
+    });
+  }
+
+  /**
+   * Revoca TODOS los refresh tokens vigentes de un usuario.
+   *
+   * El access token que ya tenga sigue valiendo hasta que caduque (15 min por
+   * defecto): es el precio de no consultar la base en cada petición para el
+   * token. Pero el `JwtStrategy` sí relee `isActive` en cada petición, así que
+   * una baja surte efecto de inmediato; y un cambio de rol se aplica en la
+   * siguiente renovación, que ya no será posible.
+   */
+  private async revocarSesiones(
+    tx: Prisma.TransactionClient,
+    userId: number,
+  ): Promise<void> {
+    await tx.userToken.updateMany({
+      where: { userId, revoked: false },
+      data: { revoked: true, revokedAt: new Date() },
     });
   }
 
@@ -199,12 +237,20 @@ export class UserService {
       throw new NotFoundException('Usuario no existente');
     }
 
-    return await this.prisma.user.update({
-      where: { id },
-      data: {
-        isActive: false,
-      },
-      select: USER_PUBLIC_SELECT,
+    // Dar de baja cierra sus sesiones en el mismo movimiento. Si no, el usuario
+    // despedido seguía pudiendo renovar su sesión hasta que el refresh token
+    // caducara por su cuenta.
+    return await this.prisma.$transaction(async (tx) => {
+      const desactivado = await tx.user.update({
+        where: { id },
+        data: {
+          isActive: false,
+        },
+        select: USER_PUBLIC_SELECT,
+      });
+
+      await this.revocarSesiones(tx, id);
+      return desactivado;
     });
   }
 }
