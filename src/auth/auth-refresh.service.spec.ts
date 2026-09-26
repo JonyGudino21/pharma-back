@@ -58,6 +58,9 @@ describe('AuthService · renovación de sesión', () => {
     );
 
   beforeEach(async () => {
+    // Se restaura porque las pruebas de `accessTokenMaxAgeMs` la modifican.
+    CLAVES.JWT_EXPIRES_IN = '15m';
+
     tokens = {
       findValidateRefreshToken: jest.fn().mockResolvedValue({
         id: 99,
@@ -69,9 +72,8 @@ describe('AuthService · renovación de sesión', () => {
       // servicio conservó la caducidad original en vez de recalcularla.
       rotateRefreshToken: jest
         .fn()
-        .mockImplementation(
-          (_viejo: string, _nuevo: string, expiresAt: Date) =>
-            Promise.resolve({ id: 99, expiresAt }),
+        .mockImplementation((_viejo: string, _nuevo: string, expiresAt: Date) =>
+          Promise.resolve({ id: 99, expiresAt }),
         ),
       revokeRefreshToken: jest.fn().mockResolvedValue({ revoked: 1 }),
     };
@@ -83,7 +85,9 @@ describe('AuthService · renovación de sesión', () => {
         AuthService,
         {
           provide: PrismaService,
-          useValue: { user: { findUnique: jest.fn().mockResolvedValue(usuario) } },
+          useValue: {
+            user: { findUnique: jest.fn().mockResolvedValue(usuario) },
+          },
         },
         { provide: TokenService, useValue: tokens },
         { provide: AuthAuditService, useValue: audit },
@@ -131,6 +135,33 @@ describe('AuthService · renovación de sesión', () => {
     });
   });
 
+  describe('vida del access token para la cookie', () => {
+    // La cookie httpOnly y la firma del token deben caducar a la vez. Si se
+    // escribieran por separado, una cookie que sobrevive a su token produce 401
+    // hasta que el usuario borra cookies a mano, y una que muere antes tira una
+    // sesión todavía válida. Por eso el valor sale de la MISMA variable.
+    it.each([
+      ['15m', 15 * 60 * 1000],
+      ['2h', 2 * 60 * 60 * 1000],
+      ['7d', 7 * 24 * 60 * 60 * 1000],
+      ['30s', 30 * 1000],
+      ['600', 600 * 1000], // sin unidad, jsonwebtoken lo lee como segundos
+    ])('traduce JWT_EXPIRES_IN="%s" a milisegundos', (valor, esperado) => {
+      CLAVES.JWT_EXPIRES_IN = valor;
+      expect(service.accessTokenMaxAgeMs()).toBe(esperado);
+    });
+
+    it('un formato irreconocible cae en 15 minutos y no en NaN', () => {
+      // Un NaN en `maxAge` hace que el navegador descarte la cookie: el usuario
+      // iniciaría sesión y quedaría fuera en el mismo clic, sin ningún mensaje.
+      CLAVES.JWT_EXPIRES_IN = 'quince minutos';
+      const ms = service.accessTokenMaxAgeMs();
+
+      expect(Number.isFinite(ms)).toBe(true);
+      expect(ms).toBe(15 * 60 * 1000);
+    });
+  });
+
   describe('detección de reuso', () => {
     it('si la huella ya fue rotada, NO entrega los tokens nuevos', async () => {
       // `rotateRefreshToken` devuelve null cuando el UPDATE condicional no
@@ -151,7 +182,9 @@ describe('AuthService · renovación de sesión', () => {
 
       expect(audit.record).toHaveBeenCalledWith(
         'refresh.rejected',
-        expect.objectContaining({ reason: 'token-ya-rotado-por-otra-peticion' }),
+        expect.objectContaining({
+          reason: 'token-ya-rotado-por-otra-peticion',
+        }),
       );
     });
 

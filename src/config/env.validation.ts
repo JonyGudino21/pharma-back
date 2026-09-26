@@ -40,6 +40,52 @@ export const envValidationSchema = Joi.object({
   // es una combinacion invalida que los navegadores rechazan.
   FRONTEND_URL: Joi.string().required(),
 
+  // ── Cookies de sesión (Fase 4) ────────────────────────────────────────────
+  // Los tokens viajan en cookies httpOnly: JavaScript ya no puede leerlos, así
+  // que un XSS no puede exfiltrar la sesión.
+  //
+  // COOKIE_SECURE obliga a HTTPS. En desarrollo va en 'false' porque la terminal
+  // corre sobre http://localhost y el navegador DESCARTA una cookie `secure`
+  // servida por http: la sesión simplemente no funcionaría, con un síntoma
+  // (401 en bucle) que no apunta a la causa.
+  //
+  // EN PRODUCCIÓN DEBE SER 'true'. La validación de abajo lo exige.
+  COOKIE_SECURE: Joi.string()
+    .valid('true', 'false')
+    .default('false')
+    .when('NODE_ENV', {
+      is: 'production',
+      then: Joi.valid('true').messages({
+        'any.only':
+          'COOKIE_SECURE debe ser "true" en produccion: sin HTTPS la cookie de sesion viaja en claro.',
+      }),
+    }),
+
+  // 'lax' sirve cuando el front y el API comparten sitio (mismo dominio, o
+  // distinto puerto de localhost). Si se despliegan en dominios distintos hace
+  // falta 'none', que a su vez EXIGE secure: el navegador rechaza
+  // SameSite=None sin Secure.
+  COOKIE_SAME_SITE: Joi.string()
+    .valid('lax', 'strict', 'none')
+    .default('lax')
+    .when('COOKIE_SECURE', {
+      is: 'false',
+      then: Joi.invalid('none').messages({
+        'any.invalid':
+          'SameSite=None exige Secure: el navegador descartaria la cookie en silencio.',
+      }),
+    }),
+
+  // Dominio de la cookie. Vacío = sólo el host que la emitió, que es lo más
+  // restrictivo y lo correcto salvo que front y API vivan en subdominios
+  // distintos del mismo dominio.
+  COOKIE_DOMAIN: Joi.string().allow('').optional(),
+
+  // 'true' SÓLO si hay un proxy inverso delante (Nginx, un balanceador, Cloud
+  // Run). Sin proxy, confiar en X-Forwarded-For deja que cualquiera falsifique
+  // su IP y esquive el límite de intentos de login.
+  TRUST_PROXY: Joi.string().valid('true', 'false').default('false'),
+
   TOLERANCE_THRESHOLD: Joi.number().default(20),
 
   // Regla sanitaria, no decisión de implementación: ¿un lote cuya caducidad es
