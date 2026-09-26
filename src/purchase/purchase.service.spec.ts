@@ -10,6 +10,12 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { InventoryBatchesService } from '../inventory/inventory-batches.service';
 import { CashShiftService } from '../cash-shift/cash-shift.service';
+import {
+  argDe,
+  argsDe,
+  dataDe as dataDeLlamada,
+  ordenDe,
+} from '../common/testing/mock-inspect.util';
 
 /**
  * Contrato de COMPRAS. No requiere base de datos.
@@ -109,8 +115,13 @@ describe('PurchaseService — recepción, costo promedio y cancelación', () => 
     controlled: false,
   };
 
-  const dataDe = (mock: jest.Mock, i = 0) =>
-    (mock.mock.calls[i][0] as { data: Record<string, unknown> }).data;
+  /**
+   * `data` de una llamada a Prisma. Devuelve `Record<string, unknown>`, así que
+   * cada aserción declara el tipo que espera con un `as` visible en vez de
+   * navegar a ciegas por un `any`.
+   */
+  const dataDe = (mock: unknown, i = 0) =>
+    dataDeLlamada<Record<string, unknown>>(mock, i);
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -157,7 +168,9 @@ describe('PurchaseService — recepción, costo promedio y cancelación', () => 
       await service.receive(5, 99);
 
       expect(tx.product.update).toHaveBeenCalledTimes(1);
-      expect((dataDe(tx.product.update).cost as Decimal).toString()).toBe('150');
+      expect((dataDe(tx.product.update).cost as Decimal).toString()).toBe(
+        '150',
+      );
     });
 
     it('pondera por cantidad: 90 u a $100 + 10 u a $200 da $110, no $150', async () => {
@@ -169,7 +182,9 @@ describe('PurchaseService — recepción, costo promedio y cancelación', () => 
       await service.receive(5, 99);
 
       // (90×100 + 10×200) / 100 = 11,000 / 100 = 110
-      expect((dataDe(tx.product.update).cost as Decimal).toString()).toBe('110');
+      expect((dataDe(tx.product.update).cost as Decimal).toString()).toBe(
+        '110',
+      );
     });
 
     it('bloquea la fila del producto ANTES de leerla para recalcular', async () => {
@@ -178,8 +193,8 @@ describe('PurchaseService — recepción, costo promedio y cancelación', () => 
       // Sin el bloqueo, dos recepciones del mismo producto leen el mismo costo
       // y una sobreescribe el promedio calculado por la otra.
       expect(mockInventory.lockProductRow).toHaveBeenCalledWith(tx, 100);
-      expect(mockInventory.lockProductRow.mock.invocationCallOrder[0]).toBeLessThan(
-        tx.product.findUnique.mock.invocationCallOrder[0],
+      expect(ordenDe(mockInventory.lockProductRow)).toBeLessThan(
+        ordenDe(tx.product.findUnique),
       );
     });
 
@@ -201,7 +216,9 @@ describe('PurchaseService — recepción, costo promedio y cancelación', () => 
 
       await service.receive(5, 99);
 
-      expect((dataDe(tx.product.update).cost as Decimal).toString()).toBe('100');
+      expect((dataDe(tx.product.update).cost as Decimal).toString()).toBe(
+        '100',
+      );
       expect(tx.productPriceHistory.create).not.toHaveBeenCalled();
     });
 
@@ -214,7 +231,9 @@ describe('PurchaseService — recepción, costo promedio y cancelación', () => 
 
       await service.receive(5, 99);
 
-      expect((dataDe(tx.product.update).cost as Decimal).toString()).toBe('200');
+      expect((dataDe(tx.product.update).cost as Decimal).toString()).toBe(
+        '200',
+      );
     });
 
     it('procesa los items en orden ascendente de productId (previene deadlocks)', async () => {
@@ -226,19 +245,19 @@ describe('PurchaseService — recepción, costo promedio y cancelación', () => 
           { ...item, id: 53, productId: 200 },
         ],
       });
-      tx.product.findUnique.mockImplementation(
-        ({ where }: { where: { id: number } }) => ({
-          ...productoExistente,
-          id: where.id,
-        }),
-      );
+      tx.product.findUnique.mockImplementation((args: unknown) => {
+        const { where } = args as { where: { id: number } };
+        return Promise.resolve({ ...productoExistente, id: where.id });
+      });
 
       await service.receive(5, 99);
 
       // Dos transacciones que tocan los mismos productos en el mismo orden
       // esperan; en orden distinto se abrazan y PostgreSQL mata a una.
-      const orden = mockInventory.lockProductRow.mock.calls.map((c) => c[1]);
-      expect(orden).toEqual([100, 200, 300]);
+      // El productId es el SEGUNDO argumento de lockProductRow(tx, productId).
+      expect(argsDe<number>(mockInventory.lockProductRow, 1)).toEqual([
+        100, 200, 300,
+      ]);
     });
   });
 
@@ -247,15 +266,14 @@ describe('PurchaseService — recepción, costo promedio y cancelación', () => 
     it('reclama la transición PENDING → RECEIVED con un UPDATE condicional', async () => {
       await service.receive(5, 99);
 
-      expect(tx.purchase.updateMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: expect.objectContaining({
-            id: 5,
-            deliveryStatus: 'PENDING',
-          }),
-          data: { deliveryStatus: 'RECEIVED' },
-        }),
-      );
+      // Se lee el argumento tipado en vez de anidar `expect.objectContaining`
+      // dentro de un literal: esos matchers devuelven `any` y ESLint lo marca.
+      const { where, data } = argDe<{
+        where: Record<string, unknown>;
+        data: unknown;
+      }>(tx.purchase.updateMany);
+      expect(where).toMatchObject({ id: 5, deliveryStatus: 'PENDING' });
+      expect(data).toEqual({ deliveryStatus: 'RECEIVED' });
     });
 
     it('la segunda recepción simultánea no suma stock ni deuda otra vez', async () => {
@@ -295,12 +313,12 @@ describe('PurchaseService — recepción, costo promedio y cancelación', () => 
     it('la deuda se hace oficial al recibir la mercancía, no al ordenarla', async () => {
       await service.receive(5, 99);
 
-      expect(tx.supplier.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { id: 3 },
-          data: { balance: { increment: expect.anything() } },
-        }),
-      );
+      const { where, data } = argDe<{
+        where: unknown;
+        data: { balance?: { increment?: unknown } };
+      }>(tx.supplier.update);
+      expect(where).toEqual({ id: 3 });
+      expect(data.balance?.increment).toBeDefined();
     });
 
     it('usa el balance FRESCO leído dentro de la transacción', async () => {
@@ -335,7 +353,11 @@ describe('PurchaseService — recepción, costo promedio y cancelación', () => 
       tx.purchase.findUnique.mockResolvedValue({
         ...compraPendiente,
         items: [
-          { ...item, lotNumber: 'L-2026-A', expiryDate: new Date('2027-06-30') },
+          {
+            ...item,
+            lotNumber: 'L-2026-A',
+            expiryDate: new Date('2027-06-30'),
+          },
         ],
       });
 
@@ -431,7 +453,9 @@ describe('PurchaseService — recepción, costo promedio y cancelación', () => 
 
       // valorActual 20×150 = 3,000 − (10×200 = 2,000) = 1,000 / 10 u = $100
       // Justo el costo que el producto tenía antes de esta compra.
-      expect((dataDe(tx.product.update).cost as Decimal).toString()).toBe('100');
+      expect((dataDe(tx.product.update).cost as Decimal).toString()).toBe(
+        '100',
+      );
     });
 
     it('retira el valor al costo REAL de la compra, no al promedio vigente', async () => {
@@ -478,8 +502,8 @@ describe('PurchaseService — recepción, costo promedio y cancelación', () => 
 
       // El orden importa: el cálculo necesita leer el stock que TODAVÍA
       // incluye la mercancía de esta compra.
-      expect(tx.product.update.mock.invocationCallOrder[0]).toBeLessThan(
-        mockInventory.registerMovement.mock.invocationCallOrder[0],
+      expect(ordenDe(tx.product.update)).toBeLessThan(
+        ordenDe(mockInventory.registerMovement),
       );
     });
 
@@ -496,7 +520,8 @@ describe('PurchaseService — recepción, costo promedio y cancelación', () => 
         tx,
         expect.anything(),
       );
-      const costo = mockInventory.registerMovement.mock.calls[0][3] as Decimal;
+      // 4.º argumento: el costo unitario REAL de la compra, no el promedio.
+      const costo = argDe<Decimal>(mockInventory.registerMovement, 0, 3);
       expect(costo.toString()).toBe('200');
     });
 
@@ -504,7 +529,11 @@ describe('PurchaseService — recepción, costo promedio y cancelación', () => 
       tx.purchase.findUnique.mockResolvedValue({
         ...compraRecibida,
         items: [
-          { ...item, lotNumber: 'L-2026-A', expiryDate: new Date('2027-06-30') },
+          {
+            ...item,
+            lotNumber: 'L-2026-A',
+            expiryDate: new Date('2027-06-30'),
+          },
         ],
       });
       tx.productBatch.findUnique.mockResolvedValue(null);
@@ -604,16 +633,37 @@ describe('PurchaseService — recepción, costo promedio y cancelación', () => 
     it('anula la deuda de la compra al cancelar', async () => {
       await service.cancel(5, 99);
 
-      const ultima = tx.purchase.update.mock.calls.at(-1)![0] as {
-        data: { balance: Decimal; deliveryStatus: string };
-      };
-      expect(ultima.data.balance.toString()).toBe('0');
-      expect(ultima.data.deliveryStatus).toBe('CANCELLED');
+      // -1: la ÚLTIMA actualización de la transacción, que es la que cierra la
+      // compra. Las anteriores pueden ser ajustes intermedios.
+      const ultima = dataDeLlamada<{
+        balance: Decimal;
+        deliveryStatus: string;
+      }>(tx.purchase.update, -1);
+
+      expect(ultima.balance.toString()).toBe('0');
+      expect(ultima.deliveryStatus).toBe('CANCELLED');
     });
   });
 
   // ══════════════════════════════════════════════════════════════════
   describe('pagos a proveedor', () => {
+    /** Estado de la compra DESPUÉS de aplicar el pago, leído en la transacción. */
+    const despuesDelPago = (balance: number, deliveryStatus = 'PENDING') =>
+      tx.purchase.findUniqueOrThrow.mockResolvedValue({
+        balance: new Decimal(balance),
+        supplierId: 3,
+        deliveryStatus,
+        invoiceNumber: 'F-001',
+      });
+
+    beforeEach(() => {
+      despuesDelPago(1500);
+      tx.purchasePayment.create.mockResolvedValue({ id: 900 });
+    });
+
+    const pagar = (amount: number, method = 'TRANSFER') =>
+      service.addPayment(5, { method, amount } as never, 99);
+
     it('rechaza pagar una compra que ya está saldada', async () => {
       mockPrisma.purchase.findUnique.mockResolvedValue({
         ...compraPendiente,
@@ -622,9 +672,7 @@ describe('PurchaseService — recepción, costo promedio y cancelación', () => 
         status: 'PAID',
       });
 
-      await expect(
-        service.addPayment(5, { method: 'CASH', amount: 100 } as never, 99),
-      ).rejects.toThrow(BadRequestException);
+      await expect(pagar(100, 'CASH')).rejects.toThrow(BadRequestException);
       expect(tx.purchasePayment.create).not.toHaveBeenCalled();
     });
 
@@ -634,90 +682,124 @@ describe('PurchaseService — recepción, costo promedio y cancelación', () => 
         status: 'CANCELLED',
       });
 
-      await expect(
-        service.addPayment(5, { method: 'CASH', amount: 100 } as never, 99),
-      ).rejects.toThrow(BadRequestException);
+      await expect(pagar(100, 'CASH')).rejects.toThrow(BadRequestException);
     });
 
-    it('un pago en efectivo exige caja abierta', async () => {
-      mockCashShift.getCurrentShift.mockResolvedValue(null);
+    describe('guarda atómica del saldo', () => {
+      it('aplica el pago con incremento/decremento en la MISMA sentencia', async () => {
+        await pagar(500);
 
-      await expect(
-        service.addPayment(5, { method: 'CASH', amount: 100 } as never, 99),
-      ).rejects.toThrow(ConflictException);
-      expect(tx.purchasePayment.create).not.toHaveBeenCalled();
-    });
+        const { where, data } = argDe<{
+          where: { id: number; balance: { gte: Decimal } };
+          data: {
+            paidAmount: { increment: Decimal };
+            balance: { decrement: Decimal };
+          };
+        }>(tx.purchase.updateMany);
 
-    it('un pago por transferencia NO toca la caja física', async () => {
-      await service.addPayment(
-        5,
-        { method: 'TRANSFER', amount: 500 } as never,
-        99,
-      );
-
-      expect(tx.cashTransaction.create).not.toHaveBeenCalled();
-      expect(tx.purchasePayment.create).toHaveBeenCalled();
-    });
-
-    it('un abono parcial deja la compra en PARTIAL con el saldo correcto', async () => {
-      await service.addPayment(
-        5,
-        { method: 'TRANSFER', amount: 500 } as never,
-        99,
-      );
-
-      const data = dataDe(tx.purchase.update) as {
-        paidAmount: Decimal;
-        balance: Decimal;
-        status: string;
-      };
-      expect(data.paidAmount.toString()).toBe('500');
-      expect(data.balance.toString()).toBe('1500');
-      expect(data.status).toBe('PARTIAL');
-    });
-
-    it('el pago que cubre el total deja la compra en PAID', async () => {
-      await service.addPayment(
-        5,
-        { method: 'TRANSFER', amount: 2000 } as never,
-        99,
-      );
-
-      const data = dataDe(tx.purchase.update) as {
-        balance: Decimal;
-        status: string;
-      };
-      expect(data.balance.toString()).toBe('0');
-      expect(data.status).toBe('PAID');
-    });
-
-    it('si la mercancía ya se recibió, pagar baja la deuda del proveedor', async () => {
-      mockPrisma.purchase.findUnique.mockResolvedValue({
-        ...compraPendiente,
-        deliveryStatus: 'RECEIVED',
+        // La condición `balance >= monto` la evalúa la base junto con la
+        // escritura: dos pagos simultáneos no pueden leer el mismo saldo.
+        expect(where.id).toBe(5);
+        expect(where.balance.gte.toString()).toBe('500');
+        expect(data.paidAmount.increment.toString()).toBe('500');
+        expect(data.balance.decrement.toString()).toBe('500');
       });
 
-      await service.addPayment(
-        5,
-        { method: 'TRANSFER', amount: 500 } as never,
-        99,
-      );
+      it('un pago mayor que el saldo se rechaza SIN mover dinero', async () => {
+        // La base no encontró fila con saldo suficiente.
+        tx.purchase.updateMany.mockResolvedValue({ count: 0 });
 
-      expect(
-        (dataDe(tx.supplier.update).balance as { decrement: number }).decrement,
-      ).toBe(500);
+        await expect(pagar(5000, 'CASH')).rejects.toThrow(ConflictException);
+
+        // Lo crítico: ni asiento de pago, ni salida de caja, ni deuda tocada.
+        expect(tx.purchasePayment.create).not.toHaveBeenCalled();
+        expect(tx.cashTransaction.create).not.toHaveBeenCalled();
+        expect(tx.supplier.update).not.toHaveBeenCalled();
+      });
+
+      it('el segundo de dos pagos simultáneos que agotan el saldo se rechaza', async () => {
+        // Primero pasa, segundo encuentra el saldo ya consumido.
+        tx.purchase.updateMany
+          .mockResolvedValueOnce({ count: 1 })
+          .mockResolvedValueOnce({ count: 0 });
+
+        await expect(pagar(2000)).resolves.toEqual({ id: 900 });
+        await expect(pagar(2000)).rejects.toThrow(ConflictException);
+        expect(tx.purchasePayment.create).toHaveBeenCalledTimes(1);
+      });
     });
 
-    it('si aún no se recibe, pagar NO altera el saldo del proveedor', async () => {
-      // La deuda todavía no existe: se carga al recibir. Descontarla ahora
-      // dejaría al proveedor con saldo a favor inventado.
-      await service.addPayment(
-        5,
-        { method: 'TRANSFER', amount: 500 } as never,
-        99,
-      );
+    describe('estado de la compra', () => {
+      it('con saldo restante queda en PARTIAL', async () => {
+        despuesDelPago(1500);
+        await pagar(500);
+        expect(dataDe(tx.purchase.update).status).toBe('PARTIAL');
+      });
 
-      expect(tx.supplier.update).not.toHaveBeenCalled();
+      it('saldada por completo queda en PAID', async () => {
+        despuesDelPago(0);
+        await pagar(2000);
+        expect(dataDe(tx.purchase.update).status).toBe('PAID');
+      });
+    });
+
+    describe('caja', () => {
+      it('un pago en efectivo exige caja abierta', async () => {
+        mockCashShift.getCurrentShift.mockResolvedValue(null);
+
+        await expect(pagar(100, 'CASH')).rejects.toThrow(ConflictException);
+        expect(tx.purchasePayment.create).not.toHaveBeenCalled();
+      });
+
+      it('el efectivo sale de la caja por el monto exacto', async () => {
+        await pagar(500, 'CASH');
+
+        const data = dataDe(tx.cashTransaction.create);
+        expect(data.type).toBe('EXPENSE');
+        expect((data.amount as Decimal).toString()).toBe('500');
+      });
+
+      it('un pago por transferencia NO toca la caja física', async () => {
+        await pagar(500, 'TRANSFER');
+
+        expect(tx.cashTransaction.create).not.toHaveBeenCalled();
+        expect(tx.purchasePayment.create).toHaveBeenCalled();
+      });
+    });
+
+    describe('deuda con el proveedor', () => {
+      it('si la mercancía ya se recibió, pagar baja la deuda del proveedor', async () => {
+        despuesDelPago(1500, 'RECEIVED');
+
+        await pagar(500);
+
+        const dec = (
+          dataDe(tx.supplier.update).balance as { decrement: Decimal }
+        ).decrement;
+        expect(dec.toString()).toBe('500');
+      });
+
+      it('si aún no se recibe, pagar NO altera el saldo del proveedor', async () => {
+        // La deuda todavía no existe: se carga al recibir. Descontarla ahora
+        // dejaría al proveedor con saldo a favor inventado.
+        despuesDelPago(1500, 'PENDING');
+
+        await pagar(500);
+
+        expect(tx.supplier.update).not.toHaveBeenCalled();
+      });
+
+      it('decide con el estado FRESCO, no con el leído antes de la transacción', async () => {
+        // Antes de la transacción la compra se leyó PENDIENTE; mientras tanto
+        // otra caja la recibió. Con el dato viejo, el pago no bajaría la deuda
+        // que el proveedor ya tiene cargada.
+        mockPrisma.purchase.findUnique.mockResolvedValue(compraPendiente);
+        despuesDelPago(1500, 'RECEIVED');
+
+        await pagar(500);
+
+        expect(tx.supplier.update).toHaveBeenCalled();
+      });
     });
   });
 
