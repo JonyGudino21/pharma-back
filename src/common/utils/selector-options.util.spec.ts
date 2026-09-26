@@ -5,7 +5,10 @@ import {
 } from './selector-options.util';
 
 const filas = (n: number) =>
-  Array.from({ length: n }, (_, i) => ({ id: i + 1, name: `Registro ${i + 1}` }));
+  Array.from({ length: n }, (_, i) => ({
+    id: i + 1,
+    name: `Registro ${i + 1}`,
+  }));
 
 /**
  * Los selectores se alimentaban del endpoint paginado de las tablas, con

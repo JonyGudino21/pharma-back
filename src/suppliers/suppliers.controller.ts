@@ -72,7 +72,10 @@ export class SuppliersController {
   @Get('options')
   async findOptions() {
     const data = await this.suppliersService.findOptions();
-    return ApiResponse.ok(data, 'Opciones de proveedor obtenidas correctamente');
+    return ApiResponse.ok(
+      data,
+      'Opciones de proveedor obtenidas correctamente',
+    );
   }
 
   /**

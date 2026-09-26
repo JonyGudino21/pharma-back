@@ -38,7 +38,9 @@ describe('resolvePagination — la paginación ya no se puede evitar', () => {
     });
 
     it('el máximo es alcanzable, no se recorta de más', () => {
-      expect(resolvePagination({ limit: MAX_PAGE_SIZE }).take).toBe(MAX_PAGE_SIZE);
+      expect(resolvePagination({ limit: MAX_PAGE_SIZE }).take).toBe(
+        MAX_PAGE_SIZE,
+      );
     });
   });
 
@@ -81,7 +83,10 @@ describe('resolvePagination — la paginación ya no se puede evitar', () => {
 
 describe('buildPaginationMeta', () => {
   it('calcula el total de páginas redondeando hacia arriba', () => {
-    const meta = buildPaginationMeta(45, resolvePagination({ page: 1, limit: 20 }));
+    const meta = buildPaginationMeta(
+      45,
+      resolvePagination({ page: 1, limit: 20 }),
+    );
     expect(meta.totalPages).toBe(3);
   });
 
@@ -93,11 +98,17 @@ describe('buildPaginationMeta', () => {
   });
 
   it('hasNext y hasPrev se calculan aquí, no en cada pantalla', () => {
-    const primera = buildPaginationMeta(50, resolvePagination({ page: 1, limit: 20 }));
+    const primera = buildPaginationMeta(
+      50,
+      resolvePagination({ page: 1, limit: 20 }),
+    );
     expect(primera.hasPrev).toBe(false);
     expect(primera.hasNext).toBe(true);
 
-    const ultima = buildPaginationMeta(50, resolvePagination({ page: 3, limit: 20 }));
+    const ultima = buildPaginationMeta(
+      50,
+      resolvePagination({ page: 3, limit: 20 }),
+    );
     expect(ultima.hasPrev).toBe(true);
     expect(ultima.hasNext).toBe(false);
   });
@@ -111,7 +122,10 @@ describe('buildPaginationMeta', () => {
   it('devuelve el límite REALMENTE aplicado, no el pedido', () => {
     // Si el cliente pide 5.000 y le servimos 100, la respuesta debe decir 100:
     // con el valor pedido, el front calcularía mal cuántas páginas quedan.
-    const meta = buildPaginationMeta(1_000, resolvePagination({ limit: 5_000 }));
+    const meta = buildPaginationMeta(
+      1_000,
+      resolvePagination({ limit: 5_000 }),
+    );
     expect(meta.limit).toBe(MAX_PAGE_SIZE);
     expect(meta.totalPages).toBe(10);
   });

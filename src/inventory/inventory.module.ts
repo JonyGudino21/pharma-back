@@ -13,6 +13,10 @@ import { PrismaModule } from '../../prisma/prisma.module';
     ControlledLogExportService,
   ],
   imports: [PrismaModule],
-  exports: [InventoryService, InventoryBatchesService, ControlledLogExportService],
+  exports: [
+    InventoryService,
+    InventoryBatchesService,
+    ControlledLogExportService,
+  ],
 })
 export class InventoryModule {}

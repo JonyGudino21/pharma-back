@@ -82,7 +82,9 @@ export class AllExceptionsFilter implements ExceptionFilter {
     // el servidor, incluso cuando la respuesta al cliente es un 404 o un 409
     // limpio: es lo que permite diagnosticar desde el requestId del ticket.
     if (prismaMapped && exception instanceof Error) {
-      this.logger.warn(`${linea} prisma: ${exception.message.split('\n').join(' ')}`);
+      this.logger.warn(
+        `${linea} prisma: ${exception.message.split('\n').join(' ')}`,
+      );
     }
 
     if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {

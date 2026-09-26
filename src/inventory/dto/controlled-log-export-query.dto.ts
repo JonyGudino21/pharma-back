@@ -1,4 +1,10 @@
-import { IsEnum, IsInt, IsISO8601, IsOptional, IsPositive } from 'class-validator';
+import {
+  IsEnum,
+  IsInt,
+  IsISO8601,
+  IsOptional,
+  IsPositive,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 import { ControlledLogEntryType } from '@prisma/client';
 

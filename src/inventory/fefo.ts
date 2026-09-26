@@ -144,7 +144,10 @@ export function restoreFefo(
   return restored;
 }
 
-export function daysUntilExpiry(expiryDate: Date, today: Date = todayInMexico()): number {
+export function daysUntilExpiry(
+  expiryDate: Date,
+  today: Date = todayInMexico(),
+): number {
   const ms =
     toUtcDateOnly(expiryDate).getTime() - toUtcDateOnly(today).getTime();
   return Math.round(ms / 86_400_000);

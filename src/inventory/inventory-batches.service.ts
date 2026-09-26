@@ -5,11 +5,7 @@ import {
   NotFoundException,
   Logger,
 } from '@nestjs/common';
-import {
-  ControlledLogEntryType,
-  MovementType,
-  Prisma,
-} from '@prisma/client';
+import { ControlledLogEntryType, MovementType, Prisma } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { PrismaService } from '../../prisma/prisma.service';
 import { InventoryService } from './inventory.service';
@@ -43,7 +39,12 @@ export class InventoryBatchesService {
   async getSellableQuantity(
     productId: number,
     tx?: Prisma.TransactionClient,
-  ): Promise<{ stock: number; sellable: number; expired: number; name: string }> {
+  ): Promise<{
+    stock: number;
+    sellable: number;
+    expired: number;
+    name: string;
+  }> {
     const db = tx ?? this.prisma;
     const product = await db.product.findUnique({
       where: { id: productId },
@@ -93,7 +94,10 @@ export class InventoryBatchesService {
       reason: string;
     },
     userId: number,
-  ): Promise<{ totalCost: Decimal; takes: { batchId: number; quantity: number }[] }> {
+  ): Promise<{
+    totalCost: Decimal;
+    takes: { batchId: number; quantity: number }[];
+  }> {
     await this.inventory.lockProductRow(tx, params.productId);
 
     const product = await tx.product.findUnique({
@@ -109,7 +113,11 @@ export class InventoryBatchesService {
 
     const batchSum = batches.reduce((acc, b) => acc + b.quantity, 0);
     const unbatched = Math.max(0, product.stock - batchSum);
-    const { takes, missing } = allocateFefo(batches, params.quantity, todayInMexico());
+    const { takes, missing } = allocateFefo(
+      batches,
+      params.quantity,
+      todayInMexico(),
+    );
 
     let unbatchedTake = 0;
     if (missing > 0) {
@@ -389,16 +397,22 @@ export class InventoryBatchesService {
     userId: number,
   ) {
     if (!Number.isInteger(quantity) || quantity < 1) {
-      throw new BadRequestException('La cantidad a destruir debe ser un entero mayor a 0');
+      throw new BadRequestException(
+        'La cantidad a destruir debe ser un entero mayor a 0',
+      );
     }
     if (!reason.trim()) {
-      throw new BadRequestException('Indica el motivo de la merma o destrucción');
+      throw new BadRequestException(
+        'Indica el motivo de la merma o destrucción',
+      );
     }
 
     return this.prisma.$transaction(async (tx) => {
       const batch = await tx.productBatch.findUnique({
         where: { id: batchId },
-        include: { product: { select: { id: true, name: true, controlled: true } } },
+        include: {
+          product: { select: { id: true, name: true, controlled: true } },
+        },
       });
       if (!batch) throw new NotFoundException('Lote no encontrado');
 
@@ -432,11 +446,7 @@ export class InventoryBatchesService {
     });
   }
 
-  async listExpiring(query: {
-    days?: number;
-    page?: number;
-    limit?: number;
-  }) {
+  async listExpiring(query: { days?: number; page?: number; limit?: number }) {
     const days = query.days ?? 90;
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
