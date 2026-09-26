@@ -22,6 +22,13 @@ import {
   resolvePagination,
 } from 'src/common/utils/pagination.util';
 
+/**
+ * Espacio de nombres del bloqueo consultivo para "abrir turno". Cualquier
+ * entero sirve mientras no lo use otra parte del sistema para otra cosa; se deja
+ * como constante con nombre para que nadie lo reutilice por accidente.
+ */
+const LOCK_TURNO_POR_USUARIO = 7001;
+
 @Injectable()
 export class CashShiftService {
   constructor(
@@ -36,26 +43,43 @@ export class CashShiftService {
    * @returns el turno abierto o un error si ya tiene un turno abierto
    */
   async openShift(userId: number, dto: OpenShiftDto) {
-    // REGLA: Un usuario no puede tener dos turnos abiertos
-    const activeShift = await this.prisma.cashShift.findFirst({
-      where: { userId, status: ShiftStatus.OPEN },
-    });
+    // REGLA: Un usuario no puede tener dos turnos abiertos.
+    //
+    // Antes era "buscar y luego crear" sin transacción: un doble clic en
+    // "Abrir caja" lanzaba dos peticiones, ambas veían que no había turno y
+    // ambas lo creaban. A partir de ahí `getCurrentShift` devolvía cualquiera de
+    // los dos, las ventas en efectivo se repartían entre ellos al azar, y el
+    // cierre de uno dejaba el otro abierto con dinero que nadie contaba.
+    //
+    // Se serializa con un BLOQUEO CONSULTIVO por usuario, dentro de la
+    // transacción. La segunda petición espera a que la primera termine, y al
+    // entrar ya ve el turno creado. Se eligió esto frente a un índice único
+    // parcial (`WHERE status = 'OPEN'`) porque Prisma no sabe declararlo en el
+    // schema: lo borraría en el siguiente `migrate dev` y volveríamos a la
+    // deriva que ya nos pasó con el índice DESC.
+    const shift = await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${LOCK_TURNO_POR_USUARIO}::int, ${userId}::int)`;
 
-    if (activeShift) {
-      throw new ConflictException(
-        'Ya tienes un turno abierto. Debes cerrarlo antes de abrir uno nuevo.',
-      );
-    }
+      const activeShift = await tx.cashShift.findFirst({
+        where: { userId, status: ShiftStatus.OPEN },
+        select: { id: true },
+      });
 
-    // Crear el turno
-    const shift = await this.prisma.cashShift.create({
-      data: {
-        userId,
-        initialAmount: dto.initialAmount,
-        status: ShiftStatus.OPEN,
-        notes: dto.notes,
-        openedAt: new Date(),
-      },
+      if (activeShift) {
+        throw new ConflictException(
+          'Ya tienes un turno abierto. Debes cerrarlo antes de abrir uno nuevo.',
+        );
+      }
+
+      return tx.cashShift.create({
+        data: {
+          userId,
+          initialAmount: dto.initialAmount,
+          status: ShiftStatus.OPEN,
+          notes: dto.notes,
+          openedAt: new Date(),
+        },
+      });
     });
 
     return {
@@ -93,12 +117,6 @@ export class CashShiftService {
    * @returns la operación registrada
    */
   async registerOperation(userId: number, dto: PerformOperationDto) {
-    const shift = await this.getCurrentShift(userId);
-    if (!shift)
-      throw new BadRequestException(
-        'No hay turno abierto para realizar operaciones.',
-      );
-
     // Validaciones extra para Enterprise
     if (
       dto.type === CashTransactionType.SALE_INCOME ||
@@ -109,17 +127,39 @@ export class CashShiftService {
       );
     }
 
-    const transaction = await this.prisma.cashTransaction.create({
-      data: {
-        shiftId: shift.id,
-        type: dto.type,
-        amount: dto.amount,
-        reason: dto.reason,
-        createdBy: userId,
-      },
-    });
+    // DENTRO de una transacción y con la fila del turno BLOQUEADA.
+    //
+    // Antes se comprobaba el turno y se escribía la operación por separado.
+    // Una sangría que llegaba mientras el cajero cerraba caja quedaba asentada
+    // en un turno ya cerrado: fuera de su arqueo, sin aparecer en ningún corte.
+    // Con `FOR UPDATE`, la sangría y el cierre se serializan: si el cierre gana,
+    // la sangría ve el turno CLOSED y se rechaza; si gana la sangría, el cierre
+    // espera y la incluye en sus totales.
+    return this.prisma.$transaction(async (tx) => {
+      const abiertos = await tx.$queryRaw<{ id: number }[]>`
+        SELECT id FROM "public"."CashShift"
+        WHERE "userId" = ${userId} AND status = 'OPEN'
+        ORDER BY id
+        LIMIT 1
+        FOR UPDATE`;
 
-    return transaction;
+      const shift = abiertos[0];
+      if (!shift) {
+        throw new BadRequestException(
+          'No hay turno abierto para realizar operaciones.',
+        );
+      }
+
+      return tx.cashTransaction.create({
+        data: {
+          shiftId: shift.id,
+          type: dto.type,
+          amount: dto.amount,
+          reason: dto.reason,
+          createdBy: userId,
+        },
+      });
+    });
   }
 
   /**
