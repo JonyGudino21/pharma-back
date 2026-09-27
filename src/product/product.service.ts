@@ -14,10 +14,19 @@ import {
   buildPaginationMeta,
   resolvePagination,
 } from 'src/common/utils/pagination.util';
+import { InventoryBatchesService } from 'src/inventory/inventory-batches.service';
+import {
+  normalizeLotNumber,
+  todayInMexico,
+  toUtcDateOnly,
+} from 'src/inventory/fefo';
 
 @Injectable()
 export class ProductService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private inventoryBatches: InventoryBatchesService,
+  ) {}
 
   /**
    * Crea un nuevo producto
@@ -25,6 +34,9 @@ export class ProductService {
    * @returns El producto creado
    */
   async create(createProductDto: CreateProductDto, userId: number) {
+    // 0. Lote del inventario inicial: se valida ANTES de tocar la base.
+    const initialLot = this.resolveInitialLot(createProductDto);
+
     //1. Generar SKU automáticamente
     const sku = await this.generateSKU({
       name: createProductDto.name,
@@ -78,6 +90,33 @@ export class ProductService {
       // C. Gestion de stock inicial
       const initialStock = createProductDto.stock ?? 0;
 
+      if (initialStock > 0 && initialLot) {
+        // Con lote: entra por el MISMO camino que una recepción de compra
+        // (lote único por producto, costo del lote, asiento en el Kardex con
+        // batchId y stock sumado de forma atómica). Así estas unidades quedan
+        // en el FEFO y en la alerta de caducidad desde el primer día.
+        await this.inventoryBatches.receiveIntoBatch(
+          tx,
+          {
+            productId: product.id,
+            quantity: initialStock,
+            unitCost: new Decimal(createProductDto.cost),
+            lotNumber: initialLot.lotNumber,
+            expiryDate: initialLot.expiryDate,
+            purchaseItemId: null,
+            reason: 'Inventario inicial al Crear el producto',
+            referenceId: product.id,
+            movementType: MovementType.ADJUSTMENT,
+          },
+          userId,
+        );
+
+        return await tx.product.findUniqueOrThrow({
+          where: { id: product.id },
+          include: { categories: { include: { category: true } } },
+        });
+      }
+
       if (initialStock > 0) {
         // Crear movimiento que justifica la exitencia de estas unidades
         await tx.inventoryMovement.create({
@@ -112,6 +151,58 @@ export class ProductService {
 
       return product;
     });
+  }
+
+  /**
+   * Reglas del lote del inventario inicial.
+   *
+   * - Lote y caducidad van juntos: uno sin el otro no identifica nada.
+   * - Un controlado con existencias DEBE traer lote: el libro de controlados
+   *   registra cada salida contra un lote, igual que en la recepción de compras.
+   * - No se da de alta inventario ya caducado: se vendería o se contaría como
+   *   existencia algo que por ley no puede salir del mostrador.
+   * - Sin stock, el lote no significa nada y se rechaza para no guardar datos
+   *   que el usuario cree registrados.
+   */
+  private resolveInitialLot(
+    dto: CreateProductDto,
+  ): { lotNumber: string; expiryDate: Date } | null {
+    const stock = dto.stock ?? 0;
+    const lot = dto.lotNumber ? normalizeLotNumber(dto.lotNumber) : '';
+    const hasExpiry = !!dto.expiryDate;
+
+    if (lot.length > 0 !== hasExpiry) {
+      throw new BadRequestException(
+        'El número de lote y la fecha de caducidad deben ir juntos.',
+      );
+    }
+
+    if (!lot) {
+      if (stock > 0 && dto.controlled) {
+        throw new BadRequestException(
+          `El medicamento controlado ${dto.name} requiere lote y caducidad para su inventario inicial.`,
+        );
+      }
+      return null;
+    }
+
+    if (stock <= 0) {
+      throw new BadRequestException(
+        'El lote y la caducidad describen el inventario inicial: indica cuántas unidades entran.',
+      );
+    }
+
+    const expiry = toUtcDateOnly(dto.expiryDate as string);
+    if (Number.isNaN(expiry.getTime())) {
+      throw new BadRequestException('La fecha de caducidad no es válida');
+    }
+    if (expiry.getTime() < todayInMexico().getTime()) {
+      throw new BadRequestException(
+        'La caducidad ya pasó: no se puede dar de alta inventario caducado.',
+      );
+    }
+
+    return { lotNumber: lot, expiryDate: expiry };
   }
 
   async findAll(active?: boolean, pagination?: PaginationParamsDto) {

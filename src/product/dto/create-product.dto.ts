@@ -6,6 +6,8 @@ import {
   IsPositive,
   IsInt,
   Min,
+  Matches,
+  MaxLength,
 } from 'class-validator';
 
 export class CreateProductDto {
@@ -59,4 +61,26 @@ export class CreateProductDto {
   @IsNumber()
   @IsPositive()
   cost: number;
+
+  /**
+   * Lote y caducidad del INVENTARIO INICIAL.
+   *
+   * La caducidad no es del producto sino de cada lote: el mismo Paracetamol
+   * tiene cajas que caducan en marzo y otras en diciembre. Antes el alta con
+   * existencias creaba unidades SIN lote: fuera del FEFO, invisibles para la
+   * alerta de caducidad y, en un controlado, sin trazabilidad para COFEPRIS.
+   *
+   * Obligatorios si el producto es controlado y trae stock; en los demás son
+   * opcionales, pero van juntos.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  lotNumber?: string;
+
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, {
+    message: 'La caducidad debe ser YYYY-MM-DD',
+  })
+  expiryDate?: string;
 }

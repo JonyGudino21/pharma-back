@@ -4,6 +4,7 @@ import { Decimal } from '@prisma/client/runtime/library';
 import { UserRole } from '@prisma/client';
 import { ProductService } from './product.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { InventoryBatchesService } from '../inventory/inventory-batches.service';
 import { argDe } from '../common/testing/mock-inspect.util';
 
 /**
@@ -45,6 +46,7 @@ describe('ProductService · campos sensibles en la edición', () => {
       providers: [
         ProductService,
         { provide: PrismaService, useValue: mockPrisma },
+        { provide: InventoryBatchesService, useValue: {} },
       ],
     }).compile();
 
