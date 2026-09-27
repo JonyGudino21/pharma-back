@@ -15,9 +15,12 @@ import { IsBoolean, IsOptional } from 'class-validator';
  * El stock sólo se mueve por compras, ventas, devoluciones y ajustes. Si llega
  * `stock` en este cuerpo, el ValidationPipe (`forbidNonWhitelisted`) responde
  * 400 en vez de ignorarlo en silencio.
+ *
+ * `lotNumber` y `expiryDate` también quedan fuera: sólo describen el inventario
+ * inicial del alta. Los lotes posteriores entran por compras.
  */
 export class UpdateProductDto extends PartialType(
-  OmitType(CreateProductDto, ['stock'] as const),
+  OmitType(CreateProductDto, ['stock', 'lotNumber', 'expiryDate'] as const),
 ) {
   @IsBoolean()
   @IsOptional()
