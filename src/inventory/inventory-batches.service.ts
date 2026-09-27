@@ -319,9 +319,12 @@ export class InventoryBatchesService {
       unitCost: Decimal;
       lotNumber: string;
       expiryDate: Date | string;
-      purchaseItemId: number;
+      /** Partida de compra de origen. `null` en el inventario inicial del alta. */
+      purchaseItemId: number | null;
       reason: string;
       referenceId: number;
+      /** PURCHASE en recepciones; ADJUSTMENT en el inventario inicial del alta. */
+      movementType?: MovementType;
     },
     userId: number,
   ): Promise<void> {
@@ -358,7 +361,13 @@ export class InventoryBatchesService {
         : params.unitCost;
       await tx.productBatch.update({
         where: { id: existing.id },
-        data: { cost: newCost, purchaseItemId: params.purchaseItemId },
+        data: {
+          cost: newCost,
+          // Sin compra de origen se conserva la que ya tenía el lote.
+          ...(params.purchaseItemId != null && {
+            purchaseItemId: params.purchaseItemId,
+          }),
+        },
       });
       batchId = existing.id;
     } else {
@@ -378,7 +387,7 @@ export class InventoryBatchesService {
     await this.inventory.registerMovement(
       {
         productId: params.productId,
-        type: MovementType.PURCHASE,
+        type: params.movementType ?? MovementType.PURCHASE,
         quantity: params.quantity,
         reason: params.reason,
         referenceId: params.referenceId,
