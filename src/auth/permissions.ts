@@ -23,7 +23,13 @@ export function permissionsForRole(role: UserRole): UserPermissions {
     canCancelSales: isManagerOrAdmin,
     canGiveDiscounts: isManagerOrAdmin,
     canReturnSales: isManagerOrAdmin,
-    canViewSalesSummary: canOperatePOS,
+    // Historial: todos (el cajero reimprime tickets y consulta sus ventas).
+    // Resumen: sólo gerencia, IGUAL que `@Roles(MANAGER)` de GET /sales/summary.
+    // Antes un solo flag (`canViewSalesSummary`, verdadero para todos) cubría
+    // las dos cosas: decía que el cajero podía ver el resumen y el endpoint le
+    // respondía 403.
+    canViewSalesHistory: canOperatePOS,
+    canViewSalesSummary: isManagerOrAdmin,
     canPrintReceipt: canOperatePOS,
 
     // ---- Empresa / ticket ----
@@ -50,6 +56,9 @@ export function permissionsForRole(role: UserRole): UserPermissions {
     canViewInventoryValuation: isManagerOrAdmin,
     canViewExpiringBatches: isManagerOrAdmin || isPharmacist,
     canViewControlledLog: isManagerOrAdmin || isPharmacist,
+    // Igual que @Roles(MANAGER) de GET controlled-log/export: es un documento con
+    // datos de pacientes y la exportación queda registrada.
+    canExportControlledLog: isManagerOrAdmin,
 
     // ---- Caja (cash-shift) ----
     canOpenShift: canOperatePOS,

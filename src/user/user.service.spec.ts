@@ -200,6 +200,23 @@ describe('Matriz de permisos', () => {
     expect(permissionsForRole(UserRole.CASHIER).canManageSettings).toBe(false);
   });
 
+  it('historial de ventas para todos; resumen sólo gerencial (como @Roles de /sales/summary)', () => {
+    for (const role of [
+      UserRole.CASHIER,
+      UserRole.PHARMACIST,
+      UserRole.MANAGER,
+    ]) {
+      expect(permissionsForRole(role).canViewSalesHistory).toBe(true);
+    }
+    expect(permissionsForRole(UserRole.CASHIER).canViewSalesSummary).toBe(
+      false,
+    );
+    expect(permissionsForRole(UserRole.PHARMACIST).canViewSalesSummary).toBe(
+      false,
+    );
+    expect(permissionsForRole(UserRole.MANAGER).canViewSalesSummary).toBe(true);
+  });
+
   it('ADMIN tiene TODOS los permisos (coherente con RolesGuard)', () => {
     const p = permissionsForRole(UserRole.ADMIN);
     expect(Object.values(p).every(Boolean)).toBe(true);
