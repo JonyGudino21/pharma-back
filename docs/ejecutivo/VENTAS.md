@@ -57,8 +57,6 @@ descuentos con reglas, anular ventas y procesar devoluciones.
 - **No emite factura electrónica (CFDI).** El ticket y la nota de remisión dicen expresamente que
   no son CFDI. Propuesta para v2 en [`../CFDI_V2_PROPUESTA.md`](../CFDI_V2_PROPUESTA.md).
 - El folio interno (`FAC-AAAAMMDD-######`) no es un folio fiscal.
-- El permiso de pantalla "ver resumen de ventas" está encendido para todos los roles, pero el
-  servidor sólo lo entrega a gerencia: un cajero vería un botón que le responde "sin permiso".
 - Requiere conexión con el servidor de la farmacia; sin él no se puede vender (ADR-0017).
 
 ## Indicadores de éxito

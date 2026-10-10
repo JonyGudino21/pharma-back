@@ -33,9 +33,9 @@ Para dueño, familia e inversionistas: [`ejecutivo/README.md`](ejecutivo/README.
 | Clientes | [CLIENT_MODULE.md](CLIENT_MODULE.md) | [CLIENTES](ejecutivo/CLIENTES.md) |
 | Configuración | [SETTINGS_MODULE.md](SETTINGS_MODULE.md) | [CONFIGURACION](ejecutivo/CONFIGURACION.md) |
 | Analítica | [ANALYTICS_MODULE.md](ANALYTICS_MODULE.md) | [ANALITICA](ejecutivo/ANALITICA.md) |
+| Empresa (ficha y plantillas de ticket) | [COMPANY_MODULE.md](COMPANY_MODULE.md) | [IMPRESION_Y_COMPROBANTES](ejecutivo/IMPRESION_Y_COMPROBANTES.md) |
 
-Sin documento técnico propio todavía: `company` (ficha fiscal y plantillas de ticket; endpoints en
-`src/company/company.controller.ts`, roles en `PERMISSIONS_MATRIX.md`), `health` y `payment`
+Sin documento técnico propio todavía: `health` (sondas `/health/live` y `/health/ready`) y `payment`
 (servicio interno compartido por ventas y abonos).
 
 ### Propuestas

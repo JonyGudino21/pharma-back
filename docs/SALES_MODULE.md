@@ -22,7 +22,7 @@ Este módulo cubre el **ciclo de venta (POS/CRM)**: crear venta en borrador, agr
 | **Pago idempotente** | `POST /sales/:id/add-payment` acepta el header opcional `Idempotency-Key`: un reintento tras timeout no cobra dos veces. |
 | **Devolución solo sobre venta finalizada** | `POST /sales/:id/return` solo se acepta si `flowStatus === COMPLETED`. Por ítem se indica cantidad a devolver y si es `restock` (vuelve a inventario) o no (merma/LOSS). |
 | **Precios especiales por cliente** | Si la venta tiene `clientId`, se usan precios de `ClientProductPrice` cuando existan; si no, el precio del producto. Al completar la venta se actualiza el historial de precios del cliente. |
-| **Resumen de ventas** | `GET /sales/summary` está restringido a **MANAGER** (y ADMIN, que pasa siempre el `RolesGuard`). Ojo: el flag `canViewSalesSummary` hoy es `true` para todos los roles; ver nota en `PERMISSIONS_MATRIX.md`. |
+| **Resumen de ventas** | `GET /sales/summary` está restringido a **MANAGER** (y ADMIN, que pasa siempre el `RolesGuard`). El flag `canViewSalesSummary` es de gerencia y coincide con el endpoint; el historial usa `canViewSalesHistory` (todos). |
 | **Factura** | El número de factura se asigna al completar: formato tipo `FAC-YYYYMMDD-XXXXXX` (generado en backend). |
 
 ---
@@ -159,7 +159,7 @@ Todos requieren **JWT** (cookie `access_token` o header `Authorization: Bearer`)
 
 ## 6. Consejos de implementación (Frontend)
 
-- **Permisos:** Usar `permissions.canSell` para flujo de venta; `permissions.canViewSalesSummary` para ver resumen; `permissions.canCancelSales` y `permissions.canReturnSales` para mostrar botones de anular/devolver (el backend también lo exige: 403 al cajero que anula una venta cerrada o intenta una devolución).
+- **Permisos:** Usar `permissions.canSell` para flujo de venta; `permissions.canViewSalesHistory` para historial y detalle; `permissions.canViewSalesSummary` para el resumen gerencial; `permissions.canCancelSales` y `permissions.canReturnSales` para mostrar botones de anular/devolver (el backend también lo exige: 403 al cajero que anula una venta cerrada o intenta una devolución).
 - **Deshabilitar pago en efectivo sin caja:** Antes de permitir "Efectivo" en agregar pago, comprobar turno abierto (`GET /cash-shift/current-shift`). Si no hay, deshabilitar o avisar: "Abre turno de caja para recibir efectivo."
 - **POS:** 1) Crear venta (opcional cliente). 2) Agregar ítems (por escáner o búsqueda). Validar stock con `GET /inventory/stock/:productId` antes de agregar. 3) Agregar pagos. 4) Completar venta. Mostrar número de factura y opción de reimprimir (`GET /sales/:id`).
 - **Completar con crédito:** Si hay saldo pendiente, asegurar que hay cliente con crédito y que la deuda actual + saldo ≤ límite. Mostrar mensaje del backend si falla.
