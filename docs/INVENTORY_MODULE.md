@@ -35,7 +35,14 @@ Los movimientos por compra, venta o devolución los generan los módulos **Purch
 | `GET`  | `/inventory/alerts/low-stock` | Lista productos con stock ≤ minStock (alertas de reorden). | MANAGER, PHARMACIST |
 | `GET`  | `/inventory/kardex/:productId` | Historial de movimientos del producto (Kardex). Últimos 50 por defecto. | MANAGER, PHARMACIST |
 | `GET`  | `/inventory/valuation` | Valor total del inventario (suma de stock × costo por producto). | MANAGER |
-| `GET`  | `/inventory/stock/:productId` | Stock actual de un producto (id, stock, minStock, name). Para POS y validaciones. | Cualquier usuario autenticado |
+| `GET`  | `/inventory/stock/:productId` | Cantidad **vendible** del producto (lotes no caducados según `inventory.expiryInclusive`). Para POS y validaciones. | Cualquier usuario autenticado |
+| `POST` | `/inventory/batches/adjustment` | Merma/destrucción de un **lote concreto** (caducado, roto): `{ batchId, quantity, reason }`. | MANAGER |
+| `GET`  | `/inventory/batches/expiring` | Lotes por caducar (`days` 1–365) y vencidos, con semáforo. | MANAGER, PHARMACIST |
+| `GET`  | `/inventory/controlled-log` | Libro de controlados (COFEPRIS), append-only, con datos de receta/paciente. | MANAGER, PHARMACIST |
+| `GET`  | `/inventory/controlled-log/export` | Descarga CSV del libro para inspección; header `X-Integrity-Hash` con la huella del archivo. | MANAGER |
+
+> Las ventas consumen lotes por **FEFO** (primero el que caduca antes) al cerrar; ver `src/inventory/fefo.ts`
+> y ADR-0014 para el control de concurrencia del stock.
 
 Todos los endpoints requieren **JWT** (`JwtAuthGuard`). Donde hay `@Roles`, además se aplica `RolesGuard`.
 
@@ -90,3 +97,14 @@ El único endpoint que recibe body en este módulo es el ajuste:
 - **Valoración:** Es un KPI sensible; mostrarlo solo a usuarios con permiso. Considerar cache corto en front si se muestra en dashboard (el backend no cachea aún).
 - **Decimales:** En valoración, `totalValue` viene como objeto Decimal (serializado como string en JSON). En front, parsear a número para mostrar en moneda (ej. `Number(data.totalValue)` o librería de decimales).
 - **No implementar “editar stock” en la ficha de producto:** Cualquier cambio de stock debe hacerse por ajuste de inventario para mantener trazabilidad.
+
+## Configuración › Inventario (desde v1.1)
+
+- `GET /inventory/batches/expiring`: `days` ahora es cualquier entero 1–365 (antes sólo 30/60/90);
+  sin `days` usa `inventory.expiryAlertDays`. La respuesta agrega `criteria: { days, critical, warning }`
+  para que el front pinte la leyenda con los mismos umbrales con que clasificó el servidor.
+- El criterio "¿se vende el lote que caduca hoy?" es `inventory.expiryInclusive` (antes
+  `EXPIRY_INCLUSIVE`, ahora sólo valor de fábrica). Lo usan por igual `getSellable` y
+  `consumeForSale`: si difirieran, el cajero vería stock vendible que el cierre rechazaría.
+- `inventory.requireLotForAll` exige lote y caducidad en toda entrada (alta con stock y recepción
+  de compras), no sólo en controlados.
