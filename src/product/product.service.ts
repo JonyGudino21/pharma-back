@@ -2,19 +2,21 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
 } from '@nestjs/common';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { PrismaService } from 'prisma/prisma.service';
 import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
 import { NotFoundException } from '@nestjs/common';
-import { MovementType, Prisma, UserRole } from '@prisma/client';
+import { MovementType, Prisma, TaxCategory, UserRole } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import {
   buildPaginationMeta,
   resolvePagination,
 } from 'src/common/utils/pagination.util';
 import { InventoryBatchesService } from 'src/inventory/inventory-batches.service';
+import { SettingsService } from 'src/settings/settings.service';
 import {
   normalizeLotNumber,
   todayInMexico,
@@ -23,9 +25,12 @@ import {
 
 @Injectable()
 export class ProductService {
+  private readonly logger = new Logger(ProductService.name);
+
   constructor(
     private prisma: PrismaService,
     private inventoryBatches: InventoryBatchesService,
+    private settings: SettingsService,
   ) {}
 
   /**
@@ -35,7 +40,11 @@ export class ProductService {
    */
   async create(createProductDto: CreateProductDto, userId: number) {
     // 0. Lote del inventario inicial: se valida ANTES de tocar la base.
-    const initialLot = this.resolveInitialLot(createProductDto);
+    const inventoryCfg = await this.settings.get('inventory');
+    const initialLot = this.resolveInitialLot(
+      createProductDto,
+      inventoryCfg.requireLotForAll,
+    );
 
     //1. Generar SKU automáticamente
     const sku = await this.generateSKU({
@@ -58,7 +67,11 @@ export class ProductService {
           presentation: createProductDto.presentation,
           strength: createProductDto.strength,
           stock: 0, // SIEMPRE con stock 0 al inicio, la verdad la dicta el movimiento
-          minStock: createProductDto.minStock ?? 5,
+          // Sin valor explícito, el que definió gerencia en Configuración.
+          minStock: createProductDto.minStock ?? inventoryCfg.defaultMinStock,
+          taxCategory:
+            createProductDto.taxCategory ??
+            (await this.settings.get('taxes')).defaultCategory,
           price: createProductDto.price,
           cost: createProductDto.cost,
           isActive: true,
@@ -159,6 +172,8 @@ export class ProductService {
    * - Lote y caducidad van juntos: uno sin el otro no identifica nada.
    * - Un controlado con existencias DEBE traer lote: el libro de controlados
    *   registra cada salida contra un lote, igual que en la recepción de compras.
+   *   Con `requireLotForAll` (Configuración › Inventario) la regla se extiende
+   *   a todos los productos.
    * - No se da de alta inventario ya caducado: se vendería o se contaría como
    *   existencia algo que por ley no puede salir del mostrador.
    * - Sin stock, el lote no significa nada y se rechaza para no guardar datos
@@ -166,6 +181,7 @@ export class ProductService {
    */
   private resolveInitialLot(
     dto: CreateProductDto,
+    requireLotForAll: boolean,
   ): { lotNumber: string; expiryDate: Date } | null {
     const stock = dto.stock ?? 0;
     const lot = dto.lotNumber ? normalizeLotNumber(dto.lotNumber) : '';
@@ -181,6 +197,11 @@ export class ProductService {
       if (stock > 0 && dto.controlled) {
         throw new BadRequestException(
           `El medicamento controlado ${dto.name} requiere lote y caducidad para su inventario inicial.`,
+        );
+      }
+      if (stock > 0 && requireLotForAll) {
+        throw new BadRequestException(
+          'La configuración de inventario exige lote y caducidad en toda entrada de mercancía.',
         );
       }
       return null;
@@ -203,6 +224,55 @@ export class ProductService {
     }
 
     return { lotNumber: lot, expiryDate: expiry };
+  }
+
+  /**
+   * Asigna el tratamiento de IVA en bloque: a todos los productos de una
+   * categoría (p. ej. "Perfumería" → GENERAL) o a una lista de ids.
+   *
+   * No re-precia nada: el precio sigue siendo el mismo con IVA incluido; sólo
+   * cambia cuánto de ese precio es impuesto. Las ventas ya cerradas conservan
+   * la tasa con que se vendieron.
+   */
+  async setTaxCategory(
+    dto: {
+      taxCategory: TaxCategory;
+      categoryId?: number;
+      productIds?: number[];
+    },
+    userId: number,
+  ) {
+    const hasCategory = dto.categoryId !== undefined;
+    const hasIds = !!dto.productIds?.length;
+    if (hasCategory === hasIds) {
+      throw new BadRequestException(
+        'Indica una categoría o una lista de productos (sólo una de las dos).',
+      );
+    }
+
+    if (hasCategory) {
+      const category = await this.prisma.category.findUnique({
+        where: { id: dto.categoryId },
+        select: { id: true },
+      });
+      if (!category) throw new NotFoundException('Categoría no encontrada');
+    }
+
+    const where: Prisma.ProductWhereInput = hasCategory
+      ? { categories: { some: { categoryId: dto.categoryId } } }
+      : { id: { in: dto.productIds } };
+
+    const res = await this.prisma.product.updateMany({
+      where: { ...where, taxCategory: { not: dto.taxCategory } },
+      data: { taxCategory: dto.taxCategory },
+    });
+
+    this.logger.log(
+      `event=product.tax_category_bulk taxCategory=${dto.taxCategory} ` +
+        `${hasCategory ? `categoryId=${dto.categoryId}` : `productIds=${dto.productIds!.join(',')}`} ` +
+        `updated=${res.count} userId=${userId}`,
+    );
+    return { updated: res.count };
   }
 
   async findAll(active?: boolean, pagination?: PaginationParamsDto) {
@@ -301,12 +371,19 @@ export class ProductService {
         !new Decimal(updateProductDto.cost).equals(
           new Decimal(existingProduct.cost),
         );
+      // El tratamiento de IVA es una decisión fiscal, no un dato de catálogo:
+      // cambiarlo altera cuánto impuesto se reporta de cada venta.
+      const cambiaIva =
+        updateProductDto.taxCategory !== undefined &&
+        updateProductDto.taxCategory !== existingProduct.taxCategory;
 
-      if (cambiaControlado || cambiaCosto) {
+      if (cambiaControlado || cambiaCosto || cambiaIva) {
         throw new ForbiddenException(
           cambiaControlado
             ? 'Sólo un gerente puede cambiar si un medicamento es controlado.'
-            : 'Sólo un gerente puede modificar el costo. El costo se actualiza solo al recibir compras.',
+            : cambiaCosto
+              ? 'Sólo un gerente puede modificar el costo. El costo se actualiza solo al recibir compras.'
+              : 'Sólo un gerente puede cambiar el tratamiento de IVA de un producto.',
         );
       }
     }
@@ -394,6 +471,7 @@ export class ProductService {
       minStock: updateProductDto.minStock,
       price: updateProductDto.price,
       cost: updateProductDto.cost,
+      taxCategory: updateProductDto.taxCategory,
       isActive: updateProductDto.isActive,
     };
 

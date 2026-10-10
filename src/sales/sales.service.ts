@@ -21,7 +21,9 @@ import {
   Prisma,
   UserRole,
   PrintChannel,
+  PrintDocument,
   ControlledLogEntryType,
+  TaxCategory,
 } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { ReturnSaleDto } from './dto/return-sale.dto';
@@ -35,6 +37,15 @@ import { retryOnWriteConflict } from 'src/common/utils/retry-on-conflict.util';
 import { FindAllSalesQueryDto } from './dto/find-all-sales-query.dto';
 import { money } from 'src/common/utils/decimal.util';
 import { isUniqueConstraintError } from 'src/common/utils/prisma-error.util';
+import { SettingsService } from 'src/settings/settings.service';
+import {
+  effectiveTaxRate,
+  priceLine,
+  refundForUnits,
+  saleTotals,
+  toMoney,
+} from './pricing';
+import { recalculateSaleTotals, writeLinePricing } from './sale-lines';
 
 @Injectable()
 export class SalesService {
@@ -46,7 +57,17 @@ export class SalesService {
     private inventoryBatches: InventoryBatchesService,
     private cashShiftService: CashShiftService,
     private paymentService: PaymentService,
+    private settings: SettingsService,
   ) {}
+
+  /**
+   * Tasa de IVA efectiva (fracción) para un producto, con la tasa general
+   * vigente en Configuración › Impuestos. Se CONGELA en la línea al agregarla.
+   */
+  private async taxRateOf(category: TaxCategory): Promise<Decimal> {
+    const { generalRate } = await this.settings.get('taxes');
+    return effectiveTaxRate(category, generalRate);
+  }
 
   async create(data: CreateSaleDto, userId: number) {
     if (!data.items || data.items.length === 0) {
@@ -80,41 +101,40 @@ export class SalesService {
     const productMap = new Map(products.map((p) => [p.id, p]));
     const priceMap = new Map(specialPrices.map((p) => [p.productId, p.price]));
 
-    // Contruir items con precios reales
-    let subtotal = new Decimal(0);
-    const saleItemsData: SaleItem[] = [];
+    // Construir items con precios reales (motor de precios único)
+    const { generalRate } = await this.settings.get('taxes');
+    const saleItemsData: Prisma.SaleItemCreateWithoutSaleInput[] = [];
+    const lineas: Parameters<typeof saleTotals>[0] = [];
 
     for (const itemDto of data.items) {
-      const product = productMap.get(itemDto.productId);
+      const product = productMap.get(itemDto.productId)!;
 
-      // Logica:
-      // Prioridad 1: Precio especial del cliente
-      // Prioridad 2: Precio del producto publico
-
-      let finalPrice = product?.price ?? 0;
-
-      if (priceMap.has(itemDto.productId)) {
-        finalPrice = priceMap.get(itemDto.productId)!; // Precio especial del cliente
-      }
-
-      // Calculo de montos
-      const quantity = new Decimal(itemDto.quantity);
-      const lineTotal = new Decimal(finalPrice).mul(quantity);
-
-      subtotal = subtotal.add(lineTotal);
-
-      saleItemsData.push({
-        id: undefined as unknown as number,
-        saleId: undefined as unknown as number,
-        productId: itemDto.productId,
+      // Prioridad 1: precio especial del cliente · Prioridad 2: precio público
+      const finalPrice = new Decimal(
+        priceMap.get(itemDto.productId) ?? product.price,
+      );
+      const taxRate = effectiveTaxRate(product.taxCategory, generalRate);
+      const p = priceLine({
+        unitPrice: finalPrice,
         quantity: itemDto.quantity,
-        price: new Decimal(finalPrice), // Guardamos el precio que se usó realmente
-        discount: new Decimal(0), // Por ahora 0, luego podrías implementar lógica de descuentos
-        subtotal: lineTotal,
+        taxRate,
+      });
+
+      lineas.push({ ...p, taxRate });
+      saleItemsData.push({
+        product: { connect: { id: product.id } },
+        quantity: itemDto.quantity,
+        price: finalPrice, // Guardamos el precio que se usó realmente
+        discount: p.discount,
+        subtotal: p.net,
+        taxRate,
+        taxAmount: p.tax,
         // SNAPSHOT DE COSTO: Vital para calcular utilidad histórica
-        costAtSale: new Decimal(product?.cost ?? 0),
+        costAtSale: new Decimal(product.cost),
       });
     }
+
+    const totals = saleTotals(lineas);
 
     // Crear la venta
     // No impactamos invetario aun, Solo reservamos la intencion de venta
@@ -122,9 +142,11 @@ export class SalesService {
       data: {
         userId: userId,
         clientId: data.clientId,
-        total: subtotal,
-        subtotal: subtotal,
-        balance: subtotal, // Al inicio deben todo
+        total: totals.total,
+        subtotal: totals.subtotal,
+        discountTotal: totals.discountTotal,
+        taxTotal: totals.taxTotal,
+        balance: totals.total, // Al inicio deben todo
         flowStatus: SaleFlowStatus.DRAFT,
         status: SaleStatus.PENDING,
         note: data.note ?? undefined,
@@ -493,8 +515,16 @@ export class SalesService {
       for (const [saleItemId, req] of orderedItems) {
         const originalItem = itemsMap.get(saleItemId)!;
 
-        const unitPrice = new Decimal(originalItem.price);
-        const subtotal = unitPrice.mul(new Decimal(req.quantity));
+        // Se reembolsa el NETO pagado (con descuento), repartido al centavo
+        // entre devoluciones parciales. Antes: precio de lista × cantidad, así
+        // que un descuento del 50 % se devolvía al 100 %.
+        const subtotal = refundForUnits(
+          originalItem.subtotal,
+          originalItem.quantity,
+          returnedMap.get(saleItemId) ?? 0,
+          req.quantity,
+        );
+        const unitPrice = toMoney(subtotal.div(req.quantity));
         totalRefundAmount = totalRefundAmount.add(subtotal);
 
         await tx.saleReturnItem.create({
@@ -837,8 +867,12 @@ export class SalesService {
       if (specialPrice && specialPrice.isActive) price = specialPrice.price;
     }
 
-    const quantity = new Decimal(dto.quantity);
-    const subtotal = price.mul(quantity);
+    const taxRate = await this.taxRateOf(product.taxCategory);
+    const inicial = priceLine({
+      unitPrice: price,
+      quantity: dto.quantity,
+      taxRate,
+    });
 
     return await this.prisma.$transaction(async (tx) => {
       // ─────────────────────────────────────────────────────────────────────
@@ -861,7 +895,9 @@ export class SalesService {
           productId: dto.productId,
           quantity: dto.quantity,
           price,
-          subtotal,
+          subtotal: inicial.net,
+          taxRate,
+          taxAmount: inicial.tax,
           costAtSale: product.cost, // Snapshot para la utilidad histórica
         },
         update: { quantity: { increment: dto.quantity } },
@@ -869,17 +905,21 @@ export class SalesService {
 
       // El subtotal de la línea se recalcula sobre la cantidad YA consolidada
       // por la BD, nunca sobre un valor calculado antes del lock.
+      // Conserva el % de descuento y la tasa ya congelados en la línea.
       const linea = await tx.saleItem.findUniqueOrThrow({
         where: { saleId_productId: { saleId, productId: dto.productId } },
-        select: { id: true, quantity: true, price: true },
+        select: {
+          id: true,
+          quantity: true,
+          price: true,
+          discountPercent: true,
+          taxRate: true,
+        },
       });
 
-      await tx.saleItem.update({
-        where: { id: linea.id },
-        data: { subtotal: linea.price.mul(new Decimal(linea.quantity)) },
-      });
+      await writeLinePricing(tx, linea);
 
-      const newTotal = await this.recalculateSaleTotals(tx, saleId);
+      const { total: newTotal } = await recalculateSaleTotals(tx, saleId);
 
       return { message: 'Producto agregado', newTotal };
     });
@@ -915,7 +955,7 @@ export class SalesService {
       // Mismo recálculo que addItem: relee `paidAmount` dentro de la
       // transacción. Antes se usaba el leído fuera de ella y un abono
       // registrado en medio desaparecía del saldo.
-      const newTotal = await this.recalculateSaleTotals(tx, saleId);
+      const { total: newTotal } = await recalculateSaleTotals(tx, saleId);
 
       return { message: 'Producto eliminado', newTotal };
     });
@@ -994,14 +1034,11 @@ export class SalesService {
         );
       }
 
-      const newSubtotal = item.price.mul(new Decimal(quantity));
+      await tx.saleItem.update({ where: { id: itemId }, data: { quantity } });
+      // El descuento es un %: al cambiar la cantidad se recalcula sobre ella.
+      await writeLinePricing(tx, { ...item, quantity });
 
-      await tx.saleItem.update({
-        where: { id: itemId },
-        data: { quantity, subtotal: newSubtotal },
-      });
-
-      const newTotal = await this.recalculateSaleTotals(tx, saleId);
+      const { total: newTotal } = await recalculateSaleTotals(tx, saleId);
       return { message: 'Cantidad actualizada', newTotal };
     });
   }
@@ -1062,11 +1099,10 @@ export class SalesService {
         if (!newPrice.equals(item.price)) {
           await tx.saleItem.update({
             where: { id: item.id },
-            data: {
-              price: newPrice,
-              subtotal: newPrice.mul(new Decimal(item.quantity)),
-            },
+            data: { price: newPrice },
           });
+          // Mismo % de descuento e IVA, sobre el precio nuevo.
+          await writeLinePricing(tx, { ...item, price: newPrice });
         }
       }
 
@@ -1075,7 +1111,7 @@ export class SalesService {
         data: { clientId: clientId ?? null },
       });
 
-      const newTotal = await this.recalculateSaleTotals(tx, saleId);
+      const { total: newTotal } = await recalculateSaleTotals(tx, saleId);
 
       this.logger.log(
         `Venta #${saleId}: cliente asignado ${clientId ?? 'Público General'}. Total re-preciado: ${money(newTotal)}`,
@@ -1083,41 +1119,6 @@ export class SalesService {
 
       return { message: 'Cliente actualizado', newTotal };
     });
-  }
-
-  /**
-   * Helper: recalcula total/subtotal/balance de la venta sumando los subtotales
-   * de sus líneas (evita deriva por cálculos incrementales).
-   */
-  private async recalculateSaleTotals(
-    tx: Prisma.TransactionClient,
-    saleId: number,
-  ): Promise<Decimal> {
-    const agg = await tx.saleItem.aggregate({
-      where: { saleId },
-      _sum: { subtotal: true },
-    });
-    const newTotal = agg._sum.subtotal ?? new Decimal(0);
-
-    // paidAmount se relee DENTRO de la transacción.
-    // Antes llegaba por parámetro desde una lectura previa a la transacción: si
-    // un abono se registraba en ese intervalo, el balance se recalculaba con un
-    // pagado obsoleto y el abono desaparecía del saldo.
-    const { paidAmount } = await tx.sale.findUniqueOrThrow({
-      where: { id: saleId },
-      select: { paidAmount: true },
-    });
-
-    await tx.sale.update({
-      where: { id: saleId },
-      data: {
-        total: newTotal,
-        subtotal: newTotal,
-        balance: newTotal.sub(paidAmount),
-      },
-    });
-
-    return newTotal;
   }
 
   /**
@@ -1210,6 +1211,23 @@ export class SalesService {
       if (sale.status === SaleStatus.CANCELLED)
         throw new BadRequestException('Venta cancelada, no se puede cerrar');
 
+      // Defensa en profundidad del "nunca bajo costo": la regla se valida al
+      // aplicar el descuento, pero después se puede cambiar de cliente y su
+      // precio especial bajar la línea. Se revisa otra vez aquí, antes de
+      // tocar inventario, sólo en líneas CON descuento.
+      const { allowBelowCost } = await this.settings.get('discounts');
+      if (!allowBelowCost) {
+        for (const item of sale.items) {
+          if (new Decimal(item.discountPercent ?? 0).lte(0)) continue;
+          const costo = new Decimal(item.costAtSale).mul(item.quantity);
+          if (new Decimal(item.subtotal).lt(costo)) {
+            throw new BadRequestException(
+              `El descuento de ${item.product.name} la deja en ${money(new Decimal(item.subtotal))}, por debajo de su costo (${money(costo)}). Ajusta o quita el descuento antes de cobrar.`,
+            );
+          }
+        }
+      }
+
       const hasControlled = sale.items.some((item) => item.product.controlled);
       const prescription = this.requirePrescription(dto, hasControlled);
 
@@ -1290,7 +1308,12 @@ export class SalesService {
       }
 
       // 3. CÁLCULO DE UTILIDAD Y CIERRE
-      const profit = new Decimal(sale.total).sub(totalCostOfSale);
+      // Utilidad SIN IVA: el impuesto cobrado no es ingreso de la farmacia,
+      // se entera al SAT. Antes se restaba el costo al total con IVA incluido
+      // y los productos al 16 % inflaban la utilidad.
+      const profit = new Decimal(sale.total)
+        .sub(sale.taxTotal)
+        .sub(totalCostOfSale);
       const invoiceNumber = this.generateInvoiceNumber(sale.id);
 
       const completedSale = await tx.sale.update({
@@ -1433,6 +1456,11 @@ export class SalesService {
                   select: { id: true, lotNumber: true, expiryDate: true },
                 },
               },
+            },
+            // Auditoría del descuento: quién lo aplicó y quién lo autorizó.
+            discountAppliedBy: { select: { firstName: true, lastName: true } },
+            discountAuthorizedBy: {
+              select: { firstName: true, lastName: true },
             },
           },
         }, // Nombre del producto
@@ -1580,7 +1608,7 @@ export class SalesService {
             flowStatus: SaleFlowStatus.COMPLETED,
             status: { not: SaleStatus.CANCELLED },
           },
-          _sum: { total: true },
+          _sum: { total: true, discountTotal: true, taxTotal: true },
           _count: { id: true },
         }),
       ]);
@@ -1591,6 +1619,10 @@ export class SalesService {
       todaySalesCount: todayCount,
       totalRevenue: totalRevenue._sum.total ?? 0,
       totalSalesCount: totalRevenue._count.id ?? 0,
+      // Cuánto se dejó de cobrar por descuentos y cuánto IVA contienen las
+      // ventas (dinero que se entera al SAT, no utilidad).
+      totalDiscounts: totalRevenue._sum.discountTotal ?? 0,
+      totalTax: totalRevenue._sum.taxTotal ?? 0,
     };
   }
 
@@ -1711,15 +1743,31 @@ export class SalesService {
   }
 
   /**
-   * Registra una impresión. copyNumber es el máximo existente + 1, con reintento
-   * si dos cajas pulsan Imprimir a la vez (UNIQUE saleId+copyNumber).
+   * Registra una impresión. copyNumber es el máximo existente + 1 DENTRO DEL
+   * MISMO DOCUMENTO (ticket o nota de remisión), con reintento si dos cajas
+   * pulsan Imprimir a la vez (UNIQUE saleId+document+copyNumber).
+   *
+   * @param document por omisión TICKET, para que los clientes anteriores a la
+   *   nota de remisión sigan funcionando sin cambios.
    */
   async registerPrint(
     saleId: number,
     userId: number,
     channel: PrintChannel,
     templateId?: number,
+    document: PrintDocument = PrintDocument.TICKET,
   ) {
+    if (document === PrintDocument.REMISSION) {
+      // Se valida aquí y no sólo en la pantalla: otra caja con la pantalla
+      // desactualizada podría seguir ofreciendo el botón.
+      const { enabled } = await this.settings.get('remission');
+      if (!enabled) {
+        throw new BadRequestException(
+          'La nota de remisión está desactivada en Configuración.',
+        );
+      }
+    }
+
     if (templateId) {
       const template = await this.prisma.receiptTemplate.findFirst({
         where: { id: templateId, isActive: true },
@@ -1736,17 +1784,28 @@ export class SalesService {
         return await this.prisma.$transaction(async (tx) => {
           const sale = await tx.sale.findUnique({
             where: { id: saleId },
-            select: { id: true, flowStatus: true },
+            select: { id: true, flowStatus: true, status: true },
           });
           if (!sale) throw new NotFoundException('Venta no encontrada');
           if (sale.flowStatus === SaleFlowStatus.DRAFT) {
             throw new BadRequestException(
-              'No se puede imprimir el ticket de una venta en borrador',
+              'No se puede imprimir un comprobante de una venta en borrador',
+            );
+          }
+          // Un comprobante de algo que se anuló sirve para reclamar un segundo
+          // reembolso en otra caja: la pantalla ya lo impedía, el servidor ahora
+          // también (otra pantalla desactualizada no debe poder saltárselo).
+          if (
+            sale.flowStatus === SaleFlowStatus.CANCELLED ||
+            sale.status === SaleStatus.CANCELLED
+          ) {
+            throw new BadRequestException(
+              'La venta está anulada: no se puede imprimir su comprobante',
             );
           }
 
           const agg = await tx.saleReceiptPrint.aggregate({
-            where: { saleId },
+            where: { saleId, document },
             _max: { copyNumber: true },
           });
           const copyNumber = (agg._max.copyNumber ?? 0) + 1;
@@ -1756,6 +1815,7 @@ export class SalesService {
               saleId,
               printedById: userId,
               templateId: templateId ?? null,
+              document,
               copyNumber,
               channel,
             },
@@ -1780,7 +1840,7 @@ export class SalesService {
     );
   }
 
-  async listPrints(saleId: number) {
+  async listPrints(saleId: number, document?: PrintDocument) {
     const sale = await this.prisma.sale.findUnique({
       where: { id: saleId },
       select: { id: true },
@@ -1788,8 +1848,8 @@ export class SalesService {
     if (!sale) throw new NotFoundException('Venta no encontrada');
 
     return this.prisma.saleReceiptPrint.findMany({
-      where: { saleId },
-      orderBy: { copyNumber: 'asc' },
+      where: { saleId, ...(document ? { document } : {}) },
+      orderBy: [{ document: 'asc' }, { copyNumber: 'asc' }],
       include: {
         printedBy: { select: { firstName: true, lastName: true } },
         template: { select: { id: true, name: true, paperWidthMm: true } },

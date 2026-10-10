@@ -8,6 +8,8 @@ import { InventoryBatchesService } from '../inventory/inventory-batches.service'
 import { CashShiftService } from '../cash-shift/cash-shift.service';
 import { PaymentService } from '../payment/payment.service';
 import { argDe, dataDe } from '../common/testing/mock-inspect.util';
+import { SettingsService } from '../settings/settings.service';
+import { createSettingsMock } from '../common/testing/settings.mock';
 
 /**
  * Contrato del CARRITO ATÓMICO (Fase 1 · hallazgos C-1, C-2, A-4).
@@ -80,6 +82,7 @@ describe('SalesService — carrito atómico', () => {
     isActive: true,
     price: new Decimal(50),
     cost: new Decimal(20),
+    taxCategory: 'ZERO',
   };
 
   beforeEach(async () => {
@@ -91,6 +94,7 @@ describe('SalesService — carrito atómico', () => {
         { provide: InventoryBatchesService, useValue: mockBatches },
         { provide: CashShiftService, useValue: mockCashShift },
         { provide: PaymentService, useValue: mockPayment },
+        { provide: SettingsService, useValue: createSettingsMock() },
       ],
     }).compile();
 
@@ -107,10 +111,20 @@ describe('SalesService — carrito atómico', () => {
       id: 77,
       quantity: 3,
       price: new Decimal(50),
+      discountPercent: new Decimal(0),
+      taxRate: new Decimal(0),
     });
-    tx.saleItem.aggregate.mockResolvedValue({
-      _sum: { subtotal: new Decimal(150) },
-    });
+    // Líneas ya guardadas que usa el recálculo de totales.
+    tx.saleItem.findMany.mockResolvedValue([
+      {
+        price: new Decimal(50),
+        quantity: 3,
+        discount: new Decimal(0),
+        subtotal: new Decimal(150),
+        taxAmount: new Decimal(0),
+        taxRate: new Decimal(0),
+      },
+    ]);
     tx.sale.findUniqueOrThrow.mockResolvedValue({ paidAmount: new Decimal(0) });
     tx.sale.update.mockResolvedValue(ventaDraft);
   });
@@ -156,6 +170,44 @@ describe('SalesService — carrito atómico', () => {
         tx.saleItem.upsert,
       );
       expect(create).toMatchObject({ productId: 55, quantity: 4 });
+    });
+  });
+
+  describe('descuento e IVA de la línea', () => {
+    it('al acumular conserva el % de descuento y la tasa congelados en la línea', async () => {
+      tx.saleItem.findUniqueOrThrow.mockResolvedValue({
+        id: 77,
+        quantity: 3,
+        price: new Decimal(116),
+        discountPercent: new Decimal(10),
+        taxRate: new Decimal(0.16),
+      });
+
+      await service.addItem(10, { productId: 55, quantity: 1 });
+
+      // 3 × 116 = 348 − 10 % = 313.20, que contiene 43.20 de IVA
+      const data = dataDe<{
+        discount: Decimal;
+        subtotal: Decimal;
+        taxAmount: Decimal;
+      }>(tx.saleItem.update);
+      expect(data.discount.toFixed(2)).toBe('34.80');
+      expect(data.subtotal.toFixed(2)).toBe('313.20');
+      expect(data.taxAmount.toFixed(2)).toBe('43.20');
+    });
+
+    it('un producto GENERAL nace con la tasa vigente (16 %) congelada', async () => {
+      mockPrisma.product.findUnique.mockResolvedValue({
+        ...producto,
+        price: new Decimal(116),
+        taxCategory: 'GENERAL',
+      });
+      await service.addItem(10, { productId: 55, quantity: 1 });
+      const { create } = argDe<{
+        create: { taxRate: Decimal; taxAmount: Decimal };
+      }>(tx.saleItem.upsert);
+      expect(create.taxRate.toFixed(2)).toBe('0.16');
+      expect(create.taxAmount.toFixed(2)).toBe('16.00');
     });
   });
 

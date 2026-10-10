@@ -15,6 +15,8 @@ import { PerformOperationDto } from './dto/perform-operation.dto';
 import { GetUser } from 'src/common/decorators/get-user.decorator';
 import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { GetShiftsFilterDto } from './dto/get-shifts-filter.dto';
+import { RegisterDrawerEventDto } from './dto/register-drawer-event.dto';
+import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { UserRole } from '@prisma/client';
 import { Roles } from 'src/common/decorators/roles.decorator';
@@ -54,6 +56,7 @@ export class CashShiftController {
     const res = await this.cashShiftService.closeShift(
       user.userId,
       closeShiftDto,
+      user.role,
     );
     return ApiResponse.ok(res, 'Turno cerrado correctamente');
   }
@@ -81,7 +84,12 @@ export class CashShiftController {
    */
   @Get('current-shift')
   async getCurrentShift(@GetUser() user: AuthenticatedUser) {
-    const res = await this.cashShiftService.getCurrentShift(user.userId);
+    // Vista para la pantalla: incluye el estado del cajón (límite de efectivo).
+    // Los demás módulos siguen usando `getCurrentShift`, sin ese cálculo.
+    const res = await this.cashShiftService.getCurrentShiftView(
+      user.userId,
+      user.role,
+    );
     return ApiResponse.ok(res, 'Turno actual obtenido correctamente');
   }
 
@@ -99,8 +107,33 @@ export class CashShiftController {
       filters.userId = user.userId;
     }
 
-    const res = await this.cashShiftService.findAll(filters);
+    const res = await this.cashShiftService.findAll(filters, user.role);
     return ApiResponse.ok(res, 'Turnos obtenidos correctamente');
+  }
+
+  /**
+   * [GERENCIAL] Registra una apertura del cajón SIN venta (manual o de
+   * prueba). El front abre el cajón sólo si esto responde OK.
+   */
+  @Post('drawer-events')
+  @Roles(UserRole.MANAGER)
+  async registerDrawerEvent(
+    @Body() dto: RegisterDrawerEventDto,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    const res = await this.cashShiftService.registerDrawerEvent(
+      user.userId,
+      dto,
+    );
+    return ApiResponse.ok(res, 'Apertura de cajón registrada');
+  }
+
+  /** [AUDITORÍA] Aperturas sin venta. Antes de `:id` para no leerse como id. */
+  @Get('drawer-events')
+  @Roles(UserRole.MANAGER)
+  async listDrawerEvents(@Query() pagination: PaginationParamsDto) {
+    const res = await this.cashShiftService.listDrawerEvents(pagination);
+    return ApiResponse.ok(res, 'Aperturas de cajón obtenidas');
   }
 
   /**

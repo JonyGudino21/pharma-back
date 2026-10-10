@@ -13,6 +13,8 @@ import { InventoryService } from '../inventory/inventory.service';
 import { InventoryBatchesService } from '../inventory/inventory-batches.service';
 import { CashShiftService } from '../cash-shift/cash-shift.service';
 import { PaymentService } from '../payment/payment.service';
+import { SettingsService } from '../settings/settings.service';
+import { createSettingsMock } from '../common/testing/settings.mock';
 
 /**
  * Pruebas del contrato de CONCURRENCIA del cierre de venta (P0-1 / P2-1).
@@ -93,6 +95,7 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
     id: 10,
     clientId: null as number | null,
     total: new Decimal(300),
+    taxTotal: new Decimal(0),
     paidAmount: new Decimal(300),
     balance: new Decimal(0),
     note: null,
@@ -105,6 +108,7 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
         productId: 55,
         quantity: 1,
         price: new Decimal(100),
+        subtotal: new Decimal(100),
         costAtSale: new Decimal(50),
         product: { id: 55, name: 'Ibuprofeno', controlled: false },
       },
@@ -113,6 +117,7 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
         productId: 11,
         quantity: 2,
         price: new Decimal(100),
+        subtotal: new Decimal(200),
         costAtSale: new Decimal(40),
         product: { id: 11, name: 'Paracetamol', controlled: false },
       },
@@ -135,6 +140,7 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
         { provide: InventoryBatchesService, useValue: mockBatches },
         { provide: CashShiftService, useValue: mockCashShift },
         { provide: PaymentService, useValue: mockPayment },
+        { provide: SettingsService, useValue: createSettingsMock() },
       ],
     }).compile();
 
@@ -219,6 +225,59 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
     });
   });
 
+  describe('descuento bajo costo al cerrar', () => {
+    it('una línea con descuento que quedó bajo costo (p. ej. al cambiar de cliente) bloquea el cobro', async () => {
+      tx.sale.findUnique.mockResolvedValue({
+        ...ventaBase,
+        items: [
+          {
+            ...ventaBase.items[0],
+            discountPercent: new Decimal(10),
+            subtotal: new Decimal(45), // costo 50 × 1
+          },
+        ],
+      });
+      await expect(service.completeSale(10, 99)).rejects.toThrow(
+        'por debajo de su costo',
+      );
+      expect(mockBatches.consumeForSale).not.toHaveBeenCalled();
+    });
+
+    it('sin descuento, un precio especial bajo costo NO se bloquea (regla previa)', async () => {
+      tx.sale.findUnique.mockResolvedValue({
+        ...ventaBase,
+        items: [{ ...ventaBase.items[0], subtotal: new Decimal(45) }],
+      });
+      await expect(service.completeSale(10, 99)).resolves.toBeDefined();
+    });
+  });
+
+  describe('utilidad', () => {
+    it('se calcula SIN IVA: el impuesto cobrado no es ingreso de la farmacia', async () => {
+      // Total $348 con $48 de IVA incluido; costo de lo vendido $200.
+      tx.sale.findUnique.mockResolvedValue({
+        ...ventaBase,
+        total: new Decimal(348),
+        taxTotal: new Decimal(48),
+      });
+      mockBatches.consumeForSale.mockResolvedValue({
+        totalCost: new Decimal(100),
+        takes: [],
+      });
+
+      await service.completeSale(10, 99);
+
+      const updates = tx.sale.update.mock.calls as [
+        { data: { profit?: Decimal } },
+      ][];
+      const cierre = updates
+        .map((c) => c[0].data)
+        .find((d) => d.profit !== undefined);
+      // 348 − 48 − (2 líneas × 100) = 100
+      expect(cierre?.profit?.toFixed(2)).toBe('100.00');
+    });
+  });
+
   describe('prevención de deadlocks', () => {
     it('descuenta inventario en orden ascendente de productId', async () => {
       // Los items llegan desordenados (55 antes que 11) a propósito.
@@ -241,6 +300,7 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
           productId: 80,
           quantity: 1,
           price: new Decimal(300),
+          subtotal: new Decimal(300),
           costAtSale: new Decimal(90),
           product: { id: 80, name: 'Clonazepam', controlled: true },
         },

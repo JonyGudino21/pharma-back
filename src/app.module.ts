@@ -18,6 +18,7 @@ import { InventoryModule } from './inventory/inventory.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { CompanyModule } from './company/company.module';
 import { HealthModule } from './health/health.module';
+import { SettingsModule } from './settings/settings.module';
 import { envValidationSchema } from './config/env.validation';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { LoggerModule } from 'nestjs-pino';
@@ -72,6 +73,7 @@ import { buildPinoHttpOptions } from './logger/pino.config';
     AnalyticsModule,
     CompanyModule,
     HealthModule,
+    SettingsModule,
   ],
   controllers: [AppController],
   providers: [

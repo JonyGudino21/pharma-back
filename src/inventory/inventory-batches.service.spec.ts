@@ -5,6 +5,8 @@ import { ControlledLogEntryType, MovementType, Prisma } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { InventoryBatchesService } from './inventory-batches.service';
 import { InventoryService } from './inventory.service';
+import { SettingsService } from '../settings/settings.service';
+import { createSettingsMock } from '../common/testing/settings.mock';
 import { PrismaService } from '../../prisma/prisma.service';
 
 jest.mock('./fefo', () => {
@@ -32,6 +34,7 @@ describe('InventoryBatchesService — consumo FEFO', () => {
   };
 
   const mockPrisma = {};
+  const settings = createSettingsMock();
   const mockInventory = {
     lockProductRow: jest.fn(),
     registerMovement: jest.fn(),
@@ -45,11 +48,13 @@ describe('InventoryBatchesService — consumo FEFO', () => {
         InventoryBatchesService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: InventoryService, useValue: mockInventory },
+        { provide: SettingsService, useValue: settings },
       ],
     }).compile();
 
     service = module.get(InventoryBatchesService);
     jest.clearAllMocks();
+    settings.reset();
     mockInventory.lockProductRow.mockResolvedValue(undefined);
     mockInventory.registerMovement.mockImplementation(
       (dto: { quantity: number; batchId?: number }) =>
@@ -188,6 +193,90 @@ describe('InventoryBatchesService — consumo FEFO', () => {
     ).rejects.toThrow(/lotes caducados|Stock insuficiente/);
 
     expect(mockInventory.registerMovement).not.toHaveBeenCalled();
+  });
+
+  describe('criterio de caducidad desde Configuración › Inventario', () => {
+    const venta = {
+      productId: 1,
+      productName: 'Clonazepam',
+      controlled: true, // sin residual sin lote: el lote de hoy es lo único
+      quantity: 1,
+      saleItemId: 50,
+      saleId: 9,
+      reason: 'Venta #9',
+    };
+
+    beforeEach(() => {
+      tx.product.findUnique.mockResolvedValue(producto(5));
+      // "Hoy" en estas pruebas es 2026-09-03 (ver jest.mock de ./fefo).
+      tx.productBatch.findMany.mockResolvedValue([
+        { id: 4, quantity: 5, expiryDate: d('2026-09-03'), cost: cost(9) },
+      ]);
+    });
+
+    it('inclusivo (fábrica): el lote que caduca HOY todavía se vende', async () => {
+      const res = await service.consumeForSale(txClient, venta, 99);
+      expect(res.takes).toEqual([{ batchId: 4, quantity: 1 }]);
+      expect(settings.get).toHaveBeenCalledWith('inventory');
+    });
+
+    it('exclusivo: el mismo lote se rechaza, sin tocar el Kardex', async () => {
+      settings.set('inventory', { expiryInclusive: false });
+      await expect(service.consumeForSale(txClient, venta, 99)).rejects.toThrow(
+        ConflictException,
+      );
+      expect(mockInventory.registerMovement).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('lista "Por caducar" con umbrales configurables', () => {
+    const findMany = jest.fn();
+    const count = jest.fn();
+
+    beforeEach(() => {
+      Object.assign(mockPrisma, {
+        productBatch: { findMany, count },
+        $transaction: (ops: Promise<unknown>[]) => Promise.all(ops),
+      });
+      findMany.mockResolvedValue([
+        // 2026-09-03 + 20 días = 2026-09-23
+        {
+          id: 1,
+          lotNumber: 'A',
+          expiryDate: d('2026-09-23'),
+          quantity: 3,
+          cost: cost(5),
+          product: { id: 1, name: 'X', sku: 'X', controlled: false },
+        },
+      ]);
+      count.mockResolvedValue(1);
+    });
+
+    it('sin `days` usa el horizonte configurado y devuelve los criterios', async () => {
+      settings.set('inventory', {
+        expiryAlertDays: 120,
+        expiryCriticalDays: 15,
+        expiryWarningDays: 45,
+      });
+
+      const res = await service.listExpiring({});
+
+      const where = (
+        findMany.mock.calls[0] as [{ where: { expiryDate: { lte: Date } } }]
+      )[0].where;
+      expect(where.expiryDate.lte.toISOString().slice(0, 10)).toBe(
+        '2027-01-01',
+      );
+      expect(res.criteria).toEqual({ days: 120, critical: 15, warning: 45 });
+      // 20 días: con crítico=15 ya NO es rojo, es amarillo.
+      expect(res.data[0].status).toBe('WARNING');
+    });
+
+    it('con los umbrales de fábrica, 20 días es CRÍTICO', async () => {
+      const res = await service.listExpiring({ days: 30 });
+      expect(res.criteria).toEqual({ days: 30, critical: 30, warning: 60 });
+      expect(res.data[0].status).toBe('CRITICAL');
+    });
   });
 
   describe('guardia de completitud del libro de controlados (COFEPRIS)', () => {

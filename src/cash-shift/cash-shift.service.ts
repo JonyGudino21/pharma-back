@@ -3,20 +3,24 @@ import {
   BadRequestException,
   ConflictException,
   NotFoundException,
+  Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   CashTransactionType,
   PaymentMethod,
   ShiftStatus,
+  UserRole,
 } from '@prisma/client';
 import { PerformOperationDto } from './dto/perform-operation.dto';
 import { OpenShiftDto } from './dto/open-shift.dto';
 import { CloseShiftDto } from './dto/close-shift.dto';
 import { Decimal } from '@prisma/client/runtime/library';
 import { Prisma } from '@prisma/client';
-import { ConfigService } from '@nestjs/config';
+import { SettingsService } from 'src/settings/settings.service';
 import { GetShiftsFilterDto } from './dto/get-shifts-filter.dto';
+import { RegisterDrawerEventDto } from './dto/register-drawer-event.dto';
+import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
 import {
   buildPaginationMeta,
   resolvePagination,
@@ -29,11 +33,34 @@ import {
  */
 const LOCK_TURNO_POR_USUARIO = 7001;
 
+/** Tipos de movimiento que SUMAN efectivo al cajón. El resto lo resta. */
+const INGRESOS_DE_CAJA: ReadonlySet<CashTransactionType> = new Set([
+  CashTransactionType.MANUAL_ADD,
+  CashTransactionType.SALE_INCOME,
+  CashTransactionType.CREDIT_PAYMENT,
+]);
+
+/** Quién puede ver el esperado y la diferencia aun con cierre ciego. */
+function veArqueoCompleto(role?: UserRole): boolean {
+  return role === UserRole.MANAGER || role === UserRole.ADMIN;
+}
+
+export interface CashPosition {
+  initial: Decimal;
+  salesCash: Decimal;
+  manualIngress: Decimal;
+  withdrawals: Decimal;
+  /** Inicio + ventas en efectivo + ingresos − egresos. */
+  expected: Decimal;
+}
+
 @Injectable()
 export class CashShiftService {
+  private readonly logger = new Logger(CashShiftService.name);
+
   constructor(
     private prisma: PrismaService,
-    private readonly config: ConfigService,
+    private readonly settings: SettingsService,
   ) {}
 
   /**
@@ -111,6 +138,75 @@ export class CashShiftService {
   }
 
   /**
+   * Turno actual PARA LA PANTALLA, con el estado del cajón.
+   *
+   * `drawer.overLimit` avisa que el efectivo rebasó el máximo configurado y
+   * toca hacer un retiro: menos efectivo expuesto ante un asalto.
+   *
+   * El efectivo estimado (`cashOnHand`) SÓLO lo recibe gerencia. Si el
+   * cajero viera en vivo cuánto "debería" haber, contaría hacia ese número al
+   * cerrar y el arqueo dejaría de medir nada. Al cajero sólo se le dice si
+   * rebasó el límite.
+   */
+  async getCurrentShiftView(userId: number, role?: UserRole) {
+    const shift = await this.getCurrentShift(userId);
+    if (!shift) return null;
+
+    const cfg = await this.settings.get('cash');
+    const position = await this.computeCashPosition(this.prisma, shift);
+    const limit = cfg.maxCashInDrawer;
+
+    return {
+      ...shift,
+      drawer: {
+        limit,
+        overLimit: limit > 0 && position.expected.gt(limit),
+        cashOnHand: veArqueoCompleto(role) ? position.expected : null,
+        blindClose: cfg.blindClose,
+      },
+    };
+  }
+
+  /**
+   * Efectivo que DEBERÍA haber en el cajón. Una sola fórmula para el cierre y
+   * para el aviso de límite: si fueran dos, el aviso y el arqueo podrían
+   * contradecirse.
+   */
+  private async computeCashPosition(
+    db: Prisma.TransactionClient | PrismaService,
+    shift: { id: number; initialAmount: Decimal | number },
+  ): Promise<CashPosition> {
+    // A. Ventas en EFECTIVO asociadas a este turno
+    const salesAggregate = await db.salePayment.aggregate({
+      where: { cashShiftId: shift.id, method: PaymentMethod.CASH },
+      _sum: { amount: true },
+    });
+    const salesCash = new Decimal(salesAggregate._sum.amount ?? 0);
+
+    // B. Movimientos manuales (entradas y salidas)
+    const transactions = await db.cashTransaction.findMany({
+      where: { shiftId: shift.id },
+    });
+
+    let manualIngress = new Decimal(0);
+    let withdrawals = new Decimal(0);
+    for (const t of transactions) {
+      if (INGRESOS_DE_CAJA.has(t.type))
+        manualIngress = manualIngress.add(t.amount);
+      else withdrawals = withdrawals.add(t.amount);
+    }
+
+    const initial = new Decimal(shift.initialAmount);
+    return {
+      initial,
+      salesCash,
+      manualIngress,
+      withdrawals,
+      expected: initial.add(salesCash).add(manualIngress).sub(withdrawals),
+    };
+  }
+
+  /**
    * Registra una operación manual (Sangría o Ingreso)
    * @param userId el ID del usuario
    * @param dto los datos de la operación
@@ -168,7 +264,9 @@ export class CashShiftService {
    * @param dto los datos del cierre del turno
    * @returns el resumen del cierre del turno
    */
-  async closeShift(userId: number, dto: CloseShiftDto) {
+  async closeShift(userId: number, dto: CloseShiftDto, role?: UserRole) {
+    const cfg = await this.settings.get('cash');
+
     const shift = await this.getCurrentShift(userId);
     if (!shift)
       throw new BadRequestException('No tienes un turno abierto para cerrar.');
@@ -197,35 +295,9 @@ export class CashShiftService {
         );
       }
 
-      // A. Sumar todas las ventas en EFECTIVO asociadas a este turno
-      const salesAggregate = await tx.salePayment.aggregate({
-        where: { cashShiftId: shift.id, method: PaymentMethod.CASH },
-        _sum: { amount: true },
-      });
-      const totalSalesCash = salesAggregate._sum.amount || new Decimal(0);
-
-      // B. Sumar movimientos manuales (Entradas y Salidas)
-      const transactions = await tx.cashTransaction.findMany({
-        where: { shiftId: shift.id },
-      });
-
-      let totalManualIngress = new Decimal(0);
-      let totalManualEgress = new Decimal(0);
-
-      for (const t of transactions) {
-        if (['MANUAL_ADD', 'SALE_INCOME', 'CREDIT_PAYMENT'].includes(t.type)) {
-          totalManualIngress = totalManualIngress.add(t.amount);
-        } else {
-          totalManualEgress = totalManualEgress.add(t.amount);
-        }
-      }
-
-      // C. La fórmula Mágica del Dinero Esperado
-      // Esperado = Inicio + VentasEfectivo + IngresosManuales - EgresosManuales
-      const expectedAmount = new Decimal(shift.initialAmount)
-        .add(totalSalesCash)
-        .add(totalManualIngress)
-        .sub(totalManualEgress);
+      // A-C. Esperado = Inicio + VentasEfectivo + Ingresos − Egresos
+      const position = await this.computeCashPosition(tx, shift);
+      const expectedAmount = position.expected;
 
       // D. Calcular Diferencia
       // real (lo que contó el cajero) - expected (lo que dice el sistema)
@@ -233,14 +305,12 @@ export class CashShiftService {
 
       // E. Determinar estado final (Si falta mucho dinero, marcamos AUDIT_REQUIRED)
       //
-      // El umbral se lee de la configuración VALIDADA, no de process.env.
-      // Con process.env, si la variable no estaba definida el resultado era
-      // Number(undefined) = NaN, y `|diferencia| > NaN` es SIEMPRE falso: el
-      // control antifraude quedaba silenciosamente desactivado.
-      // La comparación se hace en Decimal para no pasar por float.
-      const tolerance = new Decimal(
-        this.config.get<number>('TOLERANCE_THRESHOLD') ?? 20,
-      );
+      // El umbral viene de Configuración › Caja (validado: número ≥ 0, nunca
+      // NaN). Antes se leía de process.env y, si faltaba la variable, quedaba
+      // en NaN: `|diferencia| > NaN` es SIEMPRE falso y el control antifraude
+      // se apagaba en silencio. El entorno ahora sólo aporta el valor de
+      // fábrica. La comparación se hace en Decimal para no pasar por float.
+      const tolerance = new Decimal(cfg.closeTolerance);
       const finalStatus: ShiftStatus = difference.abs().gt(tolerance)
         ? ShiftStatus.AUDIT_REQUIRED
         : ShiftStatus.CLOSED;
@@ -260,17 +330,30 @@ export class CashShiftService {
         },
       });
 
+      // CIERRE CIEGO: el cajero no ve el esperado ni la diferencia —ni el
+      // estado, que delataría un faltante grande—. El arqueo completo queda
+      // guardado y gerencia lo ve en el detalle del turno.
+      if (cfg.blindClose && !veArqueoCompleto(role)) {
+        return {
+          success: true,
+          blind: true,
+          summary: { initial: shift.initialAmount, real: dto.realAmount },
+        };
+      }
+
       return {
         success: true,
+        blind: false,
         summary: {
           initial: shift.initialAmount,
-          salesCash: totalSalesCash,
-          manualIngress: totalManualIngress,
-          withdrawals: totalManualEgress,
+          salesCash: position.salesCash,
+          manualIngress: position.manualIngress,
+          withdrawals: position.withdrawals,
           expected: expectedAmount,
           real: dto.realAmount,
           difference: difference, // Frontend mostrará esto en Rojo o Verde
           status: finalStatus,
+          tolerance: cfg.closeTolerance,
         },
       };
     });
@@ -281,7 +364,7 @@ export class CashShiftService {
    * @param filters filtros de búsqueda
    * @returns todos los turnos de caja
    */
-  async findAll(filters?: GetShiftsFilterDto) {
+  async findAll(filters?: GetShiftsFilterDto, role?: UserRole) {
     const paginacion = resolvePagination(filters);
 
     const where: Prisma.CashShiftWhereInput = {};
@@ -318,10 +401,67 @@ export class CashShiftService {
       this.prisma.cashShift.count({ where }),
     ]);
 
+    // Con cierre ciego, el historial de un cajero tampoco muestra el esperado
+    // ni la diferencia: si no, bastaría abrir la lista para ver el arqueo que
+    // el cierre le ocultó. Gerencia ve todo.
+    const { blindClose } = await this.settings.get('cash');
+    const visibles =
+      blindClose && !veArqueoCompleto(role)
+        ? shifts.map((s) => ({
+            ...s,
+            expectedAmount: null,
+            difference: null,
+            status:
+              s.status === ShiftStatus.OPEN ? s.status : ShiftStatus.CLOSED,
+          }))
+        : shifts;
+
     return {
-      shifts,
+      shifts: visibles,
       pagination: buildPaginationMeta(total, paginacion),
     };
+  }
+
+  /**
+   * Registra una apertura del cajón SIN venta, ANTES de abrirlo.
+   *
+   * El front sólo manda el pulso al cajón si este registro se guardó: si el
+   * servidor no responde, el cajón no se abre. "Abrir sin venta" es la vía
+   * clásica para sacar dinero sin rastro; así cada apertura tiene quién,
+   * cuándo, desde qué caja y por qué, ligada al turno abierto si lo hay.
+   */
+  async registerDrawerEvent(userId: number, dto: RegisterDrawerEventDto) {
+    const shift = await this.getCurrentShift(userId);
+    const event = await this.prisma.cashDrawerEvent.create({
+      data: {
+        kind: dto.kind,
+        reason: dto.reason.trim(),
+        terminal: dto.terminal?.trim() || null,
+        userId,
+        shiftId: shift?.id ?? null,
+      },
+    });
+    this.logger.log(
+      `event=cash_drawer.opened kind=${dto.kind} userId=${userId} shiftId=${shift?.id ?? '-'} terminal="${event.terminal ?? '-'}"`,
+    );
+    return event;
+  }
+
+  /** Bitácora de aperturas sin venta, lo más reciente primero (gerencia). */
+  async listDrawerEvents(pagination?: PaginationParamsDto) {
+    const page = resolvePagination(pagination);
+    const [items, total] = await Promise.all([
+      this.prisma.cashDrawerEvent.findMany({
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        skip: page.skip,
+        take: page.take,
+        include: {
+          user: { select: { id: true, firstName: true, lastName: true } },
+        },
+      }),
+      this.prisma.cashDrawerEvent.count(),
+    ]);
+    return { items, pagination: buildPaginationMeta(total, page) };
   }
 
   async findOne(id: number) {
@@ -332,6 +472,13 @@ export class CashShiftService {
           select: { id: true, userName: true, firstName: true, lastName: true },
         },
         transactions: true, // Movimientos de dinero manuales
+        // Aperturas del cajón sin venta: se revisan junto al arqueo.
+        drawerEvents: {
+          orderBy: { createdAt: 'asc' },
+          include: {
+            user: { select: { id: true, firstName: true, lastName: true } },
+          },
+        },
         sales: {
           select: {
             id: true,

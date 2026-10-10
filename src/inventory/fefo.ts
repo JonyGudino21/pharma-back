@@ -19,6 +19,10 @@ const LOT_MAX_LEN = 40;
  *
  * No se deja como constante en el código a propósito: es una regla sanitaria,
  * no una decisión de implementación, y debe poder cambiarse sin recompilar.
+ *
+ * Desde la configuración de inventario, el valor VIGENTE es
+ * `inventory.expiryInclusive` (lo cambia gerencia y queda en la bitácora). La
+ * variable de entorno sólo fija el valor de fábrica de esa configuración.
  */
 export function isExpiryInclusive(): boolean {
   return process.env.EXPIRY_INCLUSIVE !== 'false';
@@ -74,13 +78,17 @@ export function allocateFefo(
   batches: BatchStock[],
   required: number,
   today: Date = todayInMexico(),
+  /**
+   * Criterio de caducidad. Los servicios lo pasan desde la configuración de
+   * inventario (`expiryInclusive`); el default sólo cubre llamadas sin ella.
+   */
+  inclusive: boolean = isExpiryInclusive(),
 ): { takes: BatchTake[]; missing: number } {
   if (required <= 0) {
     return { takes: [], missing: 0 };
   }
 
   const todayDay = toUtcDateOnly(today);
-  const inclusive = isExpiryInclusive();
   const sellable = batches
     .filter((b) => {
       if (b.quantity <= 0) return false;
@@ -153,11 +161,20 @@ export function daysUntilExpiry(
   return Math.round(ms / 86_400_000);
 }
 
+/** Umbrales del semáforo, en días. Vienen de la configuración de inventario. */
+export type ExpiryThresholds = { critical: number; warning: number };
+
+export const DEFAULT_EXPIRY_THRESHOLDS: ExpiryThresholds = {
+  critical: 30,
+  warning: 60,
+};
+
 export function expiryTrafficLight(
   days: number,
+  thresholds: ExpiryThresholds = DEFAULT_EXPIRY_THRESHOLDS,
 ): 'EXPIRED' | 'CRITICAL' | 'WARNING' | 'OK' {
   if (days < 0) return 'EXPIRED';
-  if (days < 30) return 'CRITICAL';
-  if (days <= 60) return 'WARNING';
+  if (days < thresholds.critical) return 'CRITICAL';
+  if (days <= thresholds.warning) return 'WARNING';
   return 'OK';
 }

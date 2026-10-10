@@ -15,6 +15,7 @@ import { AuthAuditService } from './auth-audit.service';
 import { LoginDto } from './dto/login.dto';
 import { UserRole } from '@prisma/client';
 import { UserPermissions } from './types/user-permissions.types';
+import { permissionsForRole } from './permissions';
 import { USER_PUBLIC_SELECT } from '../user/user.select';
 
 type JwtPayload = { sub: number; role: string; userName: string };
@@ -443,68 +444,12 @@ export class AuthService {
   }
 
   /**
-   * Mapa de permisos basado en el rol del usuario (Enterprise).
-   * El frontend usa estos flags para UI; el backend debe reforzar con @Roles() en cada endpoint.
-   * Ver types/user-permissions.types.ts para la matriz rol-permiso.
+   * Permisos del rol. La matriz vive en `permissions.ts` (función pura) para
+   * que `/auth/me` y la pantalla Configuración › Permisos lean LA MISMA
+   * fuente: si fueran dos, la pantalla podría prometer algo que el sistema no
+   * concede.
    */
   getUserPermissions(role: UserRole): UserPermissions {
-    const isAdmin = role === UserRole.ADMIN;
-    const isManager = role === UserRole.MANAGER;
-    const isManagerOrAdmin = isManager || isAdmin;
-    const isPharmacist = role === UserRole.PHARMACIST;
-    const canOperatePOS = true; // CASHIER, PHARMACIST, MANAGER, ADMIN
-
-    return {
-      // ---- Ventas (sales) ----
-      canSell: canOperatePOS,
-      canCancelSales: isManagerOrAdmin,
-      canGiveDiscounts: isManagerOrAdmin,
-      canReturnSales: isManagerOrAdmin,
-      canViewSalesSummary: canOperatePOS,
-      canPrintReceipt: canOperatePOS,
-
-      // ---- Empresa / ticket ----
-      canManageCompany: isManagerOrAdmin,
-
-      // ---- Clientes (client) ----
-      canViewClients: canOperatePOS,
-      canCreateClient: canOperatePOS,
-      canEditClient: isManagerOrAdmin,
-      canDeleteClient: isManagerOrAdmin,
-      canViewDebtors: isManagerOrAdmin,
-      canViewAccountStatement: canOperatePOS,
-      canUpdateCreditConfig: isManagerOrAdmin,
-      canRegisterClientPayment: canOperatePOS,
-
-      // ---- Categorías (category) ----
-      canManageCategories: isManagerOrAdmin || isPharmacist,
-
-      // ---- Inventario (inventory) ----
-      canViewKardex: isManagerOrAdmin || isPharmacist,
-      canAdjustInventory: isManagerOrAdmin,
-      canViewLowStockAlerts: isManagerOrAdmin || isPharmacist,
-      canViewInventoryValuation: isManagerOrAdmin,
-      canViewExpiringBatches: isManagerOrAdmin || isPharmacist,
-      canViewControlledLog: isManagerOrAdmin || isPharmacist,
-
-      // ---- Caja (cash-shift) ----
-      canOpenShift: canOperatePOS,
-      canWithdrawCash: isManagerOrAdmin,
-      canViewAllShifts: isManagerOrAdmin,
-
-      // ---- Reportes / Analytics ----
-      canViewAnalytics: isManagerOrAdmin,
-
-      // ---- Catálogos ----
-      canManageProducts: isManagerOrAdmin || isPharmacist,
-      canManageSuppliers: isManagerOrAdmin,
-
-      // ---- Compras (purchase) ----
-      canViewPurchases: isManagerOrAdmin || isPharmacist,
-      canManagePurchases: isManagerOrAdmin || isPharmacist,
-
-      // ---- Usuarios ----
-      canManageUsers: isAdmin,
-    };
+    return permissionsForRole(role);
   }
 }

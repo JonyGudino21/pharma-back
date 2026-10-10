@@ -8,9 +8,14 @@ import {
   Query,
   UseGuards,
   ParseIntPipe,
+  ParseEnumPipe,
   Headers,
 } from '@nestjs/common';
+import { PrintDocument } from '@prisma/client';
 import { SalesService } from './sales.service';
+import { SaleDiscountsService } from './sale-discounts.service';
+import { ApplyDiscountDto } from './dto/apply-discount.dto';
+import { Throttle } from '@nestjs/throttler';
 import { CreateSaleDto, SaleItemDto } from './dto/create-sale.dto';
 import { SetClientDto } from './dto/set-client.dto';
 import { UpdateSaleItemDto } from './dto/update-sale-item.dto';
@@ -31,7 +36,10 @@ import type { AuthenticatedUser } from 'src/auth/types/authenticated-user.type';
 @Controller('sales')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class SalesController {
-  constructor(private readonly salesService: SalesService) {}
+  constructor(
+    private readonly salesService: SalesService,
+    private readonly discounts: SaleDiscountsService,
+  ) {}
 
   /**
    * [OPERATIVO] Lista ventas con paginación. (Cajeros ven historial general).
@@ -95,8 +103,12 @@ export class SalesController {
    * Debe ir antes de GET :id para que "prints" no se interprete como id.
    */
   @Get(':id/prints')
-  async listPrints(@Param('id', ParseIntPipe) id: number) {
-    const data = await this.salesService.listPrints(id);
+  async listPrints(
+    @Param('id', ParseIntPipe) id: number,
+    @Query('document', new ParseEnumPipe(PrintDocument, { optional: true }))
+    document?: PrintDocument,
+  ) {
+    const data = await this.salesService.listPrints(id, document);
     return ApiResponse.ok(data, 'Historial de impresiones obtenido');
   }
 
@@ -164,6 +176,43 @@ export class SalesController {
     await this.salesService.assertCanOperateDraft(id, user);
     const data = await this.salesService.updateItem(id, itemId, dto.quantity);
     return ApiResponse.ok(data, 'Cantidad actualizada correctamente');
+  }
+
+  /**
+   * [OPERATIVO/POS] Descuento en una línea. Por encima del tope del rol exige
+   * `authorizer` (credenciales de un gerente). Límite de intentos: la
+   * verificación de contraseña no debe poder probarse por fuerza bruta.
+   */
+  @Patch(':id/items/:itemId/discount')
+  @Throttle({ default: { limit: 20, ttl: 60000 } })
+  async discountItem(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('itemId', ParseIntPipe) itemId: number,
+    @Body() dto: ApplyDiscountDto,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    await this.salesService.assertCanOperateDraft(id, user);
+    const data = await this.discounts.applyToItem(id, itemId, dto, {
+      id: user.userId,
+      role: user.role,
+    });
+    return ApiResponse.ok(data, data.message);
+  }
+
+  /** [OPERATIVO/POS] Descuento en toda la venta (mismo % en cada línea). */
+  @Patch(':id/discount')
+  @Throttle({ default: { limit: 20, ttl: 60000 } })
+  async discountSale(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: ApplyDiscountDto,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    await this.salesService.assertCanOperateDraft(id, user);
+    const data = await this.discounts.applyToSale(id, dto, {
+      id: user.userId,
+      role: user.role,
+    });
+    return ApiResponse.ok(data, data.message);
   }
 
   /**
@@ -270,6 +319,7 @@ export class SalesController {
       user.userId,
       dto.channel,
       dto.templateId,
+      dto.document,
     );
     return ApiResponse.ok(data, 'Impresión registrada');
   }

@@ -9,10 +9,10 @@ import { ControlledLogEntryType, MovementType, Prisma } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { PrismaService } from '../../prisma/prisma.service';
 import { InventoryService } from './inventory.service';
+import { SettingsService } from 'src/settings/settings.service';
 import {
   allocateFefo,
   daysUntilExpiry,
-  isExpiryInclusive,
   expiryTrafficLight,
   normalizeLotNumber,
   restoreFefo,
@@ -34,6 +34,7 @@ export class InventoryBatchesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly inventory: InventoryService,
+    private readonly settings: SettingsService,
   ) {}
 
   async getSellableQuantity(
@@ -57,7 +58,8 @@ export class InventoryBatchesService {
     // stock vendible que se muestra al cajero no coincidiría con el que el
     // sistema acepta despachar (con el flag en `false`, un lote que caduca hoy
     // se contaría como vendible aquí y se rechazaría al cerrar la venta).
-    const expiredFilter = isExpiryInclusive()
+    const { expiryInclusive } = await this.settings.get('inventory');
+    const expiredFilter = expiryInclusive
       ? { lt: today } // vale su propio día: caducado sólo si es anterior a hoy
       : { lte: today }; // la fecha impresa es el primer día no válido
 
@@ -113,10 +115,14 @@ export class InventoryBatchesService {
 
     const batchSum = batches.reduce((acc, b) => acc + b.quantity, 0);
     const unbatched = Math.max(0, product.stock - batchSum);
+    // Mismo criterio que `getSellable`: si no coincidieran, el cajero vería
+    // unidades vendibles que el cierre de la venta rechazaría.
+    const { expiryInclusive } = await this.settings.get('inventory');
     const { takes, missing } = allocateFefo(
       batches,
       params.quantity,
       todayInMexico(),
+      expiryInclusive,
     );
 
     let unbatchedTake = 0;
@@ -456,7 +462,12 @@ export class InventoryBatchesService {
   }
 
   async listExpiring(query: { days?: number; page?: number; limit?: number }) {
-    const days = query.days ?? 90;
+    const cfg = await this.settings.get('inventory');
+    const thresholds = {
+      critical: cfg.expiryCriticalDays,
+      warning: cfg.expiryWarningDays,
+    };
+    const days = query.days ?? cfg.expiryAlertDays;
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
     const today = todayInMexico();
@@ -492,13 +503,16 @@ export class InventoryBatchesService {
         quantity: row.quantity,
         cost: row.cost,
         daysLeft,
-        status: expiryTrafficLight(daysLeft),
+        status: expiryTrafficLight(daysLeft, thresholds),
         product: row.product,
       };
     });
 
     return {
       data,
+      // El front pinta la leyenda del semáforo con los MISMOS umbrales que se
+      // usaron para clasificar: nunca "rojo < 30" mientras el servidor usa 15.
+      criteria: { days, ...thresholds },
       pagination: {
         total,
         page,

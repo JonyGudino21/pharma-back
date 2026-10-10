@@ -5,6 +5,8 @@ import { UserRole } from '@prisma/client';
 import { ProductService } from './product.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { InventoryBatchesService } from '../inventory/inventory-batches.service';
+import { SettingsService } from '../settings/settings.service';
+import { createSettingsMock } from '../common/testing/settings.mock';
 import { argDe } from '../common/testing/mock-inspect.util';
 
 /**
@@ -25,6 +27,7 @@ describe('ProductService · campos sensibles en la edición', () => {
     cost: new Decimal(50),
     price: new Decimal(90),
     stock: 12,
+    taxCategory: 'ZERO',
     categories: [],
   };
 
@@ -47,6 +50,7 @@ describe('ProductService · campos sensibles en la edición', () => {
         ProductService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: InventoryBatchesService, useValue: {} },
+        { provide: SettingsService, useValue: createSettingsMock() },
       ],
     }).compile();
 
@@ -79,6 +83,21 @@ describe('ProductService · campos sensibles en la edición', () => {
       await expect(editar({ cost: 10 }, UserRole.PHARMACIST)).rejects.toThrow(
         ForbiddenException,
       );
+    });
+
+    it('NO puede cambiar el tratamiento de IVA (decisión fiscal)', async () => {
+      await expect(
+        editar({ taxCategory: 'GENERAL' }, UserRole.PHARMACIST),
+      ).rejects.toThrow('tratamiento de IVA');
+      expect(mockPrisma.product.update).not.toHaveBeenCalled();
+    });
+
+    it('SÍ puede guardar la ficha con el MISMO IVA', async () => {
+      await editar(
+        { taxCategory: 'ZERO', name: 'Clonazepam' },
+        UserRole.PHARMACIST,
+      );
+      expect(mockPrisma.product.update).toHaveBeenCalled();
     });
 
     it('SÍ puede guardar la ficha completa si no cambia esos campos', async () => {

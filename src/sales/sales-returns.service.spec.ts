@@ -11,6 +11,8 @@ import { InventoryService } from '../inventory/inventory.service';
 import { InventoryBatchesService } from '../inventory/inventory-batches.service';
 import { CashShiftService } from '../cash-shift/cash-shift.service';
 import { PaymentService } from '../payment/payment.service';
+import { SettingsService } from '../settings/settings.service';
+import { createSettingsMock } from '../common/testing/settings.mock';
 
 /**
  * Contrato de DEVOLUCIONES (P0-2). No requiere base de datos.
@@ -80,6 +82,7 @@ describe('SalesService — devoluciones', () => {
       productId: 100,
       quantity: 10,
       price: new Decimal(50),
+      subtotal: new Decimal(500),
       product: { controlled: false },
     },
   ];
@@ -93,6 +96,7 @@ describe('SalesService — devoluciones', () => {
         { provide: InventoryBatchesService, useValue: mockBatches },
         { provide: CashShiftService, useValue: mockCashShift },
         { provide: PaymentService, useValue: mockPayment },
+        { provide: SettingsService, useValue: createSettingsMock() },
       ],
     }).compile();
 
@@ -156,6 +160,40 @@ describe('SalesService — devoluciones', () => {
         99,
       );
       expect(res.totalReturned.toString()).toBe('100'); // 2 x $50
+    });
+
+    it('con descuento se reembolsa el NETO pagado, no el precio de lista', async () => {
+      // 10 × $50 = $500 con 50 % → se pagaron $250. Devolver 2 = $50, no $100.
+      tx.saleItem.findMany.mockResolvedValue([
+        {
+          ...itemsVenta[0],
+          subtotal: new Decimal(250),
+          discount: new Decimal(250),
+        },
+      ]);
+      const res = await service.createReturn(
+        1,
+        { items: [{ saleItemId: 10, quantity: 2, restock: true }] },
+        99,
+      );
+      expect(res.totalReturned.toFixed(2)).toBe('50.00');
+    });
+
+    it('devoluciones parciales sucesivas cuadran al centavo con lo pagado', async () => {
+      // 3 unidades por $100.00 netos: ya se devolvieron 2 → la última vale 33.33
+      tx.saleItem.findMany.mockResolvedValue([
+        { ...itemsVenta[0], quantity: 3, subtotal: new Decimal(100) },
+      ]);
+      tx.saleReturnItem.groupBy.mockResolvedValue([
+        { saleItemId: 10, _sum: { quantity: 2 } },
+      ]);
+      const res = await service.createReturn(
+        1,
+        { items: [{ saleItemId: 10, quantity: 1, restock: true }] },
+        99,
+      );
+      // asignado(3) − asignado(2) = 100.00 − 66.67 = 33.33
+      expect(res.totalReturned.toFixed(2)).toBe('33.33');
     });
 
     it('consolida líneas repetidas del mismo item en una sola petición', async () => {

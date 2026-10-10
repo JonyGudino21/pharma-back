@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException, ConflictException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { SettingsService } from '../settings/settings.service';
+import { createSettingsMock } from '../common/testing/settings.mock';
 import { CashShiftService } from './cash-shift.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ordenDe } from '../common/testing/mock-inspect.util';
@@ -33,7 +34,7 @@ describe('CashShiftService · apertura y operaciones sin carreras', () => {
       providers: [
         CashShiftService,
         { provide: PrismaService, useValue: mockPrisma },
-        { provide: ConfigService, useValue: { get: jest.fn() } },
+        { provide: SettingsService, useValue: createSettingsMock() },
       ],
     }).compile();
 
