@@ -1757,7 +1757,7 @@ export class SalesService {
     if (s.controlled && s.sellable === 0) {
       throw new BadRequestException(
         `${s.name} es un medicamento controlado y no tiene lotes vigentes. ` +
-          'Registra su lote y caducidad en Inventario antes de venderlo.',
+          'Asígnale lote y caducidad en Inventario › Asignar lote antes de venderlo.',
       );
     }
     throw new BadRequestException(

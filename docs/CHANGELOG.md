@@ -5,6 +5,13 @@ AAAA-MM-DD.
 
 ## Sin publicar
 
+### Agregado (10/10/2026)
+
+- **Asignar lote a existencia sin lote** (`POST /inventory/batches/regularize`, gerencia, ADR-0022). La
+  existencia anterior a los lotes no entraba al FEFO y los controlados así no se podían vender.
+  `GET /inventory/stock/:id` devuelve `inLots` y `unbatched`.
+- **Densidad de la nota de remisión** (`remission.density`: AUTO | COMFORTABLE | COMPACT, ADR-0021).
+
 ### Corregido (validación en vivo, 10/10/2026)
 
 - **Controlados sin lote ya no entran al carrito.** `getSellableQuantity` aplica a los controlados el

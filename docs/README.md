@@ -55,6 +55,9 @@ Viven en el repositorio `engineering-playbook`, carpeta `adrs/`:
 | ADR-0017 | Operación sin internet: instalación local primero | `engineering-playbook/adrs/ADR-0017-pharma-offline-operation-and-deployment-model.md` |
 | ADR-0018 | Actualizaciones del front decididas por el usuario | `engineering-playbook/adrs/ADR-0018-pharma-user-controlled-app-updates.md` |
 | ADR-0019 | Nota de remisión | `engineering-playbook/adrs/ADR-0019-pharma-remission-note.md` |
+| ADR-0020 | Front como SPA (sin SSR) | `engineering-playbook/adrs/ADR-0020-pharma-front-spa-mode.md` |
+| ADR-0021 | Identidad única de comprobantes y densidad adaptativa | `engineering-playbook/adrs/ADR-0021-pharma-document-identity-and-adaptive-density.md` |
+| ADR-0022 | Asignar lote a existencia sin lote | `engineering-playbook/adrs/ADR-0022-pharma-assign-lot-to-unbatched-stock.md` |
 
 ## 4. Flujo de trabajo
 

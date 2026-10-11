@@ -86,6 +86,7 @@ Ver `SALES_MODULE.md` §7 y ADR-0019.
 | `showPayments` | `true` | bool | Forma de pago, pagado y saldo (clave en ventas a crédito). |
 | `showSku` | `true` | bool | Columna de SKU/código. |
 | `showTaxBreakdown` | `false` | bool | "IVA incluido" por tasa bajo el total. |
+| `density` | `AUTO` | `AUTO` \| `COMFORTABLE` \| `COMPACT` | Densidad de la tabla de partidas. AUTO: cómoda hasta 7 partidas, compacta desde 8 (ADR-0021). |
 
 Sin migración (vive en `AppSetting`, como el resto). La migración del día
 (`20261010200000_print_document_remission`) es sólo para la bitácora de impresiones.

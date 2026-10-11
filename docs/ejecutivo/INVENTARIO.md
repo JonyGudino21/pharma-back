@@ -63,3 +63,11 @@ Lleva la existencia de cada medicamento **por lote y fecha de caducidad**, con u
 ## Estado
 
 **Listo.** Umbrales de caducidad y lote obligatorio configurables desde v1.1.
+
+## Asignar lote a la mercancía que ya tenías
+
+La mercancía capturada antes de usar lotes no tiene caducidad registrada: no entra al "primero lo que
+caduca" ni a las alertas, y los **controlados** en esa situación no se pueden vender. En Inventario ›
+**Asignar lote**, el gerente copia el lote y la caducidad impresos en las cajas e indica cuántas piezas
+son de cada lote. La existencia no cambia y todo queda en el Kardex. Guía paso a paso en
+`pharma-front/docs/ejecutivo/LOTES_Y_CADUCIDADES.md`.

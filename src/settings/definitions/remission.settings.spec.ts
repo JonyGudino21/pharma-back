@@ -34,6 +34,14 @@ describe('Configuración › Nota de remisión', () => {
     });
   });
 
+  it('densidad: automática de fábrica; sólo valores conocidos', () => {
+    expect(defaults.density).toBe('AUTO');
+    expect(errores({ ...defaults, density: 'COMPACT' })).toEqual([]);
+    expect(errores({ ...defaults, density: 'MINI' })).toContain(
+      'La densidad debe ser Automática, Cómoda o Compacta.',
+    );
+  });
+
   it('rechaza un tamaño de hoja desconocido', () => {
     expect(errores({ ...defaults, paper: 'LEGAL' })).toContain(
       'El tamaño de hoja debe ser Carta o A4.',
