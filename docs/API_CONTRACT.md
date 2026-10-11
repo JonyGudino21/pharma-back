@@ -160,27 +160,29 @@ No existe la propiedad `pagination` en ese caso.
 
 ---
 
-## 4. Seguridad: autenticación y migración a cookies
+## 4. Seguridad: autenticación con cookies httpOnly
 
-### Situación actual (Fase 1)
+> Todas las rutas llevan el prefijo global **`/api`** (p. ej. `POST /api/sales`), salvo
+> `/health`, `/health/live` y `/health/ready`. En los documentos de módulo se omite el prefijo.
 
-- La API espera el token JWT en el header:
-  - **`Authorization: Bearer <accessToken>`**
-- El frontend debe enviar este header en **todas las peticiones a rutas protegidas**.
-- El refresh token se usa en el cuerpo de `POST /auth/refresh` para renovar el access token.
+### Situación actual (cookies httpOnly, vigente)
 
-### Requisito crítico para el Frontend: interceptor centralizado
+- `POST /auth/login` y `POST /auth/refresh` **escriben las cookies** `access_token` y `refresh_token`
+  (httpOnly; la de refresh acotada a la ruta de renovación) más el marcador legible `session_active=1`.
+  Los tokens **ya no viajan en el cuerpo** de la respuesta: login devuelve `{ user, refreshExpiresAt }`.
+- El navegador adjunta las cookies solo; el front debe hacer las peticiones con
+  `credentials: 'include'` (CORS ya responde con `credentials: true` para `FRONTEND_URL`).
+- Respaldo para clientes que no son navegador (e2e, curl): el backend también acepta
+  `Authorization: Bearer <accessToken>` y `refreshToken` en el cuerpo de refresh/logout. La cookie manda.
+- `POST /auth/logout`, `logout-all` y `change-password` limpian las cookies.
 
-Aunque hoy se use `Authorization: Bearer <token>`, el frontend **debe** concentrar la lógica de autenticación en un **único punto**:
+### Interceptor centralizado (sigue siendo obligatorio)
 
-- **Interceptor de peticiones (Request):** Añadir el header `Authorization: Bearer <token>` cuando exista token (por ejemplo desde store de Pinia o localStorage/sessionStorage).
-- **Interceptor de respuestas (Response):** Ante `401 Unauthorized`, intentar renovar con `POST /auth/refresh` y reenviar la petición; si el refresh falla, cerrar sesión y redirigir al login.
+- **Interceptor de respuestas:** ante `401`, llamar `POST /auth/refresh` (sin cuerpo; viaja la cookie)
+  y reintentar la petición una vez; si el refresh falla, ir al login.
+- No leer ni guardar tokens en JavaScript: no son accesibles (httpOnly) y no deben serlo.
 
-**Motivo:** En **Fase 2** la API migrará a **HttpOnly Cookies** para el access token (y opcionalmente el refresh). Si la lógica está en un interceptor (p. ej. Axios), el cambio en el backend solo implicará:
-- Dejar de enviar `Authorization` y depender de la cookie enviada por el navegador (`credentials: true`).
-- Ajustar el interceptor para no tocar el header y, si aplica, manejar cookies en el cliente según la nueva política.
-
-Quien no use interceptor centralizado tendrá que tocar cada llamada a la API. **Se debe usar interceptor desde el inicio.**
+Detalle en `AUTH_MODULE.md`.
 
 ---
 
@@ -191,7 +193,7 @@ El control de acceso en backend se hace por **roles** (`@Roles()` y guards). Par
 ### Dónde obtener los permisos
 
 - **Endpoint:** `GET /auth/me`
-- **Protección:** Requiere JWT válido (`Authorization: Bearer <token>`).
+- **Protección:** Requiere sesión válida (cookie `access_token`; o `Authorization: Bearer <token>` fuera del navegador).
 - **Respuesta (dentro de `data`):**
 
 ```json
@@ -208,6 +210,9 @@ El control de acceso en backend se hace por **roles** (`@Roles()` y guards). Par
     "canGiveDiscounts": false,
     "canReturnSales": false,
     "canViewSalesSummary": true,
+    "canPrintReceipt": true,
+    "canManageCompany": false,
+    "canManageSettings": false,
     "canViewClients": true,
     "canCreateClient": true,
     "canEditClient": false,
@@ -221,6 +226,8 @@ El control de acceso en backend se hace por **roles** (`@Roles()` y guards). Par
     "canAdjustInventory": false,
     "canViewLowStockAlerts": true,
     "canViewInventoryValuation": false,
+    "canViewExpiringBatches": true,
+    "canViewControlledLog": true,
     "canOpenShift": true,
     "canWithdrawCash": false,
     "canViewAllShifts": false,
@@ -252,7 +259,25 @@ La lista completa de permisos y su significado por rol está en **`docs/PERMISSI
 | **Éxito** | Leer siempre `data.success`, `data.message` y `data.data`. Usar `data.data` para lógica. |
 | **Error** | Mismo envelope con `success: false`. Mostrar `data.message` al usuario; usar `data.errorCode` o status HTTP para flujos (401 → refresh o login). |
 | **Paginación** | Enviar `page` y `limit` por query cuando se quiera paginar. En respuesta, usar `data.<recurso>.pagination` (total, page, limit, totalPages y, si existe, hasNext/hasPrev). |
-| **Auth** | Enviar `Authorization: Bearer <accessToken>` en todas las peticiones protegidas; **usar interceptor centralizado** para preparar la migración a HttpOnly Cookies. |
+| **Auth** | Sesión en cookies httpOnly: peticiones con `credentials: 'include'`; **interceptor centralizado** que ante 401 llama `POST /auth/refresh` y reintenta. |
 | **RBAC** | Tras login/inicio, llamar `GET /auth/me` y guardar `permissions`. Usar solo `permissions.canXxx` para rutas y botones; no depender del nombre del rol. |
+| **Prefijo** | Todas las rutas bajo `/api` (excepto `/health*`). |
 
-Cuando estés listo, indica con **qué módulo** quieres que documentemos primero (Auth, Users, Cash-Shift, Category, Product, Inventory, Suppliers, Purchases, Client, Sales, Analytics) y se generará la ficha en el formato acordado (Resumen de negocio, Reglas de negocio, Endpoints, Payload destacado, Manejo de errores en UI, Consejos de implementación).
+---
+
+## 6. Comprobantes impresos (ticket y nota de remisión)
+
+Contrato resumido; detalle y reglas en `SALES_MODULE.md` §7 y `SETTINGS_MODULE.md` (sección `remission`).
+
+| Método | Ruta | Cuerpo / query | Respuesta | Errores |
+|---|---|---|---|---|
+| `POST` | `/api/sales/:id/prints` | `{ channel: 'THERMAL'\|'BROWSER', templateId?: number, document?: 'TICKET'\|'REMISSION' }` — `document` omitido = `TICKET` | Fila `SaleReceiptPrint` con `document` y `copyNumber` (numeración **por documento**) | 400 borrador · 400 venta anulada (`flowStatus` o `status` `CANCELLED`) · 400 `REMISSION` con `remission.enabled = false` · 404 venta/plantilla · 409 colisión persistente de `copyNumber` |
+| `GET` | `/api/sales/:id/prints` | `?document=TICKET\|REMISSION` (opcional) | Arreglo ordenado por `document`, luego `copyNumber` | 400 `document` inválido · 404 venta |
+| `GET` | `/api/settings/remission` | — | `{ namespace, values, defaults, version, updatedAt, updatedBy }` | — |
+| `PATCH` | `/api/settings/remission` | `{ version, values }` (parcial) | `{ changed, ... }` | 400 validación · 409 versión (MANAGER/ADMIN) |
+
+Compatibilidad: un cliente anterior que no envía `document` sigue registrando tickets igual que antes.
+
+---
+
+Índice de toda la documentación: [`docs/README.md`](README.md).

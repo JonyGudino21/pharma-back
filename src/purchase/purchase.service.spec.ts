@@ -10,6 +10,8 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { InventoryBatchesService } from '../inventory/inventory-batches.service';
 import { CashShiftService } from '../cash-shift/cash-shift.service';
+import { SettingsService } from '../settings/settings.service';
+import { createSettingsMock } from '../common/testing/settings.mock';
 import {
   argDe,
   argsDe,
@@ -123,6 +125,8 @@ describe('PurchaseService — recepción, costo promedio y cancelación', () => 
   const dataDe = (mock: unknown, i = 0) =>
     dataDeLlamada<Record<string, unknown>>(mock, i);
 
+  const settings = createSettingsMock();
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -131,6 +135,7 @@ describe('PurchaseService — recepción, costo promedio y cancelación', () => 
         { provide: InventoryService, useValue: mockInventory },
         { provide: InventoryBatchesService, useValue: mockBatches },
         { provide: CashShiftService, useValue: mockCashShift },
+        { provide: SettingsService, useValue: settings },
       ],
     }).compile();
 
@@ -387,6 +392,35 @@ describe('PurchaseService — recepción, costo promedio y cancelación', () => 
 
       await expect(service.receive(5, 99)).rejects.toThrow(BadRequestException);
       expect(mockBatches.receiveIntoBatch).not.toHaveBeenCalled();
+    });
+
+    it('con "exigir lote en todo", un producto común sin lote tampoco entra', async () => {
+      settings.set('inventory', { requireLotForAll: true });
+      try {
+        await expect(service.receive(5, 99)).rejects.toThrow(
+          'edita la partida y captúralos',
+        );
+        expect(mockInventory.registerMovement).not.toHaveBeenCalled();
+        expect(mockBatches.receiveIntoBatch).not.toHaveBeenCalled();
+      } finally {
+        settings.reset();
+      }
+    });
+
+    it('con "exigir lote en todo", la partida CON lote se recibe normal', async () => {
+      settings.set('inventory', { requireLotForAll: true });
+      try {
+        tx.purchase.findUnique.mockResolvedValue({
+          ...compraPendiente,
+          items: [
+            { ...item, lotNumber: 'L-9', expiryDate: new Date('2027-06-30') },
+          ],
+        });
+        await service.receive(5, 99);
+        expect(mockBatches.receiveIntoBatch).toHaveBeenCalledTimes(1);
+      } finally {
+        settings.reset();
+      }
     });
 
     it('un controlado no se puede ni ordenar sin lote (bloqueo en la captura)', async () => {

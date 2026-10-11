@@ -27,6 +27,7 @@ Este módulo mantiene el **directorio de proveedores**: alta, edición, baja ló
 | `POST` | `/suppliers` | Crea un proveedor. | MANAGER |
 | `GET`  | `/suppliers` | Lista proveedores. Query: `isActive`, `pagination` (page, limit dentro de un objeto). | MANAGER |
 | `GET`  | `/suppliers/search` | Búsqueda por nombre, email o teléfono (al menos uno). Query: `name`, `email`, `phone`, `pagination`. | MANAGER |
+| `GET`  | `/suppliers/options` | Opciones para selectores: sólo activos, `{ id, name }`, sin paginar. | MANAGER |
 | `GET`  | `/suppliers/:id` | Detalle de un proveedor. | MANAGER |
 | `PATCH`| `/suppliers/:id` | Actualiza datos o días de crédito (parcial). | MANAGER |
 | `DELETE`| `/suppliers/:id` | Desactiva el proveedor (soft delete). Requiere balance = 0 y sin compras pendientes. | MANAGER |

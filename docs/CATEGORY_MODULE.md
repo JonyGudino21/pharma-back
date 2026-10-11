@@ -26,6 +26,7 @@ Este módulo gestiona las **categorías o familias de productos** (ej. Analgési
 | `POST` | `/category` | Crea una categoría (nombre, descripción, isActive opcional). | MANAGER, PHARMACIST |
 | `GET`  | `/category` | Lista categorías. Query: `active` (true/false), `page`, `limit`. | Cualquier usuario autenticado |
 | `GET`  | `/category/search` | Búsqueda por nombre (parcial). Query: `name`, `page`, `limit`. | Cualquier usuario autenticado |
+| `GET`  | `/category/options` | Opciones para selectores: sólo activas, `{ id, name }`, sin paginar. | Cualquier usuario autenticado |
 | `GET`  | `/category/:id` | Detalle de una categoría. | Cualquier usuario autenticado |
 | `PATCH`| `/category/:id` | Actualiza nombre, descripción o isActive. | MANAGER, PHARMACIST |
 | `DELETE`| `/category/:id` | Desactiva la categoría (soft delete: isActive = false). | MANAGER, PHARMACIST |

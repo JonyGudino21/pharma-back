@@ -29,15 +29,19 @@ describe('normalizeReceiptLayout', () => {
 
     it('conserva cp850 cuando se elige', () => {
       expect(
-        normalizeReceiptLayout({ blocks: ['items', 'totals'], charset: 'cp850' })
-          .charset,
+        normalizeReceiptLayout({
+          blocks: ['items', 'totals'],
+          charset: 'cp850',
+        }).charset,
       ).toBe('cp850');
     });
 
     it('un valor desconocido cae en ascii en vez de romper la impresión', () => {
       expect(
-        normalizeReceiptLayout({ blocks: ['items', 'totals'], charset: 'utf-16' })
-          .charset,
+        normalizeReceiptLayout({
+          blocks: ['items', 'totals'],
+          charset: 'utf-16',
+        }).charset,
       ).toBe('ascii');
     });
 

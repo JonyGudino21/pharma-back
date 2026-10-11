@@ -8,7 +8,9 @@ import {
   Min,
   Matches,
   MaxLength,
+  IsEnum,
 } from 'class-validator';
+import { TaxCategory } from '@prisma/client';
 
 export class CreateProductDto {
   @IsString()
@@ -61,6 +63,16 @@ export class CreateProductDto {
   @IsNumber()
   @IsPositive()
   cost: number;
+
+  /**
+   * Tratamiento de IVA. Sin valor, el de Configuración › Impuestos. Medicinas
+   * de patente: ZERO; perfumería, refrescos, jugos y chicles: GENERAL.
+   */
+  @IsOptional()
+  @IsEnum(TaxCategory, {
+    message: 'El IVA debe ser General, Tasa 0% o Exento.',
+  })
+  taxCategory?: TaxCategory;
 
   /**
    * Lote y caducidad del INVENTARIO INICIAL.

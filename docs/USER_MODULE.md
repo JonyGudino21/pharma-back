@@ -116,3 +116,19 @@ Si se envían `email` y `userName`, se aplica OR (coincide cualquiera de los dos
 - **Detalle:** `GET /users/:id` no devuelve `password`; seguro para mostrar en pantalla de perfil/edición.
 - **Ruta GET search vs GET :id:** Llamar a `GET /users/search?email=...` para búsqueda y a `GET /users/:id` para detalle. El orden de rutas en el backend (search antes que :id) evita que "search" se interprete como ID.
 - **Roles:** Mostrar select con los cuatro roles; el backend valida que sea uno del enum. Recordar que la matriz de permisos (GET /auth/me) se deriva del rol; al cambiar el rol de un usuario, sus permisos efectivos cambian en la siguiente sesión.
+
+## Salvaguardas de administración (desde v1.1)
+
+| Regla | Respuesta |
+|---|---|
+| Un usuario no puede desactivarse, darse de baja ni cambiarse el rol a sí mismo | 400 |
+| Siempre queda al menos un ADMIN activo (bajar rol, desactivar o dar de baja al último) | 409 |
+| La regla anterior se serializa con `pg_advisory_xact_lock(7002, 0)`: dos admins que se degradan mutuamente a la vez no dejan cero | — |
+
+Endpoints nuevos (ADMIN):
+
+- `GET /users/roles` — matriz rol → permisos, misma fuente que `/auth/me` (`src/auth/permissions.ts`).
+- `POST /users/:id/revoke-sessions` — cierra todas las sesiones del usuario (no sobre uno mismo:
+  para eso está "Cerrar sesión en todos los dispositivos" en Mi cuenta). Responde `{ revoked }`.
+- `GET /users` y `GET /users/search` agregan `sessions: { active, lastSeenAt }` por usuario, con
+  UNA consulta agrupada por página.

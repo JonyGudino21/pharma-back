@@ -26,6 +26,7 @@ import { PurchaseService } from '../src/purchase/purchase.service';
 import { InventoryService } from '../src/inventory/inventory.service';
 import { InventoryBatchesService } from '../src/inventory/inventory-batches.service';
 import { CashShiftService } from '../src/cash-shift/cash-shift.service';
+import { SettingsService } from '../src/settings/settings.service';
 import { PaymentService } from '../src/payment/payment.service';
 
 jest.setTimeout(60_000);
@@ -48,9 +49,9 @@ describe('Concurrencia de inventario y ventas (integración)', () => {
 
   beforeAll(async () => {
     moduleRef = await Test.createTestingModule({
-      // CashShiftService lee TOLERANCE_THRESHOLD del ConfigService (antes usaba
-      // process.env, donde una variable ausente dejaba el umbral en NaN y la
-      // auditoría de caja nunca se disparaba).
+      // La tolerancia del arqueo, el criterio de caducidad y el lote obligatorio
+      // vienen de SettingsService (tabla AppSetting). ConfigService sigue
+      // aportando los valores de fábrica (TOLERANCE_THRESHOLD, EXPIRY_INCLUSIVE).
       imports: [ConfigModule.forRoot({ isGlobal: true })],
       providers: [
         PrismaService,
@@ -60,6 +61,7 @@ describe('Concurrencia de inventario y ventas (integración)', () => {
         // SalesService y PurchaseService dependen del despacho FEFO por lotes.
         InventoryBatchesService,
         CashShiftService,
+        SettingsService,
         PaymentService,
       ],
     }).compile();

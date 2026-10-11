@@ -56,6 +56,11 @@ model Product {
   minStock       Int @default(5)
   price          Decimal            @db.Decimal(10, 2)     // Precio de VENTA al público
   cost           Decimal            @db.Decimal(10, 2)     // Costo promedio actual
+  // Tratamiento de IVA. El precio de venta es SIEMPRE con IVA incluido (LFPC
+  // art. 7 Bis): el impuesto se desglosa hacia dentro. ZERO por defecto porque
+  // el grueso del catálogo son medicinas (LIVA art. 2o.-A); perfumería,
+  // refrescos, jugos y chicles deben marcarse GENERAL.
+  taxCategory    TaxCategory        @default(ZERO)
 
   isActive       Boolean            @default(true)
   createdAt      DateTime           @default(now())
@@ -114,9 +119,14 @@ model Sale {
   paidAmount       Decimal       @db.Decimal(12, 2) @default(0) // Cuánto han pagado
   balance          Decimal       @db.Decimal(12, 2) @default(0) // Cuánto deben (Deuda)
 
+  // Descuentos e impuestos. `subtotal` = suma bruta (precio × cantidad),
+  // `total` = subtotal − discountTotal. El IVA va INCLUIDO en `total`.
+  discountTotal    Decimal       @db.Decimal(12, 2) @default(0)
+  taxTotal         Decimal       @db.Decimal(12, 2) @default(0)
+
   // Snapshot de utilidad
   totalCost        Decimal       @db.Decimal(12, 2) @default(0) // Suma del costo de los items al momento de venta
-  profit           Decimal       @db.Decimal(12, 2) @default(0) // total - totalCost (Sin impuestos)
+  profit           Decimal       @db.Decimal(12, 2) @default(0) // total - taxTotal - totalCost (sin IVA)
 
   invoiceNumber    String?       @unique   //AAA010101AAA202401000000001  Para CFDI 4.0 en México
   flowStatus       SaleFlowStatus @default(DRAFT)
@@ -158,9 +168,24 @@ model SaleItem {
   productId     Int
 
   quantity      Int
-  price         Decimal     @db.Decimal(10, 2) //Precio aplicado
+  price         Decimal     @db.Decimal(10, 2) //Precio aplicado (con IVA)
+  // Importe descontado de la línea (no por unidad). subtotal = price × qty − discount.
   discount      Decimal     @db.Decimal(10, 2) @default(0)
   subtotal      Decimal     @db.Decimal(10, 2)
+
+  // Descuento auditado: qué porcentaje, por qué, quién lo aplicó y quién lo
+  // autorizó si rebasaba el tope de su rol.
+  discountPercent        Decimal  @db.Decimal(5, 2) @default(0)
+  discountReason         String?
+  discountAppliedBy      User?    @relation("SaleItemDiscountAppliedBy", fields: [discountAppliedById], references: [id])
+  discountAppliedById    Int?
+  discountAuthorizedBy   User?    @relation("SaleItemDiscountAuthorizedBy", fields: [discountAuthorizedById], references: [id])
+  discountAuthorizedById Int?
+
+  // Impuesto CONGELADO al vender: tasa efectiva (0.16, 0.08, 0) y monto
+  // incluido en `subtotal`. Si mañana cambia la tasa, la venta de hoy no cambia.
+  taxRate       Decimal     @db.Decimal(5, 4) @default(0)
+  taxAmount     Decimal     @db.Decimal(10, 2) @default(0)
 
   // Guardamos cuánto costaba este producto HOY para calcular ganancia histórica
   costAtSale    Decimal     @db.Decimal(10, 2)
@@ -318,12 +343,55 @@ model User {
   cashData                  CashShift[]
   saleReceiptPrints         SaleReceiptPrint[]
   controlledSaleLogs        ControlledSaleLog[]
+  settingsUpdated           AppSetting[]      @relation("AppSettingUpdatedBy")
+  settingsChanges           AppSettingAudit[] @relation("AppSettingAuditChangedBy")
+  discountsApplied          SaleItem[]        @relation("SaleItemDiscountAppliedBy")
+  discountsAuthorized       SaleItem[]        @relation("SaleItemDiscountAuthorizedBy")
+  cashDrawerEvents          CashDrawerEvent[]
 
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
 
   @@index([userName])
   @@index([email])
+}
+
+// Ajustes de operación, UNA fila por sección ("inventory", "cash").
+//
+// El contenido (`value`) se valida en código contra la definición tipada de
+// cada sección (src/settings/definitions). Así, agregar un ajuste nuevo es
+// agregar un campo con su valor por defecto: sin migración.
+//
+// `version` es el bloqueo optimista: dos gerentes editando a la vez no se
+// pisan en silencio; el segundo recibe 409 y recarga.
+model AppSetting {
+  namespace   String   @id
+  value       Json
+  version     Int      @default(1)
+
+  updatedBy   User?    @relation("AppSettingUpdatedBy", fields: [updatedById], references: [id])
+  updatedById Int?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// Bitácora INMUTABLE de cambios de configuración: una fila por ajuste cambiado.
+// La tolerancia del arqueo o el criterio de caducidad son controles
+// antifraude y sanitarios: "quién lo cambió y cuándo" tiene que poder
+// responderse en una auditoría.
+model AppSettingAudit {
+  id          Int      @id @default(autoincrement())
+  namespace   String
+  key         String
+  oldValue    Json?
+  newValue    Json
+
+  changedBy   User     @relation("AppSettingAuditChangedBy", fields: [changedById], references: [id])
+  changedById Int
+  changedAt   DateTime @default(now())
+
+  @@index([namespace, changedAt])
 }
 
 // Una sola empresa por instalación. `singletonKey` impide que un GET
@@ -383,11 +451,12 @@ model SaleReceiptPrint {
   template    ReceiptTemplate? @relation(fields: [templateId], references: [id])
   templateId  Int?
 
+  document   PrintDocument @default(TICKET)
   copyNumber Int
   channel    PrintChannel
   printedAt  DateTime     @default(now())
 
-  @@unique([saleId, copyNumber])
+  @@unique([saleId, document, copyNumber])
   @@index([saleId])
   @@index([printedById])
 }
@@ -563,6 +632,7 @@ model CashShift {
   notes            String?
 
   transactions     CashTransaction[] // Movimientos de dinero (Entradas/Salidas/Ventas)
+  drawerEvents     CashDrawerEvent[] // Aperturas del cajón SIN venta (auditadas)
   sales            Sale[]            // Ventas ligadas a este turno
 
   @@index([userId])
@@ -714,6 +784,41 @@ enum MovementType {
   TRANSFER        // Movimiento entre sucursales (Futuro)
 }
 
+// Aperturas del cajón de dinero que NO vienen de un cobro en efectivo.
+// "Abrir sin venta" es la vía clásica para sacar dinero sin rastro: cada una
+// queda registrada con quién, cuándo, en qué caja y por qué.
+model CashDrawerEvent {
+  id        Int                 @id @default(autoincrement())
+  kind      CashDrawerEventKind
+  reason    String
+  terminal  String?
+
+  user      User                @relation(fields: [userId], references: [id])
+  userId    Int
+  shift     CashShift?          @relation(fields: [shiftId], references: [id])
+  shiftId   Int?
+
+  createdAt DateTime            @default(now())
+
+  @@index([shiftId])
+  @@index([createdAt])
+}
+
+enum CashDrawerEventKind {
+  MANUAL  // Apertura manual (cambio, revisión)
+  TEST    // Prueba desde Configuración › Dispositivos
+}
+
+// Tratamiento de IVA de un producto. La tasa de GENERAL (16 % u 8 % en región
+// fronteriza) sale de Configuración › Impuestos; ZERO y EXEMPT son 0 %, pero
+// NO son lo mismo para el SAT (tasa 0 % acredita, exento no): se distinguen
+// desde ahora para que el CFDI futuro no requiera reclasificar el catálogo.
+enum TaxCategory {
+  GENERAL
+  ZERO
+  EXEMPT
+}
+
 enum ShiftStatus {
   OPEN
   CLOSED
@@ -783,6 +888,13 @@ enum PurchaseDeliveryStatus {
 enum PrintChannel {
   THERMAL
   BROWSER
+}
+
+// Qué documento se emitió: ticket térmico o nota de remisión en hoja carta.
+// La numeración de copias (original, copia 2…) es POR DOCUMENTO.
+enum PrintDocument {
+  TICKET
+  REMISSION
 }
 
 enum ControlledLogEntryType {

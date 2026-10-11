@@ -6,6 +6,8 @@ import { ProductService } from './product.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { InventoryBatchesService } from '../inventory/inventory-batches.service';
 import { CreateProductDto } from './dto/create-product.dto';
+import { SettingsService } from '../settings/settings.service';
+import { createSettingsMock } from '../common/testing/settings.mock';
 
 /**
  * ALTA DE PRODUCTO CON INVENTARIO INICIAL: lote y caducidad.
@@ -33,6 +35,7 @@ describe('ProductService · alta con lote y caducidad', () => {
     $transaction: jest.fn(),
   };
   const mockBatches = { receiveIntoBatch: jest.fn() };
+  const settings = createSettingsMock();
 
   const base: CreateProductDto = {
     name: 'Paracetamol',
@@ -52,11 +55,13 @@ describe('ProductService · alta con lote y caducidad', () => {
         ProductService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: InventoryBatchesService, useValue: mockBatches },
+        { provide: SettingsService, useValue: settings },
       ],
     }).compile();
 
     service = module.get(ProductService);
     jest.clearAllMocks();
+    settings.reset();
 
     mockPrisma.product.findFirst.mockResolvedValue(null);
     mockPrisma.product.findMany.mockResolvedValue([]);
@@ -118,6 +123,57 @@ describe('ProductService · alta con lote y caducidad', () => {
       service.create({ ...base, controlled: true, stock: 3 }, 1),
     ).rejects.toThrow(BadRequestException);
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  describe('Configuración › Inventario', () => {
+    it('requireLotForAll: un producto NO controlado con stock también exige lote', async () => {
+      settings.set('inventory', { requireLotForAll: true });
+      await expect(service.create({ ...base, stock: 5 }, 1)).rejects.toThrow(
+        'exige lote y caducidad',
+      );
+      expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('requireLotForAll sin stock: se da de alta (no hay entrada de mercancía)', async () => {
+      settings.set('inventory', { requireLotForAll: true });
+      await service.create({ ...base }, 1);
+      expect(mockPrisma.product.create).toHaveBeenCalled();
+    });
+
+    it('sin IVA explícito usa el tratamiento por defecto de Configuración › Impuestos', async () => {
+      settings.set('taxes', { defaultCategory: 'GENERAL' });
+      await service.create({ ...base }, 1);
+      const [args] = mockPrisma.product.create.mock.calls[0] as [
+        { data: { taxCategory: string } },
+      ];
+      expect(args.data.taxCategory).toBe('GENERAL');
+    });
+
+    it('un IVA explícito gana sobre el de fábrica (ZERO)', async () => {
+      await service.create({ ...base, taxCategory: 'EXEMPT' }, 1);
+      const [args] = mockPrisma.product.create.mock.calls[0] as [
+        { data: { taxCategory: string } },
+      ];
+      expect(args.data.taxCategory).toBe('EXEMPT');
+    });
+
+    it('sin minStock explícito usa el stock mínimo configurado', async () => {
+      settings.set('inventory', { defaultMinStock: 12 });
+      await service.create({ ...base }, 1);
+      const [args] = mockPrisma.product.create.mock.calls[0] as [
+        { data: { minStock: number } },
+      ];
+      expect(args.data.minStock).toBe(12);
+    });
+
+    it('un minStock explícito (incluso 0) gana sobre el configurado', async () => {
+      settings.set('inventory', { defaultMinStock: 12 });
+      await service.create({ ...base, minStock: 0 }, 1);
+      const [args] = mockPrisma.product.create.mock.calls[0] as [
+        { data: { minStock: number } },
+      ];
+      expect(args.data.minStock).toBe(0);
+    });
   });
 
   it('controlado sin stock: se da de alta sin lote', async () => {

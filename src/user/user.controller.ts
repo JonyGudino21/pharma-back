@@ -19,6 +19,9 @@ import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
+import { GetUser } from 'src/common/decorators/get-user.decorator';
+import type { AuthenticatedUser } from 'src/auth/types/authenticated-user.type';
+import { permissionsMatrix } from 'src/auth/permissions';
 
 @Controller('users')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -81,6 +84,15 @@ export class UserController {
     return ApiResponse.ok(res, 'Usuario encontrado exitosamente');
   }
 
+  /**
+   * Matriz rol → permisos, de la MISMA fuente que `/auth/me`. Declarada antes
+   * de `:id` para que "roles" no se interprete como un id.
+   */
+  @Get('roles')
+  getRolesMatrix() {
+    return ApiResponse.ok(permissionsMatrix(), 'Matriz de permisos obtenida');
+  }
+
   @Get(':id')
   async getUserById(@Param('id') id: number) {
     const res = await this.userService.getUserById(id);
@@ -94,14 +106,36 @@ export class UserController {
   }
 
   @Patch(':id')
-  async editUser(@Param('id') id: number, @Body() data: EditUserDto) {
-    const res = await this.userService.editUser(id, data);
+  async editUser(
+    @Param('id') id: number,
+    @Body() data: EditUserDto,
+    @GetUser() actor: AuthenticatedUser,
+  ) {
+    const res = await this.userService.editUser(id, data, actor.userId);
     return ApiResponse.ok(res, 'Usuario actualizado exitosamente');
   }
 
   @Delete(':id')
-  async deleteUser(@Param('id') id: number) {
-    const res = await this.userService.deleteUser(id);
+  async deleteUser(
+    @Param('id') id: number,
+    @GetUser() actor: AuthenticatedUser,
+  ) {
+    const res = await this.userService.deleteUser(id, actor.userId);
     return ApiResponse.ok(res, 'Usuario eliminado exitosamente');
+  }
+
+  /** Cierra todas las sesiones del usuario (p. ej. sesión olvidada en una caja). */
+  @Post(':id/revoke-sessions')
+  async revokeSessions(
+    @Param('id') id: number,
+    @GetUser() actor: AuthenticatedUser,
+  ) {
+    const res = await this.userService.revokeUserSessions(id, actor.userId);
+    return ApiResponse.ok(
+      res,
+      res.revoked > 0
+        ? `Se cerraron ${res.revoked} sesiones`
+        : 'El usuario no tenía sesiones abiertas',
+    );
   }
 }

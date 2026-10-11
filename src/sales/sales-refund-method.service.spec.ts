@@ -13,6 +13,8 @@ import { InventoryBatchesService } from '../inventory/inventory-batches.service'
 import { CashShiftService } from '../cash-shift/cash-shift.service';
 import { PaymentService } from '../payment/payment.service';
 import { argsDe } from '../common/testing/mock-inspect.util';
+import { SettingsService } from '../settings/settings.service';
+import { createSettingsMock } from '../common/testing/settings.mock';
 
 /**
  * REEMBOLSO POR EL MISMO MEDIO, DUEÑO DEL CARRITO Y LÍNEAS DE OTRA VENTA.
@@ -33,7 +35,7 @@ describe('SalesService · reembolsos, dueño del carrito y alcance de líneas', 
     salePayment: { groupBy: jest.fn() },
     saleRefund: { groupBy: jest.fn(), create: jest.fn() },
     cashTransaction: { create: jest.fn() },
-    saleItem: { deleteMany: jest.fn(), aggregate: jest.fn() },
+    saleItem: { deleteMany: jest.fn(), findMany: jest.fn() },
     sale: { findUniqueOrThrow: jest.fn(), update: jest.fn() },
   };
 
@@ -94,6 +96,7 @@ describe('SalesService · reembolsos, dueño del carrito y alcance de líneas', 
         { provide: InventoryBatchesService, useValue: {} },
         { provide: CashShiftService, useValue: mockCashShift },
         { provide: PaymentService, useValue: {} },
+        { provide: SettingsService, useValue: createSettingsMock() },
       ],
     }).compile();
 
@@ -309,9 +312,8 @@ describe('SalesService · reembolsos, dueño del carrito y alcance de líneas', 
         flowStatus: 'DRAFT',
         paidAmount: new Decimal(0),
       });
-      tx.saleItem.aggregate.mockResolvedValue({
-        _sum: { subtotal: new Decimal(0) },
-      });
+      // Tras borrar la línea el carrito queda vacío.
+      tx.saleItem.findMany.mockResolvedValue([]);
       tx.sale.findUniqueOrThrow.mockResolvedValue({
         paidAmount: new Decimal(0),
       });

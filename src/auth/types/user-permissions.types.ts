@@ -6,7 +6,7 @@
  * Matriz resumida por rol:
  * - CASHIER:    vender, abrir/cerrar turno propio, ver clientes, registrar abonos, ver productos.
  * - PHARMACIST: lo anterior + kardex, productos, categorías, compras, alertas stock.
- * - MANAGER:    lo anterior + cancelar ventas, descuentos, ajuste inventario, reportes, proveedores, ver todos los turnos, ficha fiscal y plantillas de ticket.
+ * - MANAGER:    lo anterior + cancelar ventas, descuentos, ajuste inventario, reportes, proveedores, ver todos los turnos, ficha fiscal, plantillas de ticket y configuración de caja e inventario.
  * - ADMIN:      todo lo anterior + gestión de usuarios.
  */
 export interface UserPermissions {
@@ -20,6 +20,9 @@ export interface UserPermissions {
 
   // ---- Empresa / ticket ----
   canManageCompany: boolean;
+
+  // ---- Configuración de operación (caja, inventario) ----
+  canManageSettings: boolean;
 
   // ---- Clientes (client) ----
   canViewClients: boolean;

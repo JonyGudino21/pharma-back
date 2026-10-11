@@ -18,6 +18,7 @@ Este módulo gestiona las **órdenes de compra a proveedores**: creación (borra
 | **Cancelación con inventario recibido** | Al cancelar una compra ya recibida, se revierte inventario (movimientos RETURN_OUT), se anula la deuda con el proveedor y, si había pagos adelantados, se gestiona reembolso o nota de crédito según lógica interna. |
 | **Costo promedio ponderado** | Al recibir, por cada producto se calcula `nuevoCosto = (stockActual * costoActual + entrada * costoCompra) / (stockActual + entrada)` y se actualiza el costo del producto. |
 | **Deuda con proveedor** | La deuda del proveedor (`supplier.balance`) se incrementa al **recibir** la mercancía (por el `balance` de la compra). Los pagos la reducen. |
+| **Lote y caducidad por ítem** | Cada ítem acepta `lotNumber` y `expiryDate` (YYYY-MM-DD); obligatorios en productos `controlled` y, con `inventory.requireLotForAll`, en todos. Al recibir, la mercancía entra a su lote (FEFO, alertas de caducidad). |
 | **Solo MANAGER y PHARMACIST** | Todo el controlador está protegido con `@Roles(MANAGER, PHARMACIST)`. |
 
 ---
@@ -121,7 +122,7 @@ Todos requieren **JWT**. Paginación: sin `page`/`limit` devuelve todas; con ell
 ## 6. Consejos de implementación (Frontend)
 
 - **Permisos:** Usar `permissions.canViewPurchases` para ver listado/detalle y `permissions.canManagePurchases` para crear, editar, recibir, cancelar y gestionar pagos.
-- **Deshabilitar pago en efectivo si no hay caja:** Antes de permitir elegir "Efectivo" al crear compra o agregar pago, comprobar si hay turno abierto (ej. `GET /cash-shift/current`). Si no hay, deshabilitar la opción o mostrar aviso: "Abre turno de caja para registrar pago en efectivo."
+- **Deshabilitar pago en efectivo si no hay caja:** Antes de permitir elegir "Efectivo" al crear compra o agregar pago, comprobar si hay turno abierto (`GET /cash-shift/current-shift`). Si no hay, deshabilitar la opción o mostrar aviso: "Abre turno de caja para registrar pago en efectivo."
 - **Flujo típico:** 1) Crear compra con ítems (y opcionalmente pagos). 2) Ajustar ítems si hace falta (solo mientras no esté recibida). 3) Agregar pagos. 4) Cuando llegue la mercancía, llamar `POST /purchase/:id/receive`. No permitir editar ítems después de recibir.
 - **Estados:** Mostrar claramente `status` (PENDING, PARTIAL, PAID, CANCELLED) y `deliveryStatus` (PENDING, RECEIVED, CANCELLED). Botón "Recibir" solo si `deliveryStatus === PENDING` y no cancelada.
 - **Cancelación:** Explicar que cancelar una compra ya recibida devuelve el inventario y ajusta la deuda con el proveedor. Confirmación obligatoria.

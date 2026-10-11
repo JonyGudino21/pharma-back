@@ -12,6 +12,7 @@ import {
 import { ProductService } from './product.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
+import { SetTaxCategoryDto } from './dto/set-tax-category.dto';
 import {
   PaginationWithActiveQueryDto,
   parseQueryActiveFilter,
@@ -87,6 +88,25 @@ export class ProductController {
   async findOne(@Param('id') id: number) {
     const res = await this.productService.findOne(id);
     return ApiResponse.ok(res, 'Producto encontrado exitosamente');
+  }
+
+  /**
+   * [FISCAL] Tratamiento de IVA en bloque (por categoría o lista). Sólo
+   * gerencia. Declarado ANTES de `:id` para que "tax-category" no se lea como id.
+   */
+  @Patch('tax-category')
+  @Roles(UserRole.MANAGER)
+  async setTaxCategory(
+    @Body() dto: SetTaxCategoryDto,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    const res = await this.productService.setTaxCategory(dto, user.id);
+    return ApiResponse.ok(
+      res,
+      res.updated > 0
+        ? `IVA actualizado en ${res.updated} productos`
+        : 'Ningún producto necesitaba cambio',
+    );
   }
 
   /**

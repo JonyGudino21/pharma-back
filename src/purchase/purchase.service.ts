@@ -27,6 +27,7 @@ import { UpdatePurchaseItemDto } from './dto/update-item.dto';
 import { InventoryService } from 'src/inventory/inventory.service';
 import { InventoryBatchesService } from 'src/inventory/inventory-batches.service';
 import { CashShiftService } from 'src/cash-shift/cash-shift.service';
+import { SettingsService } from 'src/settings/settings.service';
 import { Decimal } from '@prisma/client/runtime/library';
 import { decimalText, money } from 'src/common/utils/decimal.util';
 import { normalizeLotNumber, toUtcDateOnly } from 'src/inventory/fefo';
@@ -40,6 +41,7 @@ export class PurchaseService {
     private inventoryService: InventoryService,
     private inventoryBatches: InventoryBatchesService,
     private cashShiftService: CashShiftService,
+    private settings: SettingsService,
   ) {}
 
   /**
@@ -810,6 +812,10 @@ export class PurchaseService {
       );
     }
 
+    // Se lee UNA vez, fuera de la transacción: no hace falta bloquearla y
+    // así toda la recepción usa el mismo criterio aunque alguien lo cambie.
+    const { requireLotForAll } = await this.settings.get('inventory');
+
     return await this.prisma.$transaction(async (tx) => {
       // CLAIM ATÓMICO DE LA RECEPCIÓN:
       // la validación de arriba ocurre fuera de la transacción, así que dos
@@ -889,6 +895,11 @@ export class PurchaseService {
         if (product.controlled && !lot.lotNumber) {
           throw new BadRequestException(
             `El medicamento controlado ${product.name} debe recibirse con lote y caducidad.`,
+          );
+        }
+        if (requireLotForAll && !lot.lotNumber) {
+          throw new BadRequestException(
+            `${product.name} no tiene lote ni caducidad. La configuración de inventario los exige en toda entrada: edita la partida y captúralos antes de recibir.`,
           );
         }
         if (lot.lotNumber && lot.expiryDate) {

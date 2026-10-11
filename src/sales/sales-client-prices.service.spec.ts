@@ -7,6 +7,8 @@ import { InventoryBatchesService } from '../inventory/inventory-batches.service'
 import { CashShiftService } from '../cash-shift/cash-shift.service';
 import { PaymentService } from '../payment/payment.service';
 import { argDe } from '../common/testing/mock-inspect.util';
+import { SettingsService } from '../settings/settings.service';
+import { createSettingsMock } from '../common/testing/settings.mock';
 
 /**
  * PRECIOS ESPECIALES AL CERRAR LA VENTA — corrección del N+1.
@@ -68,6 +70,7 @@ describe('SalesService · precios especiales sin N+1', () => {
         { provide: InventoryBatchesService, useValue: {} },
         { provide: CashShiftService, useValue: {} },
         { provide: PaymentService, useValue: {} },
+        { provide: SettingsService, useValue: createSettingsMock() },
       ],
     }).compile();
 
