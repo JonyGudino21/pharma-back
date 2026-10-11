@@ -1,0 +1,16 @@
+node_modules
+dist
+coverage
+generated
+backups
+logs
+.git
+.github
+.claude
+.vscode
+.env
+.env.*
+!.env.example
+deploy/nube/.env
+deploy/nube/respaldos
+*.log
