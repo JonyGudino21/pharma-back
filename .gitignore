@@ -63,3 +63,6 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 /backups
 *.dump
 *.sql.gz
+
+# Respaldos de la instalación en la nube (datos reales de la farmacia)
+/deploy/nube/respaldos/
