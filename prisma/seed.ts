@@ -48,12 +48,14 @@ async function main() {
     );
   }
 
-  // if (password.length < 12) {
-  //   throw new Error(
-  //     'SEED_ADMIN_PASSWORD debe tener al menos 12 caracteres. ' +
-  //       'Esta cuenta puede anular ventas y ver el libro de controlados.',
-  //   );
-  // }
+  // En producción se exige una contraseña larga: esta cuenta puede anular
+  // ventas y ver el libro de controlados. En desarrollo/QA se permite corta.
+  if (process.env.NODE_ENV === 'production' && password.length < 12) {
+    throw new Error(
+      'SEED_ADMIN_PASSWORD debe tener al menos 12 caracteres en producción. ' +
+        'Esta cuenta puede anular ventas y ver el libro de controlados.',
+    );
+  }
 
   // ── 1. Usuario administrador ────────────────────────────────────────────
   const existente = await prisma.user.findFirst({
@@ -92,20 +94,55 @@ async function main() {
   // El ticket de venta la necesita para imprimir el encabezado, y la
   // exportación del libro de controlados la usa en la cabecera del reporte.
   // `singletonKey` garantiza que sólo haya una ficha por instalación.
+  //
+  // La migración 20260831101500 ya inserta la ficha con datos de relleno
+  // ("Mi Farmacia"), así que en una instalación nueva la ficha SIEMPRE existe
+  // y un `upsert` con `update: {}` ignoraba los SEED_COMPANY_*. Ahora: si la
+  // ficha conserva los datos de relleno, se completan con los SEED_COMPANY_*
+  // recibidos; si la farmacia ya la personalizó, no se toca.
+  const datosSemilla = {
+    ...(process.env.SEED_COMPANY_LEGAL_NAME && {
+      legalName: process.env.SEED_COMPANY_LEGAL_NAME,
+    }),
+    ...(process.env.SEED_COMPANY_TRADE_NAME && {
+      tradeName: process.env.SEED_COMPANY_TRADE_NAME,
+    }),
+    ...(process.env.SEED_COMPANY_RFC && { rfc: process.env.SEED_COMPANY_RFC }),
+    ...(process.env.SEED_COMPANY_ADDRESS && {
+      address: process.env.SEED_COMPANY_ADDRESS,
+    }),
+  };
+  const RELLENO = ['Mi Farmacia', 'Razón social pendiente'];
+
+  const actual = await prisma.company.findUnique({
+    where: { singletonKey: 'default' },
+    select: { tradeName: true, legalName: true, rfc: true },
+  });
+  const esRelleno =
+    !!actual &&
+    RELLENO.includes(actual.tradeName) &&
+    RELLENO.includes(actual.legalName) &&
+    !actual.rfc;
+
   const empresa = await prisma.company.upsert({
     where: { singletonKey: 'default' },
-    update: {},
+    update: esRelleno ? datosSemilla : {},
     create: {
       singletonKey: 'default',
-      legalName:
-        process.env.SEED_COMPANY_LEGAL_NAME ?? 'Razón social pendiente',
-      tradeName: process.env.SEED_COMPANY_TRADE_NAME ?? 'Mi Farmacia',
-      rfc: process.env.SEED_COMPANY_RFC ?? '',
-      address: process.env.SEED_COMPANY_ADDRESS ?? '',
+      legalName: 'Razón social pendiente',
+      tradeName: 'Mi Farmacia',
+      rfc: '',
+      address: '',
       ticketFooter: '¡Gracias por su compra!',
+      ...datosSemilla,
     },
     select: { id: true, tradeName: true },
   });
+  if (actual && !esRelleno && Object.keys(datosSemilla).length > 0) {
+    console.log(
+      '  (La ficha de la farmacia ya estaba personalizada: no se cambió.)',
+    );
+  }
 
   console.log(`✓ Empresa lista: ${empresa.tradeName} (id ${empresa.id})`);
 
