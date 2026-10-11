@@ -35,7 +35,8 @@ Los movimientos por compra, venta o devolución los generan los módulos **Purch
 | `GET`  | `/inventory/alerts/low-stock` | Lista productos con stock ≤ minStock (alertas de reorden). | MANAGER, PHARMACIST |
 | `GET`  | `/inventory/kardex/:productId` | Historial de movimientos del producto (Kardex). Últimos 50 por defecto. | MANAGER, PHARMACIST |
 | `GET`  | `/inventory/valuation` | Valor total del inventario (suma de stock × costo por producto). | MANAGER |
-| `GET`  | `/inventory/stock/:productId` | Cantidad **vendible** del producto (lotes no caducados según `inventory.expiryInclusive`). Para POS y validaciones. | Cualquier usuario autenticado |
+| `GET`  | `/inventory/stock/:productId` | Cantidad **vendible** del producto (lotes no caducados según `inventory.expiryInclusive`; en controlados sólo lotes vigentes). Devuelve también `inLots` y `unbatched` (piezas sin lote). Para POS y validaciones. | Cualquier usuario autenticado |
+| `POST` | `/inventory/batches/regularize` | **Asignar lote** a existencia sin lote: `{ productId, lotNumber, expiryDate, quantity }`. No cambia la existencia total; dos asientos `ADJUSTMENT` (−N sin lote, +N al lote). Rechaza: más piezas que las sin lote, caducidad vencida, lote existente con otra caducidad (ADR-0022). | MANAGER |
 | `POST` | `/inventory/batches/adjustment` | Merma/destrucción de un **lote concreto** (caducado, roto): `{ batchId, quantity, reason }`. | MANAGER |
 | `GET`  | `/inventory/batches/expiring` | Lotes por caducar (`days` 1–365) y vencidos, con semáforo. | MANAGER, PHARMACIST |
 | `GET`  | `/inventory/controlled-log` | Libro de controlados (COFEPRIS), append-only, con datos de receta/paciente. | MANAGER, PHARMACIST |
