@@ -61,8 +61,13 @@ export class ProductController {
    */
   @Post('search')
   async search(@Body() searchDto: SearchProductDto) {
-    const { name, letters, ...pagination } = searchDto;
-    const res = await this.productService.search(name, letters, pagination);
+    const { name, letters, active, ...pagination } = searchDto;
+    const res = await this.productService.search(
+      name,
+      letters,
+      pagination,
+      active,
+    );
     return ApiResponse.ok(res, 'Producto encontrado exitosamente');
   }
 

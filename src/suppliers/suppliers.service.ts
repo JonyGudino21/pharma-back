@@ -12,6 +12,7 @@ import { SearchSupplierDto } from './dto/search-supplier.dto';
 import { Decimal } from '@prisma/client/runtime/library';
 import { PurchaseStatus } from '@prisma/client';
 import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
+import { parseQueryActiveFilter } from 'src/common/dto/pagination-with-active-query.dto';
 import { money } from 'src/common/utils/decimal.util';
 import {
   buildPaginationMeta,
@@ -230,7 +231,12 @@ export class SuppliersService {
       conditions.push({ phone: { contains: phone, mode: 'insensitive' } });
     }
 
-    const where = { OR: conditions };
+    // Activos/Inactivos también al buscar (antes el front pedía 100 y filtraba).
+    const isActive = parseQueryActiveFilter(searchSupplierDto?.active);
+    const where = {
+      OR: conditions,
+      ...(isActive !== undefined ? { isActive } : {}),
+    };
 
     const [suppliers, total] = await Promise.all([
       this.prisma.supplier.findMany({
@@ -238,6 +244,12 @@ export class SuppliersService {
         skip: paginacion.skip,
         take: paginacion.take,
         orderBy: { name: 'asc' },
+        // Mismo conteo que el listado: facturas pendientes de pago.
+        include: {
+          _count: {
+            select: { purchases: { where: { status: { not: 'PAID' } } } },
+          },
+        },
       }),
       this.prisma.supplier.count({ where }),
     ]);

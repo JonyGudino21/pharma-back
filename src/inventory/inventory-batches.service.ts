@@ -19,6 +19,7 @@ import {
   todayInMexico,
   toUtcDateOnly,
 } from './fefo';
+import { rangeEnd, rangeStart } from '../common/utils/mx-date-range.util';
 
 export type PrescriptionData = {
   prescriptionNo: string;
@@ -686,12 +687,9 @@ export class InventoryBatchesService {
 
     if (query.startDate || query.endDate) {
       where.createdAt = {};
-      if (query.startDate) where.createdAt.gte = new Date(query.startDate);
-      if (query.endDate) {
-        const end = new Date(query.endDate);
-        end.setHours(23, 59, 59, 999);
-        where.createdAt.lte = end;
-      }
+      // Días de la farmacia (México), no del servidor: ver mx-date-range.util.
+      if (query.startDate) where.createdAt.gte = rangeStart(query.startDate);
+      if (query.endDate) where.createdAt.lte = rangeEnd(query.endDate);
     }
     if (query.productId != null) where.productId = query.productId;
     if (query.prescriptionNo?.trim()) {

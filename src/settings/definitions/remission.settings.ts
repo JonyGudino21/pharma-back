@@ -61,9 +61,24 @@ export class RemissionSettings {
   @IsBoolean({ message: 'Mostrar pagos debe ser sí o no.' })
   showPayments!: boolean;
 
-  /** Columna de SKU/código en las partidas. */
+  /** Código (SKU) bajo el nombre de cada partida. */
   @IsBoolean({ message: 'Mostrar el código debe ser sí o no.' })
   showSku!: boolean;
+
+  /**
+   * Número de lote de cada partida. Útil para retiros de producto y para
+   * clínicas que llevan trazabilidad; no es obligatorio en una nota.
+   */
+  @IsBoolean({ message: 'Mostrar el lote debe ser sí o no.' })
+  showLot!: boolean;
+
+  /**
+   * Caducidad (MM/AAAA) de cada lote. Hay farmacias que prefieren no mostrarla
+   * al cliente. Sólo cambia lo que se IMPRIME: el FEFO y el libro de
+   * controlados siguen usando lote y caducidad.
+   */
+  @IsBoolean({ message: 'Mostrar la caducidad debe ser sí o no.' })
+  showExpiry!: boolean;
 
   /** "IVA incluido" por tasa bajo el total (los precios ya lo incluyen). */
   @IsBoolean({ message: 'Mostrar el desglose de IVA debe ser sí o no.' })
@@ -89,6 +104,8 @@ export const REMISSION_SETTINGS = defineSettings<RemissionSettings>({
     showSignatures: true,
     showPayments: true,
     showSku: true,
+    showLot: true,
+    showExpiry: true,
     showTaxBreakdown: false,
     density: 'AUTO',
   }),

@@ -26,6 +26,7 @@ import {
   buildPaginationMeta,
   resolvePagination,
 } from 'src/common/utils/pagination.util';
+import { rangeEnd, rangeStart } from '../common/utils/mx-date-range.util';
 
 @Injectable()
 export class ClientService {
@@ -43,18 +44,24 @@ export class ClientService {
    * @returns el cliente creado
    */
   async create(createClientDto: CreateClientDto) {
-    // Validar si exiten duplicados
-    const exiting = await this.prisma.client.findFirst({
-      where: {
-        OR: [{ email: createClientDto.email }, { rfc: createClientDto.rfc }],
-      },
-    });
+    // Validar duplicados SÓLO con los campos que vienen: `{ email: undefined }`
+    // dentro de un OR es un filtro vacío que coincide con cualquier cliente.
+    const orConditions: { email?: string; rfc?: string }[] = [];
+    if (createClientDto.email)
+      orConditions.push({ email: createClientDto.email });
+    if (createClientDto.rfc) orConditions.push({ rfc: createClientDto.rfc });
 
-    if (exiting) {
-      if (exiting.email === createClientDto.email)
-        throw new ConflictException('El email ya esta registrado');
-      if (exiting.rfc === createClientDto.rfc)
-        throw new ConflictException('El RFC ya esta registrado');
+    if (orConditions.length > 0) {
+      const existing = await this.prisma.client.findFirst({
+        where: { OR: orConditions },
+      });
+
+      if (existing) {
+        if (createClientDto.email && existing.email === createClientDto.email)
+          throw new ConflictException('El email ya esta registrado');
+        if (createClientDto.rfc && existing.rfc === createClientDto.rfc)
+          throw new ConflictException('El RFC ya esta registrado');
+      }
     }
 
     return await this.prisma.client.create({
@@ -472,14 +479,11 @@ export class ClientService {
     const paginacion = resolvePagination(query);
 
     const hasDateRange = Boolean(query?.startDate ?? query?.endDate);
-    const startDate = query?.startDate ? new Date(query.startDate) : undefined;
-    const endDate = query?.endDate
-      ? (() => {
-          const d = new Date(query.endDate);
-          d.setHours(23, 59, 59, 999);
-          return d;
-        })()
+    // Días de la farmacia (México), no del servidor: ver mx-date-range.util.
+    const startDate = query?.startDate
+      ? rangeStart(query.startDate)
       : undefined;
+    const endDate = query?.endDate ? rangeEnd(query.endDate) : undefined;
 
     const baseWhere = {
       clientId,

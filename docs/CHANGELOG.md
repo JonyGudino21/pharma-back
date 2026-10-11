@@ -5,6 +5,26 @@ AAAA-MM-DD.
 
 ## Sin publicar
 
+### Corregido y agregado (11/10/2026)
+
+- **Filtros por fecha con el día de la farmacia** (America/Mexico_City). `mx-date-range.util`
+  (`rangeStart`, `rangeEnd`, `pharmacyToday`) en dashboard, ventas (lista y resumen "hoy"), turnos,
+  estado de cuenta de clientes y libro de controlados. Antes "hasta el 10" terminaba a las 6 p.m.
+  hora local con el servidor en UTC: las ventas de la noche quedaban fuera de reportes y cortes.
+- **Nota de remisión:** `remission.showLot` y `remission.showExpiry` (por separado, junto a
+  `showSku`) para elegir qué aparece bajo cada producto.
+- **Alta de cliente sin correo ni teléfono.** Eran obligatorios en el DTO aunque la base y el
+  formulario los tratan como opcionales (respondía 400). La validación de duplicados ya no arma un
+  `OR` con campos vacíos, que coincidía con cualquier cliente.
+- **Buscar clientes respondía 400** (`GET /client/search?page=1&limit=10`): el DTO declaraba la
+  paginación como objeto anidado, imposible en un query string. Hereda `PaginationParamsDto`.
+- **Búsquedas:**
+  - `GET /suppliers/search` acepta `active` e incluye el conteo de facturas pendientes.
+  - `POST /products/search` busca también por SKU (parcial) y acepta `active` (booleano).
+  - `GET /users/search`: el texto de usuario también busca en nombre y apellido.
+- Pruebas nuevas: rangos de fecha (7), alta de cliente (3), búsqueda de proveedores (5), de
+  productos (4) y de usuarios (1). Total 45 suites / 554 pruebas.
+
 ### Agregado (10/10/2026)
 
 - **Asignar lote a existencia sin lote** (`POST /inventory/batches/regularize`, gerencia, ADR-0022). La

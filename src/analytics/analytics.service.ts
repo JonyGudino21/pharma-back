@@ -3,6 +3,11 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { GetDashboardDto } from './dto/get-dashboard.dto';
 import { Decimal } from '@prisma/client/runtime/library';
 import { SaleFlowStatus, SaleStatus, Prisma } from '@prisma/client';
+import {
+  pharmacyToday,
+  rangeEnd,
+  rangeStart,
+} from 'src/common/utils/mx-date-range.util';
 
 /**
  * Forma cruda de una fila del top de productos.
@@ -204,19 +209,12 @@ export class AnalyticsService {
 
   // --- HELPER DE FECHAS ---
   private getDateRange(dto: GetDashboardDto) {
-    const now = new Date();
-
-    // Si no mandan inicio, tomamos el primer día del mes actual
-    const startDate = dto.startDate
-      ? new Date(dto.startDate)
-      : new Date(now.getFullYear(), now.getMonth(), 1);
-
-    // Si no mandan fin, tomamos hoy al final del día
-    const endDate = dto.endDate ? new Date(dto.endDate) : new Date();
-
-    // Asegurar que startDate sea a las 00:00:00 y endDate a las 23:59:59
-    startDate.setHours(0, 0, 0, 0);
-    endDate.setHours(23, 59, 59, 999);
+    // Días del calendario de la farmacia (México), no del servidor. Antes
+    // `new Date('AAAA-MM-DD')` (medianoche UTC) + `setHours` corría el periodo:
+    // empezaba la tarde del día anterior y perdía la noche del último día.
+    const hoy = pharmacyToday();
+    const startDate = rangeStart(dto.startDate ?? `${hoy.slice(0, 8)}01`);
+    const endDate = rangeEnd(dto.endDate ?? hoy);
 
     return { startDate, endDate };
   }

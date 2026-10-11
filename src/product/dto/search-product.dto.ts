@@ -2,6 +2,7 @@ import {
   IsOptional,
   IsString,
   IsArray,
+  IsBoolean,
   IsNumber,
   Min,
   Max,
@@ -16,6 +17,11 @@ export class SearchProductDto {
   @IsOptional()
   @IsArray()
   letters?: string[];
+
+  /** true = sólo activos, false = sólo inactivos, ausente = todos. */
+  @IsOptional()
+  @IsBoolean()
+  active?: boolean;
 
   @IsOptional()
   @IsNumber()

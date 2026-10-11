@@ -25,6 +25,7 @@ import {
   buildPaginationMeta,
   resolvePagination,
 } from 'src/common/utils/pagination.util';
+import { rangeEnd, rangeStart } from '../common/utils/mx-date-range.util';
 
 /**
  * Espacio de nombres del bloqueo consultivo para "abrir turno". Cualquier
@@ -380,12 +381,11 @@ export class CashShiftService {
     // inferior: al pedir "del 1 al 31" se devolvia todo lo anterior al 31.
     const openedAt: Prisma.DateTimeFilter = {};
     if (filters?.startDate) {
-      openedAt.gte = new Date(filters.startDate);
+      openedAt.gte = rangeStart(filters.startDate);
     }
     if (filters?.endDate) {
-      openedAt.lte = new Date(
-        new Date(filters.endDate).setHours(23, 59, 59, 999),
-      );
+      // Día de la farmacia (México), no del servidor: ver mx-date-range.util.
+      openedAt.lte = rangeEnd(filters.endDate);
     }
     if (openedAt.gte || openedAt.lte) {
       where.openedAt = openedAt;

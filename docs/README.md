@@ -58,6 +58,7 @@ Viven en el repositorio `engineering-playbook`, carpeta `adrs/`:
 | ADR-0020 | Front como SPA (sin SSR) | `engineering-playbook/adrs/ADR-0020-pharma-front-spa-mode.md` |
 | ADR-0021 | Identidad única de comprobantes y densidad adaptativa | `engineering-playbook/adrs/ADR-0021-pharma-document-identity-and-adaptive-density.md` |
 | ADR-0022 | Asignar lote a existencia sin lote | `engineering-playbook/adrs/ADR-0022-pharma-assign-lot-to-unbatched-stock.md` |
+| ADR-0023 | Ayuda contextual y diseño responsivo | `engineering-playbook/adrs/ADR-0023-pharma-contextual-help-and-responsive-ui.md` |
 
 ## 4. Flujo de trabajo
 

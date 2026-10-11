@@ -374,4 +374,41 @@ describe('ClientService — cobranza y deuda', () => {
       expect(res.salesPaid).toBe(3);
     });
   });
+
+  describe('alta de cliente', () => {
+    beforeEach(() => {
+      mockPrisma.client.create.mockImplementation(
+        ({ data }: { data: object }) => Promise.resolve({ id: 99, ...data }),
+      );
+    });
+
+    it('sin correo ni RFC no busca duplicados (un OR vacío coincidiría con cualquiera)', async () => {
+      await service.create({ name: 'Cliente de mostrador' });
+
+      expect(mockPrisma.client.findFirst).not.toHaveBeenCalled();
+      expect(mockPrisma.client.create).toHaveBeenCalled();
+    });
+
+    it('sólo compara los campos enviados', async () => {
+      mockPrisma.client.findFirst.mockResolvedValue(null);
+
+      await service.create({ name: 'Ana', email: 'ana@ejemplo.mx' });
+
+      expect(argDe(mockPrisma.client.findFirst)).toEqual({
+        where: { OR: [{ email: 'ana@ejemplo.mx' }] },
+      });
+    });
+
+    it('rechaza un RFC ya registrado', async () => {
+      mockPrisma.client.findFirst.mockResolvedValue({
+        id: 3,
+        email: null,
+        rfc: 'XAXX010101000',
+      });
+
+      await expect(
+        service.create({ name: 'Ana', rfc: 'XAXX010101000' }),
+      ).rejects.toThrow(ConflictException);
+    });
+  });
 });

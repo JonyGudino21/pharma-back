@@ -47,6 +47,11 @@ import {
 } from './pricing';
 import { recalculateSaleTotals, writeLinePricing } from './sale-lines';
 import { todayInMexico } from 'src/inventory/fefo';
+import {
+  pharmacyToday,
+  rangeEnd,
+  rangeStart,
+} from 'src/common/utils/mx-date-range.util';
 
 @Injectable()
 export class SalesService {
@@ -1374,14 +1379,9 @@ export class SalesService {
     // Filtro por rango de fechas (createdAt)
     if (query.startDate || query.endDate) {
       where.createdAt = {};
-      if (query.startDate) {
-        where.createdAt.gte = new Date(query.startDate);
-      }
-      if (query.endDate) {
-        const end = new Date(query.endDate);
-        end.setHours(23, 59, 59, 999);
-        where.createdAt.lte = end;
-      }
+      // Días de la farmacia (México), no del servidor: ver mx-date-range.util.
+      if (query.startDate) where.createdAt.gte = rangeStart(query.startDate);
+      if (query.endDate) where.createdAt.lte = rangeEnd(query.endDate);
     }
 
     if (query.status != null) where.status = query.status;
@@ -1572,12 +1572,8 @@ export class SalesService {
     const where: Prisma.SaleWhereInput = {};
     if (startDate || endDate) {
       where.createdAt = {};
-      if (startDate) where.createdAt.gte = new Date(startDate);
-      if (endDate) {
-        const end = new Date(endDate);
-        end.setHours(23, 59, 59, 999);
-        where.createdAt.lte = end;
-      }
+      if (startDate) where.createdAt.gte = rangeStart(startDate);
+      if (endDate) where.createdAt.lte = rangeEnd(endDate);
     }
 
     const [byStatus, byFlowStatus, todayCount, totalRevenue] =
@@ -1599,7 +1595,8 @@ export class SalesService {
             flowStatus: SaleFlowStatus.COMPLETED,
             status: { not: SaleStatus.CANCELLED },
             createdAt: {
-              gte: new Date(new Date().setHours(0, 0, 0, 0)),
+              // "Hoy" de la farmacia, no del servidor (en la nube corre en UTC).
+              gte: rangeStart(pharmacyToday()),
               lte: new Date(),
             },
           },

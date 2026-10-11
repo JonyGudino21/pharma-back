@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { ControlledLogEntryType, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { rangeEnd, rangeStart } from '../common/utils/mx-date-range.util';
 
 export interface ControlledExportQuery {
   startDate?: string;
@@ -123,12 +124,9 @@ export class ControlledLogExportService {
 
     if (query.startDate || query.endDate) {
       where.createdAt = {};
-      if (query.startDate) where.createdAt.gte = new Date(query.startDate);
-      if (query.endDate) {
-        const end = new Date(query.endDate);
-        end.setHours(23, 59, 59, 999);
-        where.createdAt.lte = end;
-      }
+      // Días de la farmacia (México), no del servidor: ver mx-date-range.util.
+      if (query.startDate) where.createdAt.gte = rangeStart(query.startDate);
+      if (query.endDate) where.createdAt.lte = rangeEnd(query.endDate);
     }
     if (query.productId != null) where.productId = query.productId;
     if (query.entryType) where.entryType = query.entryType;

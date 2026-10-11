@@ -60,7 +60,7 @@ export class ClientController {
    */
   @Get('search')
   async search(@Query() query: SearchClientDto) {
-    const { name, email, phone, pagination } = query;
+    const { name, email, phone, ...pagination } = query;
     const res = await this.clientService.findClient(
       name,
       email,
