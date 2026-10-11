@@ -9,6 +9,15 @@ export const REMISSION_PAPERS = ['LETTER', 'A4'] as const;
 export type RemissionPaper = (typeof REMISSION_PAPERS)[number];
 
 /**
+ * Densidad de la tabla de partidas.
+ *  - AUTO: cómoda (renglón amplio con lote y código debajo) en notas cortas y
+ *    compacta (renglón de una línea) cuando no cabrían en una hoja. Recomendado.
+ *  - COMFORTABLE / COMPACT: fuerzan una u otra.
+ */
+export const REMISSION_DENSITIES = ['AUTO', 'COMFORTABLE', 'COMPACT'] as const;
+export type RemissionDensity = (typeof REMISSION_DENSITIES)[number];
+
+/**
  * NOTA DE REMISIÓN (hoja completa).
  *
  * Documento no fiscal que acompaña una entrega: datos de la farmacia y del
@@ -59,6 +68,11 @@ export class RemissionSettings {
   /** "IVA incluido" por tasa bajo el total (los precios ya lo incluyen). */
   @IsBoolean({ message: 'Mostrar el desglose de IVA debe ser sí o no.' })
   showTaxBreakdown!: boolean;
+
+  @IsIn([...REMISSION_DENSITIES], {
+    message: 'La densidad debe ser Automática, Cómoda o Compacta.',
+  })
+  density!: RemissionDensity;
 }
 
 export const DEFAULT_REMISSION_LEGEND =
@@ -76,5 +90,6 @@ export const REMISSION_SETTINGS = defineSettings<RemissionSettings>({
     showPayments: true,
     showSku: true,
     showTaxBreakdown: false,
+    density: 'AUTO',
   }),
 });
