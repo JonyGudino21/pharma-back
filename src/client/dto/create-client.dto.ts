@@ -4,11 +4,15 @@ export class CreateClientDto {
   @IsString()
   name: string;
 
+  // Opcionales: muchos clientes de mostrador no dan correo ni teléfono (la
+  // base de datos ya los admite vacíos; el formulario los marca opcionales).
   @IsEmail()
-  email: string;
+  @IsOptional()
+  email?: string;
 
   @IsString()
-  phone: string;
+  @IsOptional()
+  phone?: string;
 
   @IsString()
   @IsOptional()

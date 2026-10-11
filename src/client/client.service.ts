@@ -44,18 +44,24 @@ export class ClientService {
    * @returns el cliente creado
    */
   async create(createClientDto: CreateClientDto) {
-    // Validar si exiten duplicados
-    const exiting = await this.prisma.client.findFirst({
-      where: {
-        OR: [{ email: createClientDto.email }, { rfc: createClientDto.rfc }],
-      },
-    });
+    // Validar duplicados SÓLO con los campos que vienen: `{ email: undefined }`
+    // dentro de un OR es un filtro vacío que coincide con cualquier cliente.
+    const orConditions: { email?: string; rfc?: string }[] = [];
+    if (createClientDto.email)
+      orConditions.push({ email: createClientDto.email });
+    if (createClientDto.rfc) orConditions.push({ rfc: createClientDto.rfc });
 
-    if (exiting) {
-      if (exiting.email === createClientDto.email)
-        throw new ConflictException('El email ya esta registrado');
-      if (exiting.rfc === createClientDto.rfc)
-        throw new ConflictException('El RFC ya esta registrado');
+    if (orConditions.length > 0) {
+      const existing = await this.prisma.client.findFirst({
+        where: { OR: orConditions },
+      });
+
+      if (existing) {
+        if (createClientDto.email && existing.email === createClientDto.email)
+          throw new ConflictException('El email ya esta registrado');
+        if (createClientDto.rfc && existing.rfc === createClientDto.rfc)
+          throw new ConflictException('El RFC ya esta registrado');
+      }
     }
 
     return await this.prisma.client.create({
