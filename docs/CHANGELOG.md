@@ -5,6 +5,28 @@ AAAA-MM-DD.
 
 ## Sin publicar
 
+### Producción e instalación (ADR-0024, 11/10/2026)
+
+- **Guía de producción** `docs/produccion/`: preparación, instalación local en Windows (una caja y
+  varias cajas con HTTPS interno), nube (Lightsail + Docker), operación, instalación en cliente,
+  costos y planes.
+- **Despliegue empaquetado y probado de punta a punta:** `Dockerfile`, `deploy/nube/` (Compose
+  con PostgreSQL 16 + API + Caddy, `respaldo.sh`, `restaurar.sh`, `actualizar.sh`) y
+  `deploy/windows/` (Caddyfile para una caja y para red local, `respaldo.cmd`).
+- **`scripts/restore.js`**: simulacro (`--prueba`, en base temporal) y restauración real
+  (`--confirmar`, con respaldo de seguridad previo y en una sola transacción). `backup.js` comparte la
+  lectura de la conexión (`scripts/conexion.js`).
+- **`HOST`** (interfaz de escucha): `127.0.0.1` en una PC detrás de Caddy deja el 3005 fuera de la red.
+- Scripts `db:migrate` y `db:restore`; `engines.node >= 22` y `.nvmrc`.
+- `.env.example` completo (cookies, proxy, caducidad, semilla, respaldos) y README sin variables viejas.
+
+### Corregido (11/10/2026)
+
+- **La semilla ignoraba los datos de la farmacia** (`SEED_COMPANY_*`): una migración ya crea la ficha
+  con datos de relleno y el `upsert` no la actualizaba. Ahora completa la ficha si sigue con el
+  relleno y nunca toca una ficha ya personalizada.
+- **Contraseña del primer administrador:** mínimo 12 caracteres en producción.
+
 ### Corregido y agregado (11/10/2026)
 
 - **Filtros por fecha con el día de la farmacia** (America/Mexico_City). `mx-date-range.util`

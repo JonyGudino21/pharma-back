@@ -3,6 +3,12 @@
 Backend del POS/ERP de farmacia (NestJS 11 + Prisma 6 + PostgreSQL). Todas las rutas viven bajo el
 prefijo `/api` (salvo `/health*`).
 
+## Producción e instalación
+
+**[`produccion/README.md`](produccion/README.md)**: instalar en la farmacia (Windows) o en la nube
+(Lightsail + Docker), respaldos y restauración, actualizaciones, instalación en un cliente, costos y
+planes. Decisión: ADR-0024.
+
 ## 1. Documentación ejecutiva
 
 Para dueño, familia e inversionistas: [`ejecutivo/README.md`](ejecutivo/README.md).
@@ -59,6 +65,7 @@ Viven en el repositorio `engineering-playbook`, carpeta `adrs/`:
 | ADR-0021 | Identidad única de comprobantes y densidad adaptativa | `engineering-playbook/adrs/ADR-0021-pharma-document-identity-and-adaptive-density.md` |
 | ADR-0022 | Asignar lote a existencia sin lote | `engineering-playbook/adrs/ADR-0022-pharma-assign-lot-to-unbatched-stock.md` |
 | ADR-0023 | Ayuda contextual y diseño responsivo | `engineering-playbook/adrs/ADR-0023-pharma-contextual-help-and-responsive-ui.md` |
+| ADR-0024 | Topología de producción e instalación por cliente | `engineering-playbook/adrs/ADR-0024-pharma-production-topology-and-installation.md` |
 
 ## 4. Flujo de trabajo
 
