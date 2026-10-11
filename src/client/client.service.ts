@@ -26,6 +26,7 @@ import {
   buildPaginationMeta,
   resolvePagination,
 } from 'src/common/utils/pagination.util';
+import { rangeEnd, rangeStart } from '../common/utils/mx-date-range.util';
 
 @Injectable()
 export class ClientService {
@@ -472,14 +473,11 @@ export class ClientService {
     const paginacion = resolvePagination(query);
 
     const hasDateRange = Boolean(query?.startDate ?? query?.endDate);
-    const startDate = query?.startDate ? new Date(query.startDate) : undefined;
-    const endDate = query?.endDate
-      ? (() => {
-          const d = new Date(query.endDate);
-          d.setHours(23, 59, 59, 999);
-          return d;
-        })()
+    // Días de la farmacia (México), no del servidor: ver mx-date-range.util.
+    const startDate = query?.startDate
+      ? rangeStart(query.startDate)
       : undefined;
+    const endDate = query?.endDate ? rangeEnd(query.endDate) : undefined;
 
     const baseWhere = {
       clientId,
