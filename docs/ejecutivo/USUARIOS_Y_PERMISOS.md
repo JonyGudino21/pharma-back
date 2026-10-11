@@ -45,8 +45,8 @@ usuario puede cambiar su propia contraseña.
 ## Riesgos y limitaciones conocidas
 
 - Los roles son fijos: no se pueden crear roles a la medida ni dar permisos sueltos a una persona.
-- Inconsistencia conocida: la pantalla muestra "resumen de ventas" a todos los roles, pero el
-  servidor sólo se lo entrega a gerencia.
+- "Consultar el historial de ventas" lo tienen todos (el cajero reimprime tickets); "ver el resumen
+  gerencial de ventas" y "exportar el libro de controlados", sólo gerencia.
 - Al cambiar el rol de alguien, sus permisos en pantalla se actualizan en su siguiente sesión.
 
 ## Indicadores de éxito

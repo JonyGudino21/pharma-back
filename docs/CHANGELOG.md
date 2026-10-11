@@ -22,6 +22,12 @@ AAAA-MM-DD.
 
 ### Cambiado
 
+- **Permisos de ventas separados.** Nuevo `canViewSalesHistory` (todos los roles) para historial y
+  detalle; `canViewSalesSummary` pasa a ser sólo de gerencia, igual que `@Roles(MANAGER)` de
+  `GET /sales/summary` (antes era verdadero para todos y el endpoint respondía 403). **Requiere el
+  front de la misma versión.**
+- **Nuevo `canExportControlledLog`** (gerencia), alineado con `GET /inventory/controlled-log/export`.
+
 - **No se imprime comprobante de una venta anulada.** `POST /api/sales/:id/prints` responde 400
   cuando `flowStatus` o `status` es `CANCELLED`, para cualquier documento (antes sólo lo impedía la
   pantalla). Se mantiene el 400 para ventas en borrador.

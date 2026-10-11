@@ -85,7 +85,7 @@ async function main() {
   const admin = await login('qa_admin');
   check('permisos de devolución expuestos al front', admin.permisos.canReturnSales === true);
   check('permisos de anulación expuestos al front', admin.permisos.canCancelSales === true);
-  check('acceso al historial expuesto al front', admin.permisos.canViewSalesSummary === true);
+  check('acceso al historial expuesto al front', admin.permisos.canViewSalesHistory === true);
 
   const productos = await api('/products?limit=5');
   const lista = productos.body.data?.products ?? productos.body.data ?? [];
@@ -140,7 +140,7 @@ async function main() {
     'el cajero NO ve devoluciones ni anulación',
     cajero.permisos.canReturnSales === false && cajero.permisos.canCancelSales === false,
   );
-  check('el cajero SÍ entra al historial', cajero.permisos.canViewSalesSummary === true);
+  check('el cajero SÍ entra al historial', cajero.permisos.canViewSalesHistory === true);
 
   const devolCajero = await api(`/sales/${venta.id}/return`, {
     method: 'POST',
