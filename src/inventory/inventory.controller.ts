@@ -20,6 +20,7 @@ import { RegisterAdjustmentDto } from './dto/register-adjustment.dto';
 import { ExpiringBatchesQueryDto } from './dto/expiring-batches-query.dto';
 import { ControlledLogQueryDto } from './dto/controlled-log-query.dto';
 import { DestroyBatchDto } from './dto/destroy-batch.dto';
+import { RegularizeLotDto } from './dto/regularize-lot.dto';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
@@ -70,6 +71,21 @@ export class InventoryController {
       userId,
     );
     return ApiResponse.ok(data, 'Merma de lote registrada');
+  }
+
+  /**
+   * [ALMACÉN] Asigna lote y caducidad a existencia que no los tiene (inventario
+   * anterior a los lotes). No cambia la existencia total. Gerencia: reclasifica
+   * inventario y habilita la venta de controlados.
+   */
+  @Post('batches/regularize')
+  @Roles(UserRole.MANAGER)
+  async regularizeLot(
+    @Body() body: RegularizeLotDto,
+    @GetUser('id') userId: number,
+  ) {
+    const data = await this.batches.regularizeLot(body, userId);
+    return ApiResponse.ok(data, 'Lote asignado a la existencia');
   }
 
   /**

@@ -201,11 +201,16 @@ describe('InventoryBatchesService — consumo FEFO', () => {
         ...producto(10),
         controlled: false,
       });
-      tx.productBatch.aggregate.mockResolvedValueOnce({
-        _sum: { quantity: 2 },
-      });
+      tx.productBatch.aggregate
+        .mockResolvedValueOnce({ _sum: { quantity: 2 } }) // caducados
+        .mockResolvedValueOnce({ _sum: { quantity: 6 } }); // en lotes
       const r = await service.getSellableQuantity(1, txClient);
-      expect(r).toMatchObject({ sellable: 8, controlled: false });
+      expect(r).toMatchObject({
+        sellable: 8,
+        controlled: false,
+        inLots: 6,
+        unbatched: 4,
+      });
     });
 
     it('controlado SIN lotes: 0 vendible aunque haya existencia (igual que el cierre)', async () => {
@@ -242,6 +247,89 @@ describe('InventoryBatchesService — consumo FEFO', () => {
         .mockResolvedValueOnce({ _sum: { quantity: 10 } });
       const r = await service.getSellableQuantity(1, txClient);
       expect(r.sellable).toBe(3);
+    });
+  });
+
+  describe('asignar lote a existencia sin lote (regularizar)', () => {
+    const prismaTx = mockPrisma as unknown as {
+      $transaction: jest.Mock;
+    };
+    const base = {
+      productId: 1,
+      lotNumber: ' a-123 ',
+      expiryDate: '2027-03-31',
+      quantity: 5,
+    };
+
+    beforeEach(() => {
+      prismaTx.$transaction = jest.fn((cb: (t: typeof tx) => unknown) =>
+        cb(tx),
+      );
+      tx.product.findUnique.mockResolvedValue({
+        id: 1,
+        name: 'Amoxicilina',
+        stock: 65,
+        cost: cost(10),
+        isActive: true,
+      });
+      tx.productBatch.aggregate.mockResolvedValue({ _sum: { quantity: null } });
+    });
+
+    it('mueve piezas sin lote al lote sin cambiar la existencia total (salida + entrada)', async () => {
+      const spy = jest
+        .spyOn(service, 'receiveIntoBatch')
+        .mockResolvedValue(undefined);
+
+      const r = await service.regularizeLot(base, 7);
+
+      expect(mockInventory.lockProductRow).toHaveBeenCalledWith(tx, 1);
+      expect(mockInventory.registerMovement).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'ADJUSTMENT', quantity: -5 }),
+        7,
+        tx,
+        expect.anything(),
+      );
+      expect(spy).toHaveBeenCalledWith(
+        tx,
+        expect.objectContaining({
+          quantity: 5,
+          lotNumber: 'A-123',
+          movementType: 'ADJUSTMENT',
+          purchaseItemId: null,
+        }),
+        7,
+      );
+      expect(r).toMatchObject({ assigned: 5, remainingUnbatched: 60 });
+    });
+
+    it('no asigna más piezas de las que hay sin lote', async () => {
+      tx.productBatch.aggregate.mockResolvedValue({ _sum: { quantity: 63 } });
+      await expect(
+        service.regularizeLot({ ...base, quantity: 5 }, 7),
+      ).rejects.toThrow('sólo tiene 2 pieza(s) sin lote');
+      expect(mockInventory.registerMovement).not.toHaveBeenCalled();
+    });
+
+    it('sin piezas sin lote, lo dice claro', async () => {
+      tx.productBatch.aggregate.mockResolvedValue({ _sum: { quantity: 65 } });
+      await expect(service.regularizeLot(base, 7)).rejects.toThrow(
+        'no tiene piezas sin lote',
+      );
+    });
+
+    it('rechaza una caducidad vencida (hoy en pruebas es 2026-09-03)', async () => {
+      await expect(
+        service.regularizeLot({ ...base, expiryDate: '2026-09-02' }, 7),
+      ).rejects.toThrow('Esa caducidad ya pasó');
+    });
+
+    it('rechaza lote vacío y cantidades inválidas', async () => {
+      await expect(
+        service.regularizeLot({ ...base, lotNumber: '   ' }, 7),
+      ).rejects.toThrow('lote no puede estar vacío');
+      await expect(
+        service.regularizeLot({ ...base, quantity: 0 }, 7),
+      ).rejects.toThrow('al menos 1 pieza');
     });
   });
 

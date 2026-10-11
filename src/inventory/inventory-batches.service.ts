@@ -46,6 +46,9 @@ export class InventoryBatchesService {
     expired: number;
     name: string;
     controlled: boolean;
+    /** Piezas en lotes (vigentes o no) y piezas sin lote (inventario previo a los lotes). */
+    inLots: number;
+    unbatched: number;
   }> {
     const db = tx ?? this.prisma;
     const product = await db.product.findUnique({
@@ -79,18 +82,23 @@ export class InventoryBatchesService {
     // lote en el libro). Antes aquí se contaba toda la existencia: el carrito
     // aceptaba el producto, se capturaban receta y pago, y el cierre lo
     // rechazaba con "Stock insuficiente o lotes caducados".
+    const enLotes = await db.productBatch.aggregate({
+      where: { productId, quantity: { gt: 0 } },
+      _sum: { quantity: true },
+    });
+    const inLots = enLotes._sum.quantity ?? 0;
+    const unbatched = Math.max(0, product.stock - inLots);
+
     if (product.controlled) {
-      const enLotes = await db.productBatch.aggregate({
-        where: { productId, quantity: { gt: 0 } },
-        _sum: { quantity: true },
-      });
-      const vigente = Math.max(0, (enLotes._sum.quantity ?? 0) - expiredQty);
+      const vigente = Math.max(0, inLots - expiredQty);
       return {
         stock: product.stock,
         expired: expiredQty,
         sellable: Math.min(product.stock, vigente),
         name: product.name,
         controlled: true,
+        inLots,
+        unbatched,
       };
     }
 
@@ -100,6 +108,8 @@ export class InventoryBatchesService {
       sellable: Math.max(0, product.stock - expiredQty),
       name: product.name,
       controlled: false,
+      inLots,
+      unbatched,
     };
   }
 
@@ -426,6 +436,120 @@ export class InventoryBatchesService {
       tx,
       params.unitCost,
     );
+  }
+
+  /**
+   * ASIGNAR LOTE A EXISTENCIA SIN LOTE ("regularizar").
+   *
+   * La existencia capturada antes de que el sistema manejara lotes no tiene
+   * caducidad: queda fuera del FEFO y de las alertas, y un CONTROLADO en esa
+   * situación no se puede vender (COFEPRIS exige el lote). Esta operación toma
+   * `quantity` piezas sin lote y las asienta en el lote indicado.
+   *
+   * La EXISTENCIA TOTAL NO CAMBIA. En el Kardex quedan dos asientos de ajuste
+   * (sale de "sin lote", entra al lote) con el mismo motivo, para que una
+   * auditoría vea exactamente qué se reclasificó, cuándo y quién.
+   */
+  async regularizeLot(
+    params: {
+      productId: number;
+      lotNumber: string;
+      expiryDate: string;
+      quantity: number;
+    },
+    userId: number,
+  ) {
+    const lot = normalizeLotNumber(params.lotNumber);
+    if (!lot)
+      throw new BadRequestException('El número de lote no puede estar vacío');
+    const expiry = toUtcDateOnly(params.expiryDate);
+    if (Number.isNaN(expiry.getTime())) {
+      throw new BadRequestException('La fecha de caducidad no es válida');
+    }
+    if (expiry.getTime() < todayInMexico().getTime()) {
+      throw new BadRequestException(
+        'Esa caducidad ya pasó: no se puede asignar un lote caducado a la existencia.',
+      );
+    }
+    if (!Number.isInteger(params.quantity) || params.quantity < 1) {
+      throw new BadRequestException('Asigna al menos 1 pieza.');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      // Mismo candado que ventas y compras: nadie mueve este producto mientras
+      // se calcula cuánto queda sin lote.
+      await this.inventory.lockProductRow(tx, params.productId);
+
+      const product = await tx.product.findUnique({
+        where: { id: params.productId },
+        select: {
+          id: true,
+          name: true,
+          stock: true,
+          cost: true,
+          isActive: true,
+        },
+      });
+      if (!product) throw new NotFoundException('Producto no encontrado');
+
+      const enLotes = await tx.productBatch.aggregate({
+        where: { productId: product.id, quantity: { gt: 0 } },
+        _sum: { quantity: true },
+      });
+      const unbatched = Math.max(
+        0,
+        product.stock - (enLotes._sum.quantity ?? 0),
+      );
+      if (params.quantity > unbatched) {
+        throw new BadRequestException(
+          unbatched === 0
+            ? `${product.name} no tiene piezas sin lote: toda su existencia ya está en lotes.`
+            : `${product.name} sólo tiene ${unbatched} pieza(s) sin lote; no se pueden asignar ${params.quantity}.`,
+        );
+      }
+
+      const reason = `Asignación de lote ${lot} (cad. ${expiry.toISOString().slice(0, 10)}): ${params.quantity} pza. sin lote`;
+
+      // Sale de "sin lote"… (sin batchId: descuenta sólo el total)
+      await this.inventory.registerMovement(
+        {
+          productId: product.id,
+          type: MovementType.ADJUSTMENT,
+          quantity: -params.quantity,
+          reason,
+          referenceId: product.id,
+        },
+        userId,
+        tx,
+        product.cost,
+      );
+
+      // …y entra al lote (crea el lote o suma a uno existente con la MISMA
+      // caducidad; distinta caducidad para el mismo lote se rechaza).
+      await this.receiveIntoBatch(
+        tx,
+        {
+          productId: product.id,
+          quantity: params.quantity,
+          unitCost: new Decimal(product.cost),
+          lotNumber: lot,
+          expiryDate: expiry,
+          purchaseItemId: null,
+          reason,
+          referenceId: product.id,
+          movementType: MovementType.ADJUSTMENT,
+        },
+        userId,
+      );
+
+      return {
+        productId: product.id,
+        lotNumber: lot,
+        expiryDate: expiry.toISOString().slice(0, 10),
+        assigned: params.quantity,
+        remainingUnbatched: unbatched - params.quantity,
+      };
+    });
   }
 
   async destroyBatch(
