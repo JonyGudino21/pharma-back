@@ -45,11 +45,12 @@ export class InventoryBatchesService {
     sellable: number;
     expired: number;
     name: string;
+    controlled: boolean;
   }> {
     const db = tx ?? this.prisma;
     const product = await db.product.findUnique({
       where: { id: productId },
-      select: { id: true, name: true, stock: true },
+      select: { id: true, name: true, stock: true, controlled: true },
     });
     if (!product) throw new NotFoundException('Producto no encontrado');
 
@@ -72,11 +73,33 @@ export class InventoryBatchesService {
       _sum: { quantity: true },
     });
     const expiredQty = expired._sum.quantity ?? 0;
+
+    // CONTROLADOS: sólo cuenta lo que está EN LOTES VIGENTES. `consumeForSale`
+    // nunca despacha un controlado desde existencia sin lote (COFEPRIS exige el
+    // lote en el libro). Antes aquí se contaba toda la existencia: el carrito
+    // aceptaba el producto, se capturaban receta y pago, y el cierre lo
+    // rechazaba con "Stock insuficiente o lotes caducados".
+    if (product.controlled) {
+      const enLotes = await db.productBatch.aggregate({
+        where: { productId, quantity: { gt: 0 } },
+        _sum: { quantity: true },
+      });
+      const vigente = Math.max(0, (enLotes._sum.quantity ?? 0) - expiredQty);
+      return {
+        stock: product.stock,
+        expired: expiredQty,
+        sellable: Math.min(product.stock, vigente),
+        name: product.name,
+        controlled: true,
+      };
+    }
+
     return {
       stock: product.stock,
       expired: expiredQty,
       sellable: Math.max(0, product.stock - expiredQty),
       name: product.name,
+      controlled: false,
     };
   }
 

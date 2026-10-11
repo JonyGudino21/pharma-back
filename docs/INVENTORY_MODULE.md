@@ -106,5 +106,10 @@ El único endpoint que recibe body en este módulo es el ajuste:
 - El criterio "¿se vende el lote que caduca hoy?" es `inventory.expiryInclusive` (antes
   `EXPIRY_INCLUSIVE`, ahora sólo valor de fábrica). Lo usan por igual `getSellable` y
   `consumeForSale`: si difirieran, el cajero vería stock vendible que el cierre rechazaría.
+- **Controlados: lo vendible son sólo los lotes vigentes.** `consumeForSale` nunca despacha un
+  controlado desde existencia sin lote; `getSellableQuantity` ahora aplica el mismo criterio
+  (`min(existencia, lotes − caducados)`) y devuelve `controlled`. Antes contaba toda la existencia: un
+  controlado sin lotes (existencia anterior a los lotes) entraba al carrito y el cierre lo rechazaba
+  después de capturar receta y cobro. **Para venderlos, registra su lote con un ajuste por lote.**
 - `inventory.requireLotForAll` exige lote y caducidad en toda entrada (alta con stock y recepción
   de compras), no sólo en controlados.

@@ -5,6 +5,16 @@ AAAA-MM-DD.
 
 ## Sin publicar
 
+### Corregido (validación en vivo, 10/10/2026)
+
+- **Controlados sin lote ya no entran al carrito.** `getSellableQuantity` aplica a los controlados el
+  mismo criterio que `consumeForSale` (sólo lotes vigentes). Antes el carrito los aceptaba y el cierre
+  los rechazaba después de capturar receta y cobro. `addItem` y `create` ahora también validan
+  existencias (antes sólo `update-item`).
+- **El total nunca baja de lo ya cobrado** (409): quitar productos tras un abono dejaba la venta
+  sobrepagada sin cambio registrado y el arqueo descuadrado.
+- **Folio con la fecha de la farmacia** (America/Mexico_City), no UTC.
+
 ### Agregado
 
 - **Nota de remisión (backend).** Documento no fiscal en hoja Carta/A4 que acompaña una entrega

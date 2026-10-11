@@ -254,4 +254,17 @@ describe('SalesService — registro de impresiones de ticket', () => {
       expect(args.where).toEqual({ saleId: 7, document: 'REMISSION' });
     });
   });
+
+  describe('folio de la venta', () => {
+    afterEach(() => jest.useRealTimers());
+
+    it('usa la fecha de la farmacia (México), no la de UTC', () => {
+      // 18:26 del 10/10 en México = 00:26 del 11/10 en UTC.
+      jest.useFakeTimers({ now: new Date('2026-10-11T00:26:00.000Z') });
+      const folio = (
+        service as unknown as { generateInvoiceNumber(id: number): string }
+      ).generateInvoiceNumber(4);
+      expect(folio).toBe('FAC-20261010-000004');
+    });
+  });
 });
