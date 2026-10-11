@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { Decimal } from '@prisma/client/runtime/library';
 import { SalesService } from './sales.service';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -127,6 +127,13 @@ describe('SalesService — carrito atómico', () => {
     ]);
     tx.sale.findUniqueOrThrow.mockResolvedValue({ paidAmount: new Decimal(0) });
     tx.sale.update.mockResolvedValue(ventaDraft);
+    mockBatches.getSellableQuantity.mockResolvedValue({
+      stock: 100,
+      sellable: 100,
+      expired: 0,
+      name: producto.name,
+      controlled: false,
+    });
   });
 
   describe('acumulación de cantidad', () => {
@@ -228,6 +235,56 @@ describe('SalesService — carrito atómico', () => {
       await expect(
         service.addItem(10, { productId: 999, quantity: 1 }),
       ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('existencias al armar el carrito (mismo criterio que el cierre)', () => {
+    it('valida contra la cantidad YA consolidada de la línea', async () => {
+      // La BD reporta 3 unidades acumuladas: con sólo 2 vendibles se rechaza
+      // aunque se pidiera agregar 1.
+      mockBatches.getSellableQuantity.mockResolvedValue({
+        stock: 2,
+        sellable: 2,
+        expired: 0,
+        name: producto.name,
+        controlled: false,
+      });
+      await expect(
+        service.addItem(10, { productId: 55, quantity: 1 }),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockBatches.getSellableQuantity).toHaveBeenCalledWith(55, tx);
+    });
+
+    it('rechaza al agregar si no alcanza lo vendible', async () => {
+      mockBatches.getSellableQuantity.mockResolvedValue({
+        stock: 2,
+        sellable: 2,
+        expired: 0,
+        name: producto.name,
+        controlled: false,
+      });
+      await expect(
+        service.addItem(10, { productId: 55, quantity: 1 }),
+      ).rejects.toThrow(
+        'Stock insuficiente para Paracetamol 500mg. Disponible: 2',
+      );
+      // Se lanza dentro de la transacción: el upsert se deshace.
+      expect(tx.saleItem.update).not.toHaveBeenCalled();
+    });
+
+    it('un controlado sin lotes vigentes se rechaza AL AGREGAR con instrucción', async () => {
+      mockBatches.getSellableQuantity.mockResolvedValue({
+        stock: 65,
+        sellable: 0,
+        expired: 0,
+        name: 'Amoxicilina',
+        controlled: true,
+      });
+      await expect(
+        service.addItem(10, { productId: 55, quantity: 1 }),
+      ).rejects.toThrow(
+        /Amoxicilina es un medicamento controlado y no tiene lotes vigentes/,
+      );
     });
   });
 

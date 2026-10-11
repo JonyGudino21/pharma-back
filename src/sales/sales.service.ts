@@ -46,6 +46,7 @@ import {
   toMoney,
 } from './pricing';
 import { recalculateSaleTotals, writeLinePricing } from './sale-lines';
+import { todayInMexico } from 'src/inventory/fefo';
 
 @Injectable()
 export class SalesService {
@@ -95,6 +96,11 @@ export class SalesService {
           isActive: true,
         },
       });
+    }
+
+    // Validación temprana de existencias (mismo criterio que el cierre).
+    for (const item of data.items) {
+      await this.assertSellable(item.productId, item.quantity);
     }
 
     // Mapeo para acceso
@@ -917,6 +923,10 @@ export class SalesService {
         },
       });
 
+      // Validación temprana sobre la cantidad YA consolidada (incluye lo que la
+      // línea traía). Si no alcanza, la transacción deshace el upsert.
+      await this.assertSellable(dto.productId, linea.quantity, tx);
+
       await writeLinePricing(tx, linea);
 
       const { total: newTotal } = await recalculateSaleTotals(tx, saleId);
@@ -1024,15 +1034,7 @@ export class SalesService {
         where: { id: item.productId },
       });
       if (!product) throw new NotFoundException('Producto no válido');
-      const sellable = await this.inventoryBatches.getSellableQuantity(
-        product.id,
-        tx,
-      );
-      if (sellable.sellable < quantity) {
-        throw new BadRequestException(
-          `Stock insuficiente para ${product.name}. Disponible: ${sellable.sellable}`,
-        );
-      }
+      await this.assertSellable(product.id, quantity, tx);
 
       await tx.saleItem.update({ where: { id: itemId }, data: { quantity } });
       // El descuento es un %: al cambiar la cantidad se recalcula sobre ella.
@@ -1737,8 +1739,40 @@ export class SalesService {
       throw new BadRequestException('La venta ya no es editable');
   }
 
+  /**
+   * VALIDACIÓN TEMPRANA DE EXISTENCIAS al armar el carrito (UX: fallar pronto).
+   *
+   * Usa el MISMO criterio que el cierre (`getSellableQuantity` ↔
+   * `consumeForSale`): si no coincidieran, el cajero capturaría receta, descuento
+   * y pago para que el cierre rechazara la venta. La verificación autoritativa y
+   * atómica sigue ocurriendo en completeSale.
+   */
+  private async assertSellable(
+    productId: number,
+    quantity: number,
+    tx?: Prisma.TransactionClient,
+  ) {
+    const s = await this.inventoryBatches.getSellableQuantity(productId, tx);
+    if (s.sellable >= quantity) return;
+    if (s.controlled && s.sellable === 0) {
+      throw new BadRequestException(
+        `${s.name} es un medicamento controlado y no tiene lotes vigentes. ` +
+          'Registra su lote y caducidad en Inventario antes de venderlo.',
+      );
+    }
+    throw new BadRequestException(
+      `Stock insuficiente para ${s.name}. Disponible: ${s.sellable}`,
+    );
+  }
+
+  /**
+   * Folio FAC-AAAAMMDD-######. La fecha es la del CALENDARIO DE LA FARMACIA
+   * (America/Mexico_City), no la de UTC: con `toISOString()` toda venta
+   * después de las 6 p.m. salía con el folio del día siguiente, y el folio no
+   * coincidía con la fecha impresa en el ticket.
+   */
   private generateInvoiceNumber(id: number): string {
-    const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const date = todayInMexico().toISOString().slice(0, 10).replace(/-/g, '');
     return `FAC-${date}-${id.toString().padStart(6, '0')}`;
   }
 

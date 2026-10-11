@@ -27,7 +27,7 @@ describe('InventoryBatchesService — consumo FEFO', () => {
 
   const tx = {
     product: { findUnique: jest.fn() },
-    productBatch: { findMany: jest.fn() },
+    productBatch: { findMany: jest.fn(), aggregate: jest.fn() },
     saleItemBatch: { createMany: jest.fn(), findMany: jest.fn() },
     controlledSaleLog: { create: jest.fn() },
     $queryRaw: jest.fn(),
@@ -193,6 +193,56 @@ describe('InventoryBatchesService — consumo FEFO', () => {
     ).rejects.toThrow(/lotes caducados|Stock insuficiente/);
 
     expect(mockInventory.registerMovement).not.toHaveBeenCalled();
+  });
+
+  describe('cantidad vendible (la que valida el carrito)', () => {
+    it('no controlado: existencia menos caducados (la existencia sin lote cuenta)', async () => {
+      tx.product.findUnique.mockResolvedValue({
+        ...producto(10),
+        controlled: false,
+      });
+      tx.productBatch.aggregate.mockResolvedValueOnce({
+        _sum: { quantity: 2 },
+      });
+      const r = await service.getSellableQuantity(1, txClient);
+      expect(r).toMatchObject({ sellable: 8, controlled: false });
+    });
+
+    it('controlado SIN lotes: 0 vendible aunque haya existencia (igual que el cierre)', async () => {
+      tx.product.findUnique.mockResolvedValue({
+        ...producto(65),
+        controlled: true,
+      });
+      tx.productBatch.aggregate
+        .mockResolvedValueOnce({ _sum: { quantity: null } }) // caducados
+        .mockResolvedValueOnce({ _sum: { quantity: null } }); // en lotes
+      const r = await service.getSellableQuantity(1, txClient);
+      expect(r).toMatchObject({ stock: 65, sellable: 0, controlled: true });
+    });
+
+    it('controlado con lotes: sólo los vigentes', async () => {
+      tx.product.findUnique.mockResolvedValue({
+        ...producto(65),
+        controlled: true,
+      });
+      tx.productBatch.aggregate
+        .mockResolvedValueOnce({ _sum: { quantity: 2 } }) // caducados
+        .mockResolvedValueOnce({ _sum: { quantity: 7 } }); // en lotes
+      const r = await service.getSellableQuantity(1, txClient);
+      expect(r.sellable).toBe(5);
+    });
+
+    it('controlado: nunca más que la existencia total', async () => {
+      tx.product.findUnique.mockResolvedValue({
+        ...producto(3),
+        controlled: true,
+      });
+      tx.productBatch.aggregate
+        .mockResolvedValueOnce({ _sum: { quantity: 0 } })
+        .mockResolvedValueOnce({ _sum: { quantity: 10 } });
+      const r = await service.getSellableQuantity(1, txClient);
+      expect(r.sellable).toBe(3);
+    });
   });
 
   describe('criterio de caducidad desde Configuración › Inventario', () => {
