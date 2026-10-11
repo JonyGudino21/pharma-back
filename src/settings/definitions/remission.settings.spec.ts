@@ -34,6 +34,18 @@ describe('Configuración › Nota de remisión', () => {
     });
   });
 
+  it('código, lote y caducidad se muestran de fábrica (no cambia lo ya impreso)', () => {
+    expect(defaults).toMatchObject({
+      showSku: true,
+      showLot: true,
+      showExpiry: true,
+    });
+    expect(errores({ ...defaults, showExpiry: 'no' })).toHaveLength(1);
+    expect(errores({ ...defaults, showLot: false, showExpiry: false })).toEqual(
+      [],
+    );
+  });
+
   it('densidad: automática de fábrica; sólo valores conocidos', () => {
     expect(defaults.density).toBe('AUTO');
     expect(errores({ ...defaults, density: 'COMPACT' })).toEqual([]);
