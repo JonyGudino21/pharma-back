@@ -1,3 +1,4 @@
+import { ConflictException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { priceLine, saleTotals, toMoney, type SaleTotals } from './pricing';
@@ -70,6 +71,20 @@ export async function recalculateSaleTotals(
     where: { id: saleId },
     select: { paidAmount: true },
   });
+
+  // EL TOTAL NUNCA BAJA DE LO YA COBRADO.
+  //
+  // Con un abono registrado se podían quitar productos (o bajar cantidades, o
+  // cambiar a un cliente con precio especial) y el total quedaba por debajo de
+  // lo pagado: saldo negativo, venta "sobrepagada" sin cambio registrado y un
+  // arqueo de caja que no cuadra. Como esto corre dentro de la transacción del
+  // cambio, lanzar aquí lo deshace por completo.
+  if (new Decimal(paidAmount).gt(totals.total)) {
+    throw new ConflictException(
+      `Esta venta ya tiene ${new Decimal(paidAmount).toFixed(2)} cobrados: el total no puede ` +
+        `quedar en ${totals.total.toFixed(2)}. Para devolver dinero, cierra la venta y registra una devolución, o anúlala.`,
+    );
+  }
 
   await tx.sale.update({
     where: { id: saleId },
