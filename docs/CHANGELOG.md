@@ -16,6 +16,8 @@ AAAA-MM-DD.
 - **Alta de cliente sin correo ni teléfono.** Eran obligatorios en el DTO aunque la base y el
   formulario los tratan como opcionales (respondía 400). La validación de duplicados ya no arma un
   `OR` con campos vacíos, que coincidía con cualquier cliente.
+- **Buscar clientes respondía 400** (`GET /client/search?page=1&limit=10`): el DTO declaraba la
+  paginación como objeto anidado, imposible en un query string. Hereda `PaginationParamsDto`.
 - **Búsquedas:**
   - `GET /suppliers/search` acepta `active` e incluye el conteo de facturas pendientes.
   - `POST /products/search` busca también por SKU (parcial) y acepta `active` (booleano).
