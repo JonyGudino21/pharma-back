@@ -18,6 +18,9 @@ AAAA-MM-DD.
   `OR` con campos vacíos, que coincidía con cualquier cliente.
 - **Buscar clientes respondía 400** (`GET /client/search?page=1&limit=10`): el DTO declaraba la
   paginación como objeto anidado, imposible en un query string. Hereda `PaginationParamsDto`.
+- **Quitar el lote de una partida de compra** (`PATCH /purchase/:id/update-product/:itemId`): lote y
+  caducidad siguen JSON Merge Patch (ausente = conservar, `null` = borrar, valor = reemplazar). Antes
+  no había forma de borrar un lote mal capturado sin eliminar la partida.
 - **Búsquedas:**
   - `GET /suppliers/search` acepta `active` e incluye el conteo de facturas pendientes.
   - `POST /products/search` busca también por SKU (parcial) y acepta `active` (booleano).
