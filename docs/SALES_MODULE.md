@@ -23,7 +23,9 @@ Este módulo cubre el **ciclo de venta (POS/CRM)**: crear venta en borrador, agr
 | **Devolución solo sobre venta finalizada** | `POST /sales/:id/return` solo se acepta si `flowStatus === COMPLETED`. Por ítem se indica cantidad a devolver y si es `restock` (vuelve a inventario) o no (merma/LOSS). |
 | **Precios especiales por cliente** | Si la venta tiene `clientId`, se usan precios de `ClientProductPrice` cuando existan; si no, el precio del producto. Al completar la venta se actualiza el historial de precios del cliente. |
 | **Resumen de ventas** | `GET /sales/summary` está restringido a **MANAGER** (y ADMIN, que pasa siempre el `RolesGuard`). El flag `canViewSalesSummary` es de gerencia y coincide con el endpoint; el historial usa `canViewSalesHistory` (todos). |
-| **Factura** | El número de factura se asigna al completar: formato tipo `FAC-YYYYMMDD-XXXXXX` (generado en backend). |
+| **Factura** | El número de factura se asigna al completar: formato tipo `FAC-YYYYMMDD-XXXXXX` (generado en backend). La fecha es la del **calendario de la farmacia** (America/Mexico_City); antes salía en UTC y las ventas después de las 6 p.m. llevaban el folio del día siguiente. |
+| **Existencias al armar el carrito** | `POST /sales`, `add-product` y `update-item` validan contra la cantidad vendible con el **mismo criterio que el cierre** (400 "Stock insuficiente para X. Disponible: N"). Un controlado sin lotes vigentes responde 400 "X es un medicamento controlado y no tiene lotes vigentes. Registra su lote y caducidad en Inventario antes de venderlo." La verificación atómica definitiva sigue en `complete`. |
+| **El total nunca baja de lo cobrado** | Con abonos registrados, quitar productos, bajar cantidades o cambiar a un cliente con precio especial que dejen `total < paidAmount` → **409** y el cambio se deshace (la guarda vive en `recalculateSaleTotals`). Para devolver dinero: cerrar y registrar devolución, o anular. |
 
 ---
 
