@@ -85,6 +85,8 @@ Ver `SALES_MODULE.md` §7 y ADR-0019.
 | `showSignatures` | `true` | bool | Líneas "Entregó" / "Recibí de conformidad". |
 | `showPayments` | `true` | bool | Forma de pago, pagado y saldo (clave en ventas a crédito). |
 | `showSku` | `true` | bool | Columna de SKU/código. |
+| `showLot` | `true` | bool | Lote bajo cada producto (si la partida lo tiene). |
+| `showExpiry` | `true` | bool | Caducidad bajo cada producto (si la partida la tiene). |
 | `showTaxBreakdown` | `false` | bool | "IVA incluido" por tasa bajo el total. |
 | `density` | `AUTO` | `AUTO` \| `COMFORTABLE` \| `COMPACT` | Densidad de la tabla de partidas. AUTO: cómoda hasta 7 partidas, compacta desde 8 (ADR-0021). |
 

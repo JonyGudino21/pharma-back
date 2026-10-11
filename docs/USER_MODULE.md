@@ -26,7 +26,7 @@ Este módulo gestiona el **catálogo de usuarios** del sistema: listado (activos
 | Método | Ruta | Descripción | Roles permitidos |
 |--------|------|-------------|------------------|
 | `GET`  | `/users` | Lista usuarios. Query: `active` (true/false), `page`, `limit`. | ADMIN |
-| `GET`  | `/users/search` | Búsqueda por email o userName (parcial), filtro por estado. Query: `email`, `userName`, `isActive`, `page`, `limit`. | ADMIN |
+| `GET`  | `/users/search` | Búsqueda por email o userName (parcial; el texto de `userName` también busca en nombre y apellido), filtro por estado. Query: `email`, `userName`, `isActive`, `page`, `limit`. | ADMIN |
 | `GET`  | `/users/:id` | Detalle de un usuario (sin password). | ADMIN |
 | `POST` | `/users` | Crea un usuario (nombre, email, userName, password, role). | ADMIN |
 | `PATCH`| `/users/:id` | Actualiza usuario (parcial: nombre, email, userName, role, isActive, password opcional). | ADMIN |

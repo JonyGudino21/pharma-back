@@ -50,7 +50,7 @@ Todos requieren JWT. Paginación estándar; estado de cuenta incluye hasNext, ha
 }
 ```
 
-Campos obligatorios: name, email, phone. Opcionales: address, rfc, curp.
+Campo obligatorio: name. Opcionales: email, phone, address, rfc, curp (muchos clientes de mostrador no dan correo ni teléfono). Los duplicados se revisan sólo con los campos enviados.
 
 **PATCH /client/:id/credit-config**
 

@@ -29,7 +29,7 @@ Este módulo mantiene el **catálogo de productos**: alta, edición, baja lógic
 |--------|------|-------------|-------------------|
 | `POST` | `/products` | Crea un producto (SKU auto, opcional stock inicial vía movimiento). | MANAGER, PHARMACIST |
 | `GET`  | `/products` | Lista productos. Query: `active` (true/false), `page`, `limit`. Sin page/limit devuelve todos. | Cualquier usuario autenticado |
-| `POST` | `/products/search` | Búsqueda por nombre y/o letras iniciales. Body: name, letters[], page, limit. | Cualquier usuario autenticado |
+| `POST` | `/products/search` | Búsqueda por nombre **o SKU (parcial)** y/o letras iniciales. Body: name, letters[], active (bool, opcional), page, limit. | Cualquier usuario autenticado |
 | `GET`  | `/products/sku/:sku` | Obtiene un producto por SKU. | Cualquier usuario autenticado |
 | `GET`  | `/products/barcode/:barcode` | Obtiene un producto por código de barras (escáner POS). | Cualquier usuario autenticado |
 | `GET`  | `/products/:id` | Obtiene un producto por ID (con categorías). | Cualquier usuario autenticado |
