@@ -1,0 +1,44 @@
+# PharmaPOS local — VARIAS CAJAS en la red de la farmacia.
+#
+# Copia este archivo a C:\PharmaPOS\caddy\Caddyfile y cambia 192.168.1.50 por
+# la IP FIJA del servidor (ver docs/produccion/02-LOCAL.md, paso "IP fija").
+#
+# Las demás cajas abren https://192.168.1.50. Se usa HTTPS con un certificado
+# interno de Caddy porque el navegador sólo permite la impresora USB (WebUSB) y
+# las cookies seguras en un contexto seguro; con http://192.168.x.x la
+# impresión directa NO funcionaría. Cada caja debe confiar en el certificado
+# raíz de Caddy una sola vez (la guía explica cómo).
+
+https://192.168.1.50, https://localhost {
+	tls internal
+	encode zstd gzip
+
+	@api path /api/* /health /health/*
+	handle @api {
+		reverse_proxy 127.0.0.1:3005
+	}
+
+	handle {
+		root * C:/PharmaPOS/web
+		# Todo lo que no es un archivo con hash (páginas de la app y el manifiesto
+		# de versión) se revalida siempre: así cada caja detecta la versión nueva
+		# (ADR-0018). Ojo: `header` evalúa la ruta ORIGINAL, antes de try_files.
+		@revalidar expression `!path('/_nuxt/*') || path('/_nuxt/builds/*')`
+		header @revalidar Cache-Control "no-cache"
+		# Archivos con hash en el nombre: nunca cambian, se cachean un año.
+		@inmutables {
+			path /_nuxt/*
+			not path /_nuxt/builds/*
+		}
+		header @inmutables Cache-Control "public, max-age=31536000, immutable"
+		try_files {path} /200.html
+		file_server
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}

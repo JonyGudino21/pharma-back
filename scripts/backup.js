@@ -19,7 +19,8 @@
  * ─── LO QUE ESTE SCRIPT NO HACE ───
  * No prueba que el respaldo se pueda RESTAURAR. Eso hay que hacerlo a mano una
  * vez al mes, y es la diferencia entre tener respaldos y creer que los tienes.
- * El procedimiento está en el runbook de producción.
+ * Para la prueba mensual: `node scripts/restore.js <archivo> --prueba`
+ * (docs/produccion/04-OPERACION.md).
  *
  * ─── USO ───
  *   node scripts/backup.js                    # a ./backups
@@ -30,6 +31,7 @@
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const { leerConexion, entornoPg, argsServidor } = require('./conexion');
 
 // ── Configuración ──────────────────────────────────────────────────────────
 const DIRECTORIO = process.env.BACKUP_DIR || path.resolve('backups');
@@ -40,38 +42,6 @@ const DIAS_A_CONSERVAR = Number(process.env.BACKUP_KEEP_DAYS || 14);
  * cualquier cosa por debajo de esto es un fallo disfrazado de éxito.
  */
 const MINIMO_BYTES = 2048;
-
-function leerConexion() {
-  // Se lee el .env a mano para no depender de dotenv: este script tiene que
-  // poder correr desde el Programador de tareas sin `npm install` previo.
-  const rutaEnv = path.resolve('.env');
-  if (!process.env.DATABASE_URL && fs.existsSync(rutaEnv)) {
-    for (const linea of fs.readFileSync(rutaEnv, 'utf8').split('\n')) {
-      const m = /^\s*DATABASE_URL\s*=\s*"?([^"\r\n]+)"?/.exec(linea);
-      if (m) {
-        process.env.DATABASE_URL = m[1];
-        break;
-      }
-    }
-  }
-
-  const url = process.env.DATABASE_URL;
-  if (!url) {
-    throw new Error(
-      'No encuentro DATABASE_URL (ni en el entorno ni en .env).\n' +
-        'Ejecuta el script desde la carpeta del backend.',
-    );
-  }
-
-  const u = new URL(url);
-  return {
-    host: u.hostname,
-    port: u.port || '5432',
-    user: decodeURIComponent(u.username),
-    password: decodeURIComponent(u.password),
-    database: u.pathname.replace(/^\//, ''),
-  };
-}
 
 function marcaDeTiempo() {
   // ISO sin caracteres prohibidos en nombres de archivo de Windows.
@@ -110,18 +80,13 @@ function main() {
   execFileSync(
     'pg_dump',
     [
-      '-h', conexion.host,
-      '-p', conexion.port,
-      '-U', conexion.user,
+      ...argsServidor(conexion),
       '-d', conexion.database,
       '-F', 'c',
       '-f', destino,
     ],
     {
-      // La contraseña por variable de entorno, NUNCA como argumento: los
-      // argumentos de un proceso son visibles para cualquier usuario de la
-      // máquina con el administrador de tareas.
-      env: { ...process.env, PGPASSWORD: conexion.password },
+      env: entornoPg(conexion),
       stdio: ['ignore', 'inherit', 'inherit'],
     },
   );
@@ -140,7 +105,8 @@ function main() {
 
   console.log(
     '\nRECORDATORIO: un respaldo que nunca se ha restaurado no es un respaldo.\n' +
-      'Haz la prueba de restauración una vez al mes (ver runbook).',
+      'Haz la prueba de restauración una vez al mes:\n' +
+      '  node scripts/restore.js <archivo.dump> --prueba',
   );
 }
 

@@ -24,7 +24,10 @@ async function bootstrap() {
   // cierren los módulos y desconecta Prisma antes de salir.
   app.enableShutdownHooks();
 
-  const server: unknown = await app.listen(config.get<number>('PORT', 3005));
+  const server: unknown = await app.listen(
+    config.get<number>('PORT', 3005),
+    config.get<string>('HOST', '0.0.0.0'),
+  );
 
   // Tiempos del servidor HTTP. Los valores por defecto de Node (sin límite de
   // cabeceras lentas en versiones viejas, keep-alive de 5 s) están pensados

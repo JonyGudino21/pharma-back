@@ -16,6 +16,11 @@ export const envValidationSchema = Joi.object({
     .valid('development', 'production', 'test')
     .default('development'),
   PORT: Joi.number().port().default(3005),
+  // Interfaz de escucha. En una PC de farmacia detrás de Caddy conviene
+  // 127.0.0.1: el puerto 3005 no queda expuesto a la red saltándose el proxy
+  // (HTTPS, cabeceras). En Docker debe ser 0.0.0.0 (el proxy está en otro
+  // contenedor). Por omisión, todas las interfaces (comportamiento anterior).
+  HOST: Joi.string().hostname().default('0.0.0.0'),
 
   DATABASE_URL: Joi.string().required(),
 

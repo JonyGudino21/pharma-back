@@ -22,7 +22,12 @@
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "test:ci": "jest --ci --coverage",
     "seed": "prisma db seed",
-    "db:backup": "node scripts/backup.js"
+    "db:migrate": "prisma migrate deploy",
+    "db:backup": "node scripts/backup.js",
+    "db:restore": "node scripts/restore.js"
+  },
+  "engines": {
+    "node": ">=22"
   },
   "prisma": {
     "seed": "ts-node --compiler-options {\"module\":\"CommonJS\"} prisma/seed.ts"

@@ -942,6 +942,66 @@ describe('PurchaseService — recepción, costo promedio y cancelación', () => 
     });
   });
 
+  // ══════════════════════════════════════════════════════════════════
+  // EDITAR LOTE DE UNA PARTIDA (JSON Merge Patch: ausente / null / valor)
+  // ══════════════════════════════════════════════════════════════════
+  describe('editar lote y caducidad de una partida', () => {
+    const conLote = {
+      ...item,
+      lotNumber: 'LOTE-MAL',
+      expiryDate: new Date('2027-01-31T00:00:00Z'),
+      product: { name: 'Paracetamol', controlled: false },
+    };
+
+    beforeEach(() => {
+      tx.purchaseItem.findUnique.mockResolvedValue(conLote);
+      tx.purchaseItem.update.mockResolvedValue(conLote);
+    });
+
+    const editar = (extra: Record<string, unknown>) =>
+      service.updateItem(5, 50, { quantity: 10, cost: 200, ...extra } as never);
+
+    it('null en ambos BORRA el lote (antes era imposible corregir una captura)', async () => {
+      await editar({ lotNumber: null, expiryDate: null });
+
+      const data = dataDe(tx.purchaseItem.update);
+      expect(data.lotNumber).toBeNull();
+      expect(data.expiryDate).toBeNull();
+    });
+
+    it('sin los campos CONSERVA el lote actual', async () => {
+      await editar({});
+
+      const data = dataDe(tx.purchaseItem.update);
+      expect(data).not.toHaveProperty('lotNumber');
+      expect(data).not.toHaveProperty('expiryDate');
+    });
+
+    it('con valores los REEMPLAZA', async () => {
+      await editar({ lotNumber: 'lote-bien', expiryDate: '2027-06-30' });
+
+      expect(dataDe(tx.purchaseItem.update).lotNumber).toBe('LOTE-BIEN');
+    });
+
+    it('borrar sólo el lote deja la caducidad suelta: se rechaza', async () => {
+      await expect(editar({ lotNumber: null })).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(tx.purchaseItem.update).not.toHaveBeenCalled();
+    });
+
+    it('un controlado no puede quedarse sin lote', async () => {
+      tx.purchaseItem.findUnique.mockResolvedValue({
+        ...conLote,
+        product: { name: 'Clonazepam', controlled: true },
+      });
+
+      await expect(
+        editar({ lotNumber: null, expiryDate: null }),
+      ).rejects.toThrow(/requiere lote y caducidad/);
+    });
+  });
+
   describe('la compra cancelada es inmutable', () => {
     beforeEach(() => {
       mockPrisma.purchase.findUnique.mockResolvedValue({
