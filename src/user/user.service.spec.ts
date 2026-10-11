@@ -7,6 +7,7 @@ import {
 import { UserRole } from '@prisma/client';
 import { UserService } from './user.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { argDe } from '../common/testing/mock-inspect.util';
 import { permissionsForRole, permissionsMatrix } from '../auth/permissions';
 
 /**
@@ -47,6 +48,21 @@ describe('UserService · salvaguardas de acceso', () => {
     tx.user.count.mockResolvedValue(1); // hay otro admin activo
     tx.userToken.updateMany.mockResolvedValue({ count: 0 });
     mockPrisma.userToken.groupBy.mockResolvedValue([]);
+  });
+
+  describe('búsqueda', () => {
+    it('el texto de usuario también busca en nombre y apellido', async () => {
+      mockPrisma.user.findMany.mockResolvedValue([]);
+      mockPrisma.user.count.mockResolvedValue(0);
+
+      await service.findUser(undefined, 'maría');
+
+      const { where } = argDe<{ where: object }>(mockPrisma.user.findMany);
+      const texto = JSON.stringify(where);
+      for (const campo of ['userName', 'firstName', 'lastName']) {
+        expect(texto).toContain(`"${campo}":{"contains":"maría"`);
+      }
+    });
   });
 
   describe('sobre uno mismo', () => {

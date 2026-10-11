@@ -133,9 +133,13 @@ export class UserService {
       });
     }
     if (userName) {
-      searchConditions.push({
-        userName: { contains: userName, mode: 'insensitive' },
-      });
+      // El texto de "usuario" también busca en nombre y apellido: en la
+      // pantalla de Usuarios se escribe "María" tanto como "maria.lopez".
+      searchConditions.push(
+        { userName: { contains: userName, mode: 'insensitive' } },
+        { firstName: { contains: userName, mode: 'insensitive' } },
+        { lastName: { contains: userName, mode: 'insensitive' } },
+      );
     }
 
     // 2. Condiciones de FILTRO (AND) - booleanos, exactos

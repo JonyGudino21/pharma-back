@@ -550,13 +550,19 @@ export class ProductService {
     name: string,
     letters?: string[],
     pagination?: PaginationParamsDto,
+    active?: boolean,
   ) {
     const paginacion = resolvePagination(pagination);
 
     const conditions: Array<{ [key: string]: any }> = [];
 
     if (name) {
-      conditions.push({ name: { contains: name, mode: 'insensitive' } });
+      // El mismo texto busca en nombre y en SKU (parcial): en Inventario y en
+      // el POS se escribe tanto "paracetamol" como "PARA-500".
+      conditions.push(
+        { name: { contains: name, mode: 'insensitive' } },
+        { sku: { contains: name, mode: 'insensitive' } },
+      );
     }
 
     if (letters && letters.length > 0) {
@@ -566,7 +572,10 @@ export class ProductService {
       conditions.push(...letterConditions);
     }
 
-    const where = conditions.length > 0 ? { OR: conditions } : {};
+    const where = {
+      ...(conditions.length > 0 ? { OR: conditions } : {}),
+      ...(active !== undefined ? { isActive: active } : {}),
+    };
 
     const [products, total] = await Promise.all([
       this.prisma.product.findMany({
