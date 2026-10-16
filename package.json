@@ -24,7 +24,8 @@
     "seed": "prisma db seed",
     "db:migrate": "prisma migrate deploy",
     "db:backup": "node scripts/backup.js",
-    "db:restore": "node scripts/restore.js"
+    "db:restore": "node scripts/restore.js",
+    "verificar": "node scripts/verificar.js"
   },
   "engines": {
     "node": ">=22"

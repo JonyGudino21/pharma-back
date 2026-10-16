@@ -38,7 +38,26 @@ crea un *token* de sólo lectura.
 3. Caducidad: 1 año. Guárdalo en tu gestor de contraseñas.
 4. Al clonar, Git pedirá usuario (tu usuario de GitHub) y contraseña (pega el **token**).
 
-Publica en producción sólo la rama `main` (lo que ya pasó por PR y CI).
+### 1.2.1 Liberar una versión (antes de CADA instalación o actualización)
+
+En un cliente se instala **sólo `main`** (o una etiqueta `vX.Y.Z` de `main`). Si lo nuevo sigue en
+`develop`, el cliente recibe una versión vieja y la guía no coincide con su código: así falló una
+instalación real (faltaban `db:migrate` y `start:prod` buscaba otra ruta).
+
+1. En **ambos** repositorios (`pharma-back` y `pharma-front`): *pull request* `develop → main`.
+2. Espera **CI en verde** en los dos (calidad, pruebas e integración con PostgreSQL). Si algo falla,
+   no se instala: se corrige primero.
+3. *Merge*.
+4. Recomendado: etiqueta la versión para poder volver a ella:
+   ```powershell
+   git checkout main
+   git pull
+   git tag -a v1.2.0 -m "Versión 1.2.0"
+   git push origin v1.2.0
+   ```
+5. Compila el front de esa misma versión (§1.4).
+
+**Comprueba:** en GitHub, `main` muestra el último *merge* con ✓ verde, y no hay PR pendiente hacia `main`.
 
 ---
 
