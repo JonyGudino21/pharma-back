@@ -63,7 +63,7 @@ export class InventoryBatchesService {
     // stock vendible que se muestra al cajero no coincidiría con el que el
     // sistema acepta despachar (con el flag en `false`, un lote que caduca hoy
     // se contaría como vendible aquí y se rechazaría al cerrar la venta).
-    const { expiryInclusive } = await this.settings.get('inventory');
+    const { expiryInclusive } = await this.settings.get('inventory', tx);
     const expiredFilter = expiryInclusive
       ? { lt: today } // vale su propio día: caducado sólo si es anterior a hoy
       : { lte: today }; // la fecha impresa es el primer día no válido
@@ -151,7 +151,7 @@ export class InventoryBatchesService {
     const unbatched = Math.max(0, product.stock - batchSum);
     // Mismo criterio que `getSellable`: si no coincidieran, el cajero vería
     // unidades vendibles que el cierre de la venta rechazaría.
-    const { expiryInclusive } = await this.settings.get('inventory');
+    const { expiryInclusive } = await this.settings.get('inventory', tx);
     const { takes, missing } = allocateFefo(
       batches,
       params.quantity,

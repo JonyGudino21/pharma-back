@@ -319,6 +319,64 @@ describe('SettingsService', () => {
       );
     });
   });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // CONEXIONES: dentro de una transacción NO se pide otra conexión
+  // ──────────────────────────────────────────────────────────────────────────
+  describe('lectura dentro de una transacción', () => {
+    it('con tx lee por la transacción, nunca por el cliente global', async () => {
+      tx.appSetting.findUnique.mockResolvedValue(fila({ closeTolerance: 7 }));
+
+      const cfg = await service.get('cash', tx as never);
+
+      expect(cfg.closeTolerance).toBe(7);
+      expect(tx.appSetting.findUnique).toHaveBeenCalledTimes(1);
+      // Con el pool lleno, esta segunda conexión era la que se esperaba para
+      // siempre y hacía caducar todos los cierres de venta simultáneos.
+      expect(mockPrisma.appSetting.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('con la caché vigente no consulta ni por tx', async () => {
+      await service.get('cash');
+      await service.get('cash', tx as never);
+
+      expect(tx.appSetting.findUnique).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('caché vencida con muchas cajas a la vez', () => {
+    it('lecturas simultáneas comparten UNA consulta', async () => {
+      let liberar!: (v: unknown) => void;
+      mockPrisma.appSetting.findUnique.mockReturnValue(
+        new Promise((r) => (liberar = r)),
+      );
+
+      const lecturas = Array.from({ length: 12 }, () => service.get('cash'));
+      liberar(null);
+      await Promise.all(lecturas);
+
+      expect(mockPrisma.appSetting.findUnique).toHaveBeenCalledTimes(1);
+    });
+
+    it('una lectura que empezó antes de guardar no deja el valor viejo en caché', async () => {
+      let liberar!: (v: unknown) => void;
+      mockPrisma.appSetting.findUnique.mockReturnValueOnce(
+        new Promise((r) => (liberar = r)),
+      );
+
+      const vieja = service.get('cash'); // empieza con el valor anterior
+      service.invalidate('cash'); // alguien guardó un cambio
+      liberar(fila({ closeTolerance: 1 }));
+      await vieja;
+
+      mockPrisma.appSetting.findUnique.mockResolvedValue(
+        fila({ closeTolerance: 50 }),
+      );
+      const nueva = await service.get('cash');
+
+      expect(nueva.closeTolerance).toBe(50);
+    });
+  });
 });
 
 describe('SettingsNamespacePipe', () => {

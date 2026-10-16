@@ -40,7 +40,9 @@ export class ProductService {
    */
   async create(createProductDto: CreateProductDto, userId: number) {
     // 0. Lote del inventario inicial: se valida ANTES de tocar la base.
+    // Ajustes ANTES de abrir la transacción: dentro pedirían otra conexión.
     const inventoryCfg = await this.settings.get('inventory');
+    const taxesCfg = await this.settings.get('taxes');
     const initialLot = this.resolveInitialLot(
       createProductDto,
       inventoryCfg.requireLotForAll,
@@ -69,9 +71,7 @@ export class ProductService {
           stock: 0, // SIEMPRE con stock 0 al inicio, la verdad la dicta el movimiento
           // Sin valor explícito, el que definió gerencia en Configuración.
           minStock: createProductDto.minStock ?? inventoryCfg.defaultMinStock,
-          taxCategory:
-            createProductDto.taxCategory ??
-            (await this.settings.get('taxes')).defaultCategory,
+          taxCategory: createProductDto.taxCategory ?? taxesCfg.defaultCategory,
           price: createProductDto.price,
           cost: createProductDto.cost,
           isActive: true,

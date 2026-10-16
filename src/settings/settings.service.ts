@@ -28,6 +28,12 @@ import {
  */
 export const SETTINGS_CACHE_TTL_MS = 30_000;
 
+/**
+ * Lo único que la lectura de ajustes necesita de Prisma. Acepta el cliente
+ * global o el de una transacción.
+ */
+export type SettingsReader = Pick<Prisma.TransactionClient, 'appSetting'>;
+
 type SettingsValues = Record<string, unknown>;
 
 export interface SettingsSnapshot<
@@ -67,30 +73,68 @@ export class SettingsService {
     SettingsNamespace,
     { snapshot: SettingsSnapshot; expiresAt: number }
   >();
+  /** Lecturas en curso: muchas cajas con la caché vencida comparten UNA consulta. */
+  private readonly enCurso = new Map<
+    SettingsNamespace,
+    Promise<SettingsSnapshot>
+  >();
+  /**
+   * Versión de la caché por sección: sube al guardar. Una lectura que empezó
+   * ANTES de un cambio no vuelve a meter el valor viejo en la caché.
+   */
+  private readonly generacion = new Map<SettingsNamespace, number>();
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
   ) {}
 
-  /** Valores vigentes de una sección. Es lo que usan los demás módulos. */
+  /**
+   * Valores vigentes de una sección. Es lo que usan los demás módulos.
+   *
+   * DENTRO DE UNA TRANSACCIÓN, pasa `tx`: la lectura usa la conexión de la
+   * transacción. Sin él, una transacción que lee ajustes pide una SEGUNDA
+   * conexión mientras retiene la suya; con el pool lleno (5 conexiones en un
+   * servidor de 2 CPU) las transacciones se esperan entre sí y todas caducan.
+   * Así fallaban los cierres simultáneos de venta (prueba de concurrencia en CI).
+   */
   async get<N extends SettingsNamespace>(
     namespace: N,
+    tx?: SettingsReader,
   ): Promise<SettingsMap[N]> {
-    const snapshot = await this.getSnapshot(namespace);
+    const snapshot = await this.getSnapshot(namespace, tx);
     return snapshot.values;
   }
 
   /** Valores + metadatos (versión, quién y cuándo). Es lo que ve la pantalla. */
   async getSnapshot<N extends SettingsNamespace>(
     namespace: N,
+    tx?: SettingsReader,
   ): Promise<SettingsSnapshot<N>> {
     const hit = this.cache.get(namespace);
     if (hit && hit.expiresAt > Date.now()) {
       return hit.snapshot as SettingsSnapshot<N>;
     }
 
-    const row = await this.prisma.appSetting.findUnique({
+    // Con transacción se lee por ella (no se comparte: es su conexión).
+    if (tx) return this.leer(namespace, tx);
+
+    // Sin transacción: una sola consulta aunque lleguen muchas a la vez.
+    const pendiente = this.enCurso.get(namespace);
+    if (pendiente) return pendiente as Promise<SettingsSnapshot<N>>;
+    const lectura = this.leer(namespace, this.prisma).finally(() =>
+      this.enCurso.delete(namespace),
+    );
+    this.enCurso.set(namespace, lectura);
+    return lectura;
+  }
+
+  private async leer<N extends SettingsNamespace>(
+    namespace: N,
+    db: SettingsReader,
+  ): Promise<SettingsSnapshot<N>> {
+    const gen = this.generacion.get(namespace) ?? 0;
+    const row = await db.appSetting.findUnique({
       where: { namespace },
       include: {
         updatedBy: { select: { id: true, firstName: true, lastName: true } },
@@ -98,10 +142,12 @@ export class SettingsService {
     });
 
     const snapshot = this.materialize(namespace, row);
-    this.cache.set(namespace, {
-      snapshot,
-      expiresAt: Date.now() + SETTINGS_CACHE_TTL_MS,
-    });
+    if ((this.generacion.get(namespace) ?? 0) === gen) {
+      this.cache.set(namespace, {
+        snapshot,
+        expiresAt: Date.now() + SETTINGS_CACHE_TTL_MS,
+      });
+    }
     return snapshot;
   }
 
@@ -189,7 +235,7 @@ export class SettingsService {
       throw error;
     }
 
-    this.cache.delete(namespace);
+    this.invalidate(namespace);
 
     if (changed.length > 0) {
       // Línea grepeable, mismo formato `clave=valor` que la auditoría de acceso.
@@ -240,8 +286,14 @@ export class SettingsService {
 
   /** Olvida la caché. Para pruebas y para una futura invalidación distribuida. */
   invalidate(namespace?: SettingsNamespace): void {
-    if (namespace) this.cache.delete(namespace);
-    else this.cache.clear();
+    const secciones = namespace
+      ? [namespace]
+      : (Object.keys(SETTINGS_REGISTRY) as SettingsNamespace[]);
+    for (const ns of secciones) {
+      this.cache.delete(ns);
+      this.enCurso.delete(ns);
+      this.generacion.set(ns, (this.generacion.get(ns) ?? 0) + 1);
+    }
   }
 
   // ── Internos ──────────────────────────────────────────────────────────────
