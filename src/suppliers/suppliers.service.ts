@@ -1,18 +1,33 @@
-import { Injectable, NotFoundException, ConflictException, BadRequestException, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  ConflictException,
+  BadRequestException,
+  Logger,
+} from '@nestjs/common';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
 import { PrismaService } from 'prisma/prisma.service';
 import { SearchSupplierDto } from './dto/search-supplier.dto';
-import { FindAllSupplierDto } from './dto/findAll-supplier.dto';
 import { Decimal } from '@prisma/client/runtime/library';
 import { PurchaseStatus } from '@prisma/client';
 import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
+import { parseQueryActiveFilter } from 'src/common/dto/pagination-with-active-query.dto';
+import { money } from 'src/common/utils/decimal.util';
+import {
+  buildPaginationMeta,
+  resolvePagination,
+} from 'src/common/utils/pagination.util';
+import {
+  SELECTOR_TAKE,
+  buildSelectorOptions,
+} from 'src/common/utils/selector-options.util';
 
 @Injectable()
 export class SuppliersService {
   private readonly logger = new Logger(SuppliersService.name);
 
-  constructor(private prisma: PrismaService){}
+  constructor(private prisma: PrismaService) {}
 
   /**
    * Crea un nuevo proveedor
@@ -22,12 +37,14 @@ export class SuppliersService {
    */
   async create(dto: CreateSupplierDto) {
     // Validar duplicados
-    if(dto.email){
+    if (dto.email) {
       const exist = await this.prisma.supplier.findUnique({
-        where: { email: dto.email }
+        where: { email: dto.email },
       });
-      if(exist){
-        throw new ConflictException(`El proveedor con email ${dto.email} ya existe.`);
+      if (exist) {
+        throw new ConflictException(
+          `El proveedor con email ${dto.email} ya existe.`,
+        );
       }
     }
 
@@ -38,8 +55,8 @@ export class SuppliersService {
         phone: dto.phone,
         email: dto.email,
         creditDays: dto.creditDays ?? 0,
-      }
-    })
+      },
+    });
   }
 
   /**
@@ -48,11 +65,11 @@ export class SuppliersService {
    * @param pagination parametros de paginacion (opcional)
    * @returns todos los proveedores
    */
-  async findAll(isActive: boolean | undefined, pagination?: PaginationParamsDto) {
-    const hasPagination = pagination && (pagination.page !== undefined || pagination.limit !== undefined);
-    const page = hasPagination ? pagination.page ?? 1 : 1;
-    const limit = hasPagination ? pagination.limit ?? 20 : 20;
-    const skip = (page - 1) * limit;
+  async findAll(
+    isActive: boolean | undefined,
+    pagination?: PaginationParamsDto,
+  ) {
+    const paginacion = resolvePagination(pagination);
 
     let whereClause = {};
     // Ahora isActive es un booleano puro o undefined. ¡La lógica funcionará perfecto!
@@ -60,39 +77,48 @@ export class SuppliersService {
       whereClause = { isActive };
     }
 
-    // Si no hay paginación, devolver todos sin paginar
-    if(!hasPagination){
-      const suppliers = await this.prisma.supplier.findMany({
-        where: whereClause,
-        orderBy: { name: 'asc' }
-      })
-      return { suppliers };
-    }
-
     // CON paginación
     const [suppliers, total] = await Promise.all([
       this.prisma.supplier.findMany({
         where: whereClause,
-        skip,
-        take: limit,
+        skip: paginacion.skip,
+        take: paginacion.take,
         orderBy: { name: 'asc' },
         // Incluimos conteo de compras pendientes para visualización rápida
-        include:{
-          _count: { select: { purchases: { where: { status: { not: 'PAID' } } } } },
-        }
+        include: {
+          _count: {
+            select: { purchases: { where: { status: { not: 'PAID' } } } },
+          },
+        },
       }),
-      this.prisma.supplier.count({ where: whereClause })
-    ])
+      this.prisma.supplier.count({ where: whereClause }),
+    ]);
 
     return {
       suppliers,
-      pagination: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit)
-      }
-    }
+      pagination: buildPaginationMeta(total, paginacion),
+    };
+  }
+
+  /**
+   * Opciones para selectores: sólo proveedores ACTIVOS, sólo `{id, name}`.
+   *
+   * El combo de creación de órdenes de compra usaba `findAll` con `limit: 10`:
+   * a partir del proveedor número 11 no había manera de seleccionarlo. Era un
+   * bloqueo operativo real, no un detalle de interfaz.
+   *
+   * Sólo activos: a un proveedor dado de baja no se le compra, aunque siga
+   * existiendo para el histórico de compras.
+   */
+  async findOptions() {
+    const filas = await this.prisma.supplier.findMany({
+      where: { isActive: true },
+      orderBy: { name: 'asc' },
+      select: { id: true, name: true },
+      take: SELECTOR_TAKE,
+    });
+
+    return buildSelectorOptions(filas);
   }
 
   /**
@@ -102,9 +128,9 @@ export class SuppliersService {
    */
   async findOne(id: number) {
     const supplier = await this.prisma.supplier.findUnique({
-      where: { id }
-    })
-    if(!supplier){
+      where: { id },
+    });
+    if (!supplier) {
       throw new NotFoundException('Proveedor no encontrado');
     }
     return supplier;
@@ -123,14 +149,17 @@ export class SuppliersService {
     // Si intenta cambiar email, validar que no choque con otro
     if (updateSupplierDto.email) {
       const exists = await this.prisma.supplier.findFirst({
-          where: { email: updateSupplierDto.email, id: { not: id } }
+        where: { email: updateSupplierDto.email, id: { not: id } },
       });
-      if (exists) throw new ConflictException(`El email ${updateSupplierDto.email} ya está usado por otro proveedor.`);
-   }
+      if (exists)
+        throw new ConflictException(
+          `El email ${updateSupplierDto.email} ya está usado por otro proveedor.`,
+        );
+    }
 
     return await this.prisma.supplier.update({
       where: { id },
-      data: updateSupplierDto
+      data: updateSupplierDto,
     });
   }
 
@@ -146,23 +175,23 @@ export class SuppliersService {
     // Validación Financiera
     if (new Decimal(supplier.balance).gt(0)) {
       throw new BadRequestException(
-          `No se puede eliminar al proveedor ${supplier.name} porque tiene un saldo pendiente de pago de $${supplier.balance}. Liquide la deuda primero.`
+        `No se puede eliminar al proveedor ${supplier.name} porque tiene un saldo pendiente de pago de ${money(supplier.balance)}. Liquide la deuda primero.`,
       );
     }
 
     // Validar que no tenga compras pendientes
     const purchases = await this.prisma.purchase.findMany({
-      where: { supplierId: id, status: { not: 'PAID' } }
+      where: { supplierId: id, status: { not: 'PAID' } },
     });
     if (purchases.length > 0) {
       throw new BadRequestException(
-          `No se puede eliminar al proveedor ${supplier.name} porque tiene compras pendientes.`
+        `No se puede eliminar al proveedor ${supplier.name} porque tiene compras pendientes.`,
       );
     }
 
     return await this.prisma.supplier.update({
       where: { id },
-      data: { isActive: false }
+      data: { isActive: false },
     });
   }
 
@@ -178,21 +207,20 @@ export class SuppliersService {
     const email = searchSupplierDto?.email?.trim();
     const phone = searchSupplierDto?.phone?.trim();
 
-    const hasSearchCriteria = [name, email, phone].some((v) => v && v.length > 0);
+    const hasSearchCriteria = [name, email, phone].some(
+      (v) => v && v.length > 0,
+    );
     if (!hasSearchCriteria) {
       throw new BadRequestException(
         'Debe enviar al menos un criterio de búsqueda (name, email o phone). El endpoint search no devuelve todos los proveedores.',
       );
     }
 
-    const hasPagination =
-      searchSupplierDto?.page !== undefined ||
-      searchSupplierDto?.limit !== undefined;
-    const page = hasPagination ? searchSupplierDto?.page ?? 1 : 1;
-    const limit = hasPagination ? searchSupplierDto?.limit ?? 20 : 20;
-    const skip = (page - 1) * limit;
+    const paginacion = resolvePagination(searchSupplierDto);
 
-    const conditions: Array<{ [key: string]: { contains: string; mode: 'insensitive' } }> = [];
+    const conditions: Array<{
+      [key: string]: { contains: string; mode: 'insensitive' };
+    }> = [];
     if (name) {
       conditions.push({ name: { contains: name, mode: 'insensitive' } });
     }
@@ -203,35 +231,33 @@ export class SuppliersService {
       conditions.push({ phone: { contains: phone, mode: 'insensitive' } });
     }
 
-    const where = { OR: conditions };
-
-    if(!hasPagination){
-      const suppliers = await this.prisma.supplier.findMany({
-        where,
-        orderBy: { name: 'asc' }
-      })
-      return { suppliers };
-    }
+    // Activos/Inactivos también al buscar (antes el front pedía 100 y filtraba).
+    const isActive = parseQueryActiveFilter(searchSupplierDto?.active);
+    const where = {
+      OR: conditions,
+      ...(isActive !== undefined ? { isActive } : {}),
+    };
 
     const [suppliers, total] = await Promise.all([
       this.prisma.supplier.findMany({
         where,
-        skip,
-        take: limit,
-        orderBy: { name: 'asc' }
+        skip: paginacion.skip,
+        take: paginacion.take,
+        orderBy: { name: 'asc' },
+        // Mismo conteo que el listado: facturas pendientes de pago.
+        include: {
+          _count: {
+            select: { purchases: { where: { status: { not: 'PAID' } } } },
+          },
+        },
       }),
-      this.prisma.supplier.count({ where })
-    ])
+      this.prisma.supplier.count({ where }),
+    ]);
 
     return {
       suppliers,
-      pagination: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit)
-      }
-    }
+      pagination: buildPaginationMeta(total, paginacion),
+    };
   }
 
   /**
@@ -244,18 +270,18 @@ export class SuppliersService {
     const pendingPurchases = await this.prisma.purchase.findMany({
       where: {
         supplierId: id,
-        status: { in: [PurchaseStatus.PENDING, PurchaseStatus.PARTIAL] }
+        status: { in: [PurchaseStatus.PENDING, PurchaseStatus.PARTIAL] },
       },
       orderBy: { createdAt: 'asc' }, // Las más viejas primero (Prioridad de pago)
       select: {
         id: true,
         invoiceNumber: true,
-        total: true,       // Total de la factura
+        total: true, // Total de la factura
         paidAmount: true, // Cuánto ya se ha pagado
-        balance: true,    // Deuda pendiente
+        balance: true, // Deuda pendiente
         createdAt: true,
-        status: true       // Estado de la factura
-      }
+        status: true, // Estado de la factura
+      },
     });
 
     return {
@@ -263,9 +289,9 @@ export class SuppliersService {
         id: supplier.id,
         name: supplier.name,
         currentBalance: supplier.balance, // Saldo actual con la empresa
-        creditDays: supplier.creditDays
+        creditDays: supplier.creditDays,
       },
-      pendingInvoices: pendingPurchases
+      pendingInvoices: pendingPurchases,
     };
-}
+  }
 }

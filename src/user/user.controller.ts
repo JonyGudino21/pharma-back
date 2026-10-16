@@ -1,4 +1,14 @@
-import { Controller, Get, Post, Body, Query, Logger, Delete, Patch, Param } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Query,
+  Logger,
+  Delete,
+  Patch,
+  Param,
+} from '@nestjs/common';
 import { UserService } from './user.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { EditUserDto } from './dto/edit-user.dto';
@@ -9,6 +19,9 @@ import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
+import { GetUser } from 'src/common/decorators/get-user.decorator';
+import type { AuthenticatedUser } from 'src/auth/types/authenticated-user.type';
+import { permissionsMatrix } from 'src/auth/permissions';
 
 @Controller('users')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -16,14 +29,14 @@ import { UserRole } from '@prisma/client';
 export class UserController {
   private readonly logger = new Logger(UserController.name);
 
-  constructor(private userService: UserService){}
+  constructor(private userService: UserService) {}
 
   @Get()
   async getAllUsers(
     @Query('active') active?: string,
     @Query('page') page?: string,
-    @Query('limit') limit?: string
-) {
+    @Query('limit') limit?: string,
+  ) {
     // Convertir el parámetro `active` a un booleano o undefined
     let isActive: boolean | undefined;
     if (active === 'true') {
@@ -35,7 +48,7 @@ export class UserController {
     // Convertir paginación manualmente
     const pagination: PaginationParamsDto = {
       page: page ? parseInt(page, 10) : undefined,
-      limit: limit ? parseInt(limit, 10) : undefined
+      limit: limit ? parseInt(limit, 10) : undefined,
     };
 
     const res = await this.userService.getAllUsers(isActive, pagination);
@@ -44,49 +57,85 @@ export class UserController {
 
   @Get('search')
   async findUser(
-    @Query('email') email ?: string, 
-    @Query('userName') userName ?: string,
-    @Query('isActive') isActive ?: string,
-    @Query('page') page ?: string, 
-    @Query('limit') limit ?: string
-) {
+    @Query('email') email?: string,
+    @Query('userName') userName?: string,
+    @Query('isActive') isActive?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
     //Convertir el parametro isActive a booleano o undefined
-    let active : boolean | undefined;
+    let active: boolean | undefined;
     if (isActive === 'true') {
-        active = true;
+      active = true;
     } else if (isActive === 'false') {
-        active = false;
+      active = false;
     }
     const pagination: PaginationParamsDto = {
-        page: page ? parseInt(page, 10) : undefined,
-        limit: limit ? parseInt(limit, 10) : undefined
+      page: page ? parseInt(page, 10) : undefined,
+      limit: limit ? parseInt(limit, 10) : undefined,
     };
 
-    const res = await this.userService.findUser(email, userName, active, pagination);
+    const res = await this.userService.findUser(
+      email,
+      userName,
+      active,
+      pagination,
+    );
     return ApiResponse.ok(res, 'Usuario encontrado exitosamente');
   }
 
+  /**
+   * Matriz rol → permisos, de la MISMA fuente que `/auth/me`. Declarada antes
+   * de `:id` para que "roles" no se interprete como un id.
+   */
+  @Get('roles')
+  getRolesMatrix() {
+    return ApiResponse.ok(permissionsMatrix(), 'Matriz de permisos obtenida');
+  }
+
   @Get(':id')
-  async getUserById(@Param ('id') id: number){
+  async getUserById(@Param('id') id: number) {
     const res = await this.userService.getUserById(id);
     return ApiResponse.ok(res, 'Usuario encontrado exitosamente');
   }
 
   @Post()
-  async createUser(@Body() data: CreateUserDto){
+  async createUser(@Body() data: CreateUserDto) {
     const res = await this.userService.createUser(data);
     return ApiResponse.ok(res, 'Usuario creado exitosamente');
   }
 
   @Patch(':id')
-  async editUser(@Param('id') id: number, @Body() data: EditUserDto){
-    const res = await this.userService.editUser(id, data);
+  async editUser(
+    @Param('id') id: number,
+    @Body() data: EditUserDto,
+    @GetUser() actor: AuthenticatedUser,
+  ) {
+    const res = await this.userService.editUser(id, data, actor.userId);
     return ApiResponse.ok(res, 'Usuario actualizado exitosamente');
   }
 
   @Delete(':id')
-  async deleteUser(@Param('id') id: number){
-    const res = await this.userService.deleteUser(id);
+  async deleteUser(
+    @Param('id') id: number,
+    @GetUser() actor: AuthenticatedUser,
+  ) {
+    const res = await this.userService.deleteUser(id, actor.userId);
     return ApiResponse.ok(res, 'Usuario eliminado exitosamente');
+  }
+
+  /** Cierra todas las sesiones del usuario (p. ej. sesión olvidada en una caja). */
+  @Post(':id/revoke-sessions')
+  async revokeSessions(
+    @Param('id') id: number,
+    @GetUser() actor: AuthenticatedUser,
+  ) {
+    const res = await this.userService.revokeUserSessions(id, actor.userId);
+    return ApiResponse.ok(
+      res,
+      res.revoked > 0
+        ? `Se cerraron ${res.revoked} sesiones`
+        : 'El usuario no tenía sesiones abiertas',
+    );
   }
 }

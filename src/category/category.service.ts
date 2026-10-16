@@ -1,13 +1,25 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaginationParamsDto } from '../common/dto/pagination-params.dto';
+import { Prisma } from '@prisma/client';
+import {
+  buildPaginationMeta,
+  resolvePagination,
+} from 'src/common/utils/pagination.util';
+import {
+  SELECTOR_TAKE,
+  buildSelectorOptions,
+} from 'src/common/utils/selector-options.util';
 
 @Injectable()
 export class CategoryService {
-
-  constructor(private prisma: PrismaService){}
+  constructor(private prisma: PrismaService) {}
 
   /**
    * Crea una nueva categoria
@@ -17,17 +29,17 @@ export class CategoryService {
   async create(data: CreateCategoryDto) {
     //Validar que la categoria no exista
     const category = await this.prisma.category.findUnique({
-      where: {name: data.name}
-    }); 
-    if(category) throw new BadRequestException('La categoria ya existe');
+      where: { name: data.name },
+    });
+    if (category) throw new BadRequestException('La categoria ya existe');
 
     return await this.prisma.category.create({
-      data:{
+      data: {
         name: data.name,
         description: data.description,
-        isActive: data.isActive ?? true
-      }
-    })
+        isActive: data.isActive ?? true,
+      },
+    });
   }
 
   /**
@@ -37,45 +49,47 @@ export class CategoryService {
    * @returns Todas las categorias
    */
   async findAll(active?: boolean, pagination?: PaginationParamsDto) {
-    //Verificar si vienen parametros de paginacion
-    const hasPagination = pagination && 
-                        (pagination.page !== undefined || pagination.limit !== undefined);
+    // La paginación ya no es opcional: si no llega, se aplica la de por defecto.
+    const paginacion = resolvePagination(pagination);
 
-    const page = hasPagination ? pagination?.page ?? 1 : 1;
-    const limit = hasPagination ? pagination?.limit ?? 20 : 20;
-    const skip = (page - 1) * limit;
-
-    let whereClause = {};
-    active === true ? whereClause = { isActive: true } : active === false ? whereClause = { isActive: false } : {};;
-
-    //Si no vienen parametros de paginacion, devolver todas las categorias
-    if(!hasPagination){
-      const data = await this.prisma.category.findMany({
-        where: whereClause,
-        orderBy: { name: 'asc'}
-      });
-      return {categories: data};
-    }
+    const whereClause: Prisma.CategoryWhereInput =
+      active === undefined ? {} : { isActive: active };
 
     const [data, total] = await Promise.all([
       await this.prisma.category.findMany({
         where: whereClause,
-        skip,
-        take: limit,
-        orderBy: {name: 'asc'}
+        skip: paginacion.skip,
+        take: paginacion.take,
+        orderBy: { name: 'asc' },
       }),
-      await this.prisma.category.count({ where: whereClause })
+      await this.prisma.category.count({ where: whereClause }),
     ]);
 
     return {
       categories: data,
-      pagination: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit)
-      }
-    }
+      pagination: buildPaginationMeta(total, paginacion),
+    };
+  }
+
+  /**
+   * Opciones para selectores: sólo categorías ACTIVAS, sólo `{id, name}`.
+   *
+   * El selector de categorías de un producto se alimentaba de `findAll` con
+   * `limit: 10`, así que con más de diez categorías dadas de alta las restantes
+   * eran inasignables desde la interfaz. No fallaba: faltaban en silencio.
+   *
+   * Sólo activas a propósito: una categoría dada de baja no debe poder
+   * asignarse a un producto nuevo, aunque siga existiendo para los históricos.
+   */
+  async findOptions() {
+    const filas = await this.prisma.category.findMany({
+      where: { isActive: true },
+      orderBy: { name: 'asc' },
+      select: { id: true, name: true },
+      take: SELECTOR_TAKE,
+    });
+
+    return buildSelectorOptions(filas);
   }
 
   /**
@@ -85,8 +99,7 @@ export class CategoryService {
    */
   async findOne(id: number) {
     //Validar que la categoria exista
-    const category = this.validateCategory(id);
-    return category;
+    return await this.validateCategory(id);
   }
 
   /**
@@ -96,83 +109,69 @@ export class CategoryService {
    * @returns La categoria actualizada
    */
   async update(id: number, updateCategoryDto: UpdateCategoryDto) {
-    const category = this.validateCategory(id);
-    console.log(updateCategoryDto);
+    // Sin `await` la validacion no frenaba nada: al actualizar una categoria
+    // inexistente Prisma lanzaba un P2025 crudo en vez del 404 previsto.
+    await this.validateCategory(id);
 
     return await this.prisma.category.update({
-      where: {id},
+      where: { id },
       data: {
         name: updateCategoryDto.name,
         description: updateCategoryDto.description,
-        isActive: updateCategoryDto.isActive ?? true
-      }
+        isActive: updateCategoryDto.isActive ?? true,
+      },
     });
   }
 
   async remove(id: number) {
-    const category = this.validateCategory(id);
+    await this.validateCategory(id);
 
     return await this.prisma.category.update({
-      where: {id},
+      where: { id },
       data: {
-        isActive: false
-      }
-    })
+        isActive: false,
+      },
+    });
   }
 
   async search(name: string, pagination?: PaginationParamsDto) {
-    const hasPagination = pagination && (pagination.page !== undefined || pagination.limit !== undefined)
-    const page = hasPagination ? pagination?.page ?? 1 : 1;
-    const limit = hasPagination ? pagination?.limit ?? 20 : 20;
-    const skip = (page - 1) * limit;
+    const paginacion = resolvePagination(pagination);
 
-    const conditions: Array<{ [key: string]: { contains: string; mode: 'insensitive' } }> = [];
-    if(name) {
+    const conditions: Array<{
+      [key: string]: { contains: string; mode: 'insensitive' };
+    }> = [];
+    if (name) {
       conditions.push({ name: { contains: name, mode: 'insensitive' } });
     }
 
     const where = conditions.length > 0 ? { OR: conditions } : {};
 
-    // Si no hay paginacion devolvemos todas las categorias
-    if(!hasPagination) {
-      const categories = await this.prisma.category.findMany({
-        where,
-        orderBy: { name: 'asc' }
-      });
-      return { categories };
-    }
-
     const [categories, total] = await Promise.all([
       this.prisma.category.findMany({
         where,
-        skip,
-        take: limit,
-        orderBy: { name: 'asc' }
+        skip: paginacion.skip,
+        take: paginacion.take,
+        orderBy: { name: 'asc' },
       }),
-      this.prisma.category.count({ where })
-    ])
+      this.prisma.category.count({ where }),
+    ]);
 
-    return{
+    return {
       categories,
-      pagination: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit)
-      }
-    }
+      pagination: buildPaginationMeta(total, paginacion),
+    };
   }
 
   /**
    * Valida que la categoria exista
-   * @param id Id de la categoria a validar 
+   * @param id Id de la categoria a validar
    * @returns La categoria encontrada o null si no existe
    */
   private async validateCategory(id: number) {
     const category = await this.prisma.category.findUnique({
-      where: {id}
+      where: { id },
     });
-    if(!category) throw new NotFoundException('Categoria no encontrada');
+    if (!category) throw new NotFoundException('Categoria no encontrada');
 
     return category;
   }

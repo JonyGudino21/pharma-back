@@ -1,4 +1,12 @@
-import { IsOptional, IsString, IsArray, IsNumber, Min, Max } from 'class-validator';
+import {
+  IsOptional,
+  IsString,
+  IsArray,
+  IsBoolean,
+  IsNumber,
+  Min,
+  Max,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class SearchProductDto {
@@ -9,6 +17,11 @@ export class SearchProductDto {
   @IsOptional()
   @IsArray()
   letters?: string[];
+
+  /** true = sólo activos, false = sólo inactivos, ausente = todos. */
+  @IsOptional()
+  @IsBoolean()
+  active?: boolean;
 
   @IsOptional()
   @IsNumber()

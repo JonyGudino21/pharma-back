@@ -1,4 +1,14 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, Query, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Patch,
+  Param,
+  Delete,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { CategoryService } from './category.service';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
@@ -50,6 +60,22 @@ export class CategoryController {
   }
 
   /**
+   * [CATÁLOGO] Opciones para selectores: sólo activas, sólo `{id, name}`.
+   *
+   * Existe porque los selectores se alimentaban de `GET /category` con
+   * `limit: 10`: con más de diez categorías, las demás no aparecían y no había
+   * forma de asignarlas a un producto.
+   *
+   * Debe declararse ANTES de `@Get(':id')`: Nest resuelve por orden y "options"
+   * entraría por el parámetro `:id`.
+   */
+  @Get('options')
+  async findOptions() {
+    const res = await this.categoryService.findOptions();
+    return ApiResponse.ok(res, 'Opciones de categoría obtenidas correctamente');
+  }
+
+  /**
    * [CATÁLOGO] Obtiene detalle de una categoría.
    */
   @Get(':id')
@@ -63,8 +89,10 @@ export class CategoryController {
    */
   @Patch(':id')
   @Roles(UserRole.MANAGER, UserRole.PHARMACIST)
-  async update(@Param('id') id: number, @Body() updateCategoryDto: UpdateCategoryDto) {
-    console.log(updateCategoryDto);
+  async update(
+    @Param('id') id: number,
+    @Body() updateCategoryDto: UpdateCategoryDto,
+  ) {
     const res = await this.categoryService.update(id, updateCategoryDto);
     return ApiResponse.ok(res, 'Category updated successfully');
   }

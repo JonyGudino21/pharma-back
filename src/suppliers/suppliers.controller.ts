@@ -1,15 +1,27 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, Query, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Patch,
+  Param,
+  Delete,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { SuppliersService } from './suppliers.service';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
 import { SearchSupplierDto } from './dto/search-supplier.dto';
-import { FindAllSupplierDto } from './dto/findAll-supplier.dto';
 import { ApiResponse } from 'src/common/dto/response.dto';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { UserRole } from '@prisma/client';
-import { PaginationWithActiveQueryDto, parseQueryActiveFilter } from 'src/common/dto/pagination-with-active-query.dto';
+import {
+  PaginationWithActiveQueryDto,
+  parseQueryActiveFilter,
+} from 'src/common/dto/pagination-with-active-query.dto';
 
 @Controller('suppliers')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -48,6 +60,25 @@ export class SuppliersController {
   }
 
   /**
+   * [DIRECTORIO] Opciones para selectores: sólo activos, sólo `{id, name}`.
+   *
+   * El combo de "Crear orden de compra" se alimentaba de `GET /suppliers` con
+   * `limit: 10`. Con treinta proveedores dados de alta, comprarle al número 11
+   * era imposible desde la aplicación: la lista se veía llena y no avisaba.
+   *
+   * Debe declararse ANTES de `@Get(':id')`: Nest resuelve por orden de
+   * declaración y "options" entraría por el parámetro `:id`.
+   */
+  @Get('options')
+  async findOptions() {
+    const data = await this.suppliersService.findOptions();
+    return ApiResponse.ok(
+      data,
+      'Opciones de proveedor obtenidas correctamente',
+    );
+  }
+
+  /**
    * [DIRECTORIO] Perfil de proveedor.
    */
   @Get(':id')
@@ -60,7 +91,10 @@ export class SuppliersController {
    * [DIRECTORIO] Actualizar datos o días de crédito.
    */
   @Patch(':id')
-  async update(@Param('id') id: number, @Body() updateSupplierDto: UpdateSupplierDto) {
+  async update(
+    @Param('id') id: number,
+    @Body() updateSupplierDto: UpdateSupplierDto,
+  ) {
     const data = await this.suppliersService.update(id, updateSupplierDto);
     return ApiResponse.ok(data, 'Supplier updated successfully');
   }
@@ -83,4 +117,3 @@ export class SuppliersController {
     return ApiResponse.ok(data, 'Estado de cuenta obtenido correctamente');
   }
 }
-

@@ -1,11 +1,20 @@
 {
   "moduleFileExtensions": ["js", "json", "ts"],
-  "rootDir": ".",
+  "rootDir": "..",
+  "roots": ["<rootDir>/test"],
   "testEnvironment": "node",
   "testRegex": ".e2e-spec.ts$",
   "transform": {
-    "^.+\\.(t|j)s$": "ts-jest"
+    "^.+\\.(t|j)s$": [
+      "ts-jest",
+      {
+        "tsconfig": "<rootDir>/tsconfig.spec.json"
+      }
+    ]
   },
+  "transformIgnorePatterns": [
+    "/node_modules/(?!@nestjs/config/)"
+  ],
   "moduleNameMapper": {
     "^src/(.*)$": "<rootDir>/src/$1",
     "^prisma/(.*)$": "<rootDir>/prisma/$1"

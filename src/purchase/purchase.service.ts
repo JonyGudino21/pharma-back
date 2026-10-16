@@ -1,26 +1,48 @@
-import { BadRequestException, Injectable, NotFoundException, ConflictException, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+  ConflictException,
+  Logger,
+} from '@nestjs/common';
 import { PrismaService } from 'prisma/prisma.service';
 import { CreatePurchaseDto } from './dto/create-purchase.dto';
 import { UpdatePurchaseDto } from './dto/update-purchase.dto';
 import { CreatePurchaseItemDto } from './dto/create-purchase-item.dto';
 import { AddPaymentDto } from './dto/add-payment.dto';
-import { Prisma, PurchaseDeliveryStatus, PurchaseStatus, MovementType, PaymentMethod, CashTransactionType } from '@prisma/client'
+import {
+  Prisma,
+  PurchaseDeliveryStatus,
+  PurchaseStatus,
+  MovementType,
+  PaymentMethod,
+  CashTransactionType,
+} from '@prisma/client';
 import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
+import {
+  buildPaginationMeta,
+  resolvePagination,
+} from 'src/common/utils/pagination.util';
 import { UpdatePurchaseItemDto } from './dto/update-item.dto';
 import { InventoryService } from 'src/inventory/inventory.service';
+import { InventoryBatchesService } from 'src/inventory/inventory-batches.service';
 import { CashShiftService } from 'src/cash-shift/cash-shift.service';
+import { SettingsService } from 'src/settings/settings.service';
 import { Decimal } from '@prisma/client/runtime/library';
+import { decimalText, money } from 'src/common/utils/decimal.util';
+import { normalizeLotNumber, toUtcDateOnly } from 'src/inventory/fefo';
 
 @Injectable()
 export class PurchaseService {
-
   private readonly logger = new Logger(PurchaseService.name);
 
   constructor(
     private prisma: PrismaService,
     private inventoryService: InventoryService,
+    private inventoryBatches: InventoryBatchesService,
     private cashShiftService: CashShiftService,
-  ){}
+    private settings: SettingsService,
+  ) {}
 
   /**
    * 1. CREAR ORDEN DE COMPRA
@@ -31,21 +53,42 @@ export class PurchaseService {
     //Validar si supplier existe
     const supplier = await this.prisma.supplier.findUnique({
       where: { id: dto.supplierId },
-    })
-    if(!supplier){
+    });
+    if (!supplier) {
       throw new NotFoundException('Proveedor no encontrado');
     }
 
-    //Validar productos 
+    //Validar productos
     const productIds = dto.items.map((item) => item.productId);
     const products = await this.prisma.product.findMany({
       where: { id: { in: productIds } },
     });
-    if(products.length !== productIds.length){
+    if (products.length !== productIds.length) {
       throw new NotFoundException('Alguno de los productos no existe');
     }
 
     const { subtotal, total } = this.calculateTotals(dto.items);
+    const productById = new Map(products.map((p) => [p.id, p]));
+    const itemsData = dto.items.map((item) => {
+      const product = productById.get(item.productId)!;
+      const lot = this.parseLotFields(item.lotNumber, item.expiryDate);
+      if (product.controlled && !lot.lotNumber) {
+        throw new BadRequestException(
+          `El medicamento controlado ${product.name} requiere lote y caducidad.`,
+        );
+      }
+      return {
+        productId: item.productId,
+        quantity: item.quantity,
+        cost: item.cost,
+        // Decimal, no `*` de JavaScript: el subtotal en coma flotante se
+        // guardaba con residuos (0.30000000000000004) y el total de la compra
+        // dejaba de cuadrar con la suma de sus líneas.
+        subtotal: new Decimal(item.quantity).mul(new Decimal(item.cost)),
+        lotNumber: lot.lotNumber,
+        expiryDate: lot.expiryDate,
+      };
+    });
 
     //crear purchase e items, pagos y actualizar stock automaticamente
     const purchase = await this.prisma.$transaction(async (tx) => {
@@ -59,26 +102,25 @@ export class PurchaseService {
           status: PurchaseStatus.PENDING,
           deliveryStatus: PurchaseDeliveryStatus.PENDING,
           items: {
-            create: dto.items.map((item) => ({
-              productId: item.productId,
-              quantity: item.quantity,
-              cost: item.cost,
-              subtotal: Number(item.quantity) * Number(item.cost),
-            })),
+            create: itemsData,
           },
-        }
+        },
       });
 
       // B. Procesar pagaos adelantados
-      let  totalPaid = new Decimal(0);
+      let totalPaid = new Decimal(0);
 
-      if(dto.payments && dto.payments.length > 0){
-        for(const p of dto.payments){
-          let cashShiftId: number | null = null;
-          if(p.method === PaymentMethod.CASH){
-            const shift = await this.cashShiftService.getCurrentShift(userId);
-            if(!shift) throw new ConflictException('ALERTA! Se requiere caja abierta para pagar en efectivo al proveedor.');
-            cashShiftId = shift.id;
+      if (dto.payments && dto.payments.length > 0) {
+        for (const p of dto.payments) {
+          if (p.method === PaymentMethod.CASH) {
+            const shift = await this.cashShiftService.getCurrentShift(
+              userId,
+              tx,
+            );
+            if (!shift)
+              throw new ConflictException(
+                'ALERTA! Se requiere caja abierta para pagar en efectivo al proveedor.',
+              );
 
             // Sacamos el dinero de la caja para pagar la compra al proveedor
             await tx.cashTransaction.create({
@@ -90,7 +132,7 @@ export class PurchaseService {
                 referenceId: created.id,
                 relatedTable: 'Purchase',
                 createdBy: userId,
-              }
+              },
             });
           }
 
@@ -100,7 +142,7 @@ export class PurchaseService {
               method: p.method,
               amount: p.amount,
               references: p.references,
-            }
+            },
           });
           totalPaid = totalPaid.add(new Decimal(p.amount));
         }
@@ -108,15 +150,15 @@ export class PurchaseService {
         // Actualizar estado de la compra
 
         let initStatus: PurchaseStatus = PurchaseStatus.PARTIAL;
-        if(totalPaid.gte(created.total)) initStatus = PurchaseStatus.PAID;
+        if (totalPaid.gte(created.total)) initStatus = PurchaseStatus.PAID;
 
         await tx.purchase.update({
           where: { id: created.id },
           data: {
             paidAmount: totalPaid,
-            balance: new Decimal(total).sub(totalPaid), 
+            balance: new Decimal(total).sub(totalPaid),
             status: initStatus,
-          }
+          },
         });
       } else {
         // Sin pagos el balance es el total de la compra
@@ -124,7 +166,7 @@ export class PurchaseService {
           where: { id: created.id },
           data: {
             balance: created.total,
-          }
+          },
         });
       }
 
@@ -134,60 +176,52 @@ export class PurchaseService {
           items: { include: { product: true } },
           payments: true,
           supplier: true,
-        }
+        },
       });
     });
 
     return purchase;
   }
 
-  async findAll(supplierId?: number, status?: PurchaseStatus, pagination?: PaginationParamsDto) {
-    const hasPagination = pagination && (pagination.page !== undefined || pagination.limit !== undefined);
-    const page = hasPagination ? pagination?.page ?? 1 : 1;
-    const limit = hasPagination ? pagination?.limit ?? 20 : 20;
-    const skip = (page - 1) * limit;
+  async findAll(
+    supplierId?: number,
+    status?: PurchaseStatus,
+    pagination?: PaginationParamsDto,
+  ) {
+    // PAGINACIÓN OBLIGATORIA. Antes, omitir `page` y `limit` devolvía la tabla
+    // completa de compras con su proveedor incluido: una sola petición podía
+    // ocupar una conexión del pool durante segundos, y el pool es el mismo que
+    // usan los cobros del mostrador.
+    const paginacion = resolvePagination(pagination);
 
-    const where: any = {};
-    if(supplierId) {
+    const where: Prisma.PurchaseWhereInput = {};
+    if (supplierId) {
       where.supplierId = supplierId;
     }
-    if(status) {
+    if (status) {
       where.status = status;
-    }
-    
-    if(!hasPagination){
-      const purchases = await this.prisma.purchase.findMany({
-        where,
-        include: {
-          supplier: { select: { name: true, id: true } },
-        },
-        orderBy: { createdAt: 'desc' }
-      });
-      return { purchases };
     }
 
     const [purchases, total] = await Promise.all([
       this.prisma.purchase.findMany({
         where,
-        skip,
-        take: limit,
+        skip: paginacion.skip,
+        take: paginacion.take,
         orderBy: { createdAt: 'desc' },
         include: {
           supplier: { select: { name: true, id: true } },
         },
       }),
-      this.prisma.purchase.count({ where })
+      this.prisma.purchase.count({ where }),
     ]);
 
+    // Una sola forma de respuesta, siempre con `pagination`. Antes la clave
+    // aparecía o no según los parámetros, y cada consumidor tenía que manejar
+    // dos contratos del mismo endpoint.
     return {
       purchases,
-      pagination: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit)
-      }
-    }
+      pagination: buildPaginationMeta(total, paginacion),
+    };
   }
 
   /**
@@ -208,14 +242,16 @@ export class PurchaseService {
    */
   async update(id: number, dto: UpdatePurchaseDto) {
     const purchase = await this.validatePurchase(id);
-    if(purchase.status === PurchaseStatus.CANCELLED) { 
+    if (purchase.status === PurchaseStatus.CANCELLED) {
       throw new BadRequestException('Compra cancelada, no se puede actualizar');
     }
-    if(dto.supplierId) {
+    if (dto.supplierId) {
       const supplier = await this.prisma.supplier.findUnique({
-        where: { id: dto.supplierId }
+        where: { id: dto.supplierId },
       });
-      if(!supplier) { throw new NotFoundException('Proveedor no encontrado'); }
+      if (!supplier) {
+        throw new NotFoundException('Proveedor no encontrado');
+      }
     }
 
     const update = await this.prisma.purchase.update({
@@ -223,7 +259,7 @@ export class PurchaseService {
       data: {
         supplierId: dto.supplierId,
         invoiceNumber: dto.invoiceNumber,
-      }
+      },
     });
 
     return update;
@@ -236,7 +272,11 @@ export class PurchaseService {
    * @param userId el ID del usuario que cancela
    * @returns la compra cancelada
    */
-  async cancel(purchaseId: number, userId: number, returnToCash: boolean = false) {
+  async cancel(
+    purchaseId: number,
+    userId: number,
+    returnToCash: boolean = false,
+  ) {
     const purchase = await this.validatePurchase(purchaseId);
     if (purchase.status === PurchaseStatus.CANCELLED) {
       throw new BadRequestException('La compra ya está cancelada.');
@@ -252,7 +292,9 @@ export class PurchaseService {
       });
 
       if (claim.count === 0) {
-        throw new ConflictException('Esta compra ya fue cancelada por otra operación.');
+        throw new ConflictException(
+          'Esta compra ya fue cancelada por otra operación.',
+        );
       }
 
       // Releemos DENTRO de la transacción. Crítico: si una recepción concurrente se
@@ -265,13 +307,14 @@ export class PurchaseService {
       if (!fresh) throw new NotFoundException('Compra no encontrada');
 
       // 1. Si la mercancia ya estaba en el almacen
-      if(fresh.deliveryStatus === PurchaseDeliveryStatus.RECEIVED){
-
+      if (fresh.deliveryStatus === PurchaseDeliveryStatus.RECEIVED) {
         // A. Revertir Inventario (salida de mercancia) Y el costo promedio ponderado.
         // Orden determinista por productId para prevenir deadlocks.
-        const orderedItems = [...fresh.items].sort((a, b) => a.productId - b.productId);
+        const orderedItems = [...fresh.items].sort(
+          (a, b) => a.productId - b.productId,
+        );
 
-        for(const item of orderedItems){
+        for (const item of orderedItems) {
           const purchaseUnitCost = new Decimal(item.cost);
 
           // A.1 REVERTIR EL COSTO PROMEDIO **ANTES** de mover el stock.
@@ -288,6 +331,12 @@ export class PurchaseService {
 
           // A.2 Sacar la mercancía del Kardex valuada al costo REAL al que entró
           // (no al promedio vigente), para que el valor del inventario cuadre.
+          const batchId = await this.findBatchIdForPurchaseItem(tx, item);
+          if (item.lotNumber && !batchId) {
+            throw new ConflictException(
+              `No se encontró el lote ${item.lotNumber} para revertir la compra #${fresh.id}`,
+            );
+          }
           await this.inventoryService.registerMovement(
             {
               productId: item.productId,
@@ -295,6 +344,7 @@ export class PurchaseService {
               quantity: item.quantity,
               reason: `Cancelación de Compra #${fresh.id}`,
               referenceId: fresh.id,
+              batchId,
             },
             userId,
             tx,
@@ -303,10 +353,10 @@ export class PurchaseService {
         }
 
         // B. Revertir deuda con proveedor
-        if(fresh.balance.gt(0)){
+        if (fresh.balance.gt(0)) {
           await tx.supplier.update({
             where: { id: fresh.supplierId },
-            data: { balance: { decrement: fresh.balance } }
+            data: { balance: { decrement: fresh.balance } },
           });
         }
       }
@@ -315,32 +365,37 @@ export class PurchaseService {
       if (fresh.paidAmount.gt(0)) {
         if (returnToCash) {
           // ESCENARIO A: El proveedor sacó dinero de su cartera y nos lo dio.
-          const shift = await this.cashShiftService.getCurrentShift(userId);
-          if (!shift) throw new ConflictException('Se requiere caja abierta para recibir el reembolso en efectivo físico.');
-          
+          const shift = await this.cashShiftService.getCurrentShift(userId, tx);
+          if (!shift)
+            throw new ConflictException(
+              'Se requiere caja abierta para recibir el reembolso en efectivo físico.',
+            );
+
           await tx.cashTransaction.create({
             data: {
               shiftId: shift.id,
-              type: CashTransactionType.REFUND_IN, 
+              type: CashTransactionType.REFUND_IN,
               amount: fresh.paidAmount,
               reason: `Efectivo devuelto por proveedor. Cancelación #${purchaseId}`,
               relatedTable: 'Purchase',
               referenceId: fresh.id,
-              createdBy: userId
-            }
+              createdBy: userId,
+            },
           });
-      } else {
+        } else {
           // ESCENARIO B: NOTA DE CRÉDITO (Nivel Enterprise)
-          // El proveedor no nos dio el dinero, lo guardó. 
+          // El proveedor no nos dio el dinero, lo guardó.
           // Entonces, restamos ese dinero pagado del balance del proveedor.
           // Si el balance era 0, se volverá NEGATIVO (Ej. -500).
           // ¡Un balance negativo en proveedores significa Saldo a Favor!
           await tx.supplier.update({
             where: { id: fresh.supplierId },
-            data: { balance: { decrement: fresh.paidAmount } }
+            data: { balance: { decrement: fresh.paidAmount } },
           });
 
-          this.logger.log(`Nota de crédito generada: Proveedor #${fresh.supplierId} ahora tiene un saldo a nuestro favor de $${fresh.paidAmount}`);
+          this.logger.log(
+            `Nota de crédito generada: Proveedor #${fresh.supplierId} ahora tiene un saldo a nuestro favor de ${money(fresh.paidAmount)}`,
+          );
         }
       }
 
@@ -351,10 +406,9 @@ export class PurchaseService {
           status: PurchaseStatus.CANCELLED,
           deliveryStatus: PurchaseDeliveryStatus.CANCELLED,
           balance: new Decimal(0), // La deuda se anula
-        }
+        },
       });
     });
-
   }
 
   /**
@@ -363,24 +417,35 @@ export class PurchaseService {
    * @param dto los datos del item a agregar
    * @returns el item agregado
    */
-  async addItem(purchaseId: number, dto: CreatePurchaseItemDto){
+  async addItem(purchaseId: number, dto: CreatePurchaseItemDto) {
     const purchase = await this.validatePurchase(purchaseId);
 
     // REGLA DE ORO: No modificar si ya se recibió la mercancía
     if (purchase.deliveryStatus === PurchaseDeliveryStatus.RECEIVED) {
-      throw new BadRequestException('No puedes agregar productos a una compra que ya fue recibida en almacén.');
+      throw new BadRequestException(
+        'No puedes agregar productos a una compra que ya fue recibida en almacén.',
+      );
     }
     if (purchase.status === PurchaseStatus.CANCELLED) {
       throw new BadRequestException('La compra está cancelada.');
     }
 
-    const product = await this.prisma.product.findUnique({ where: { id: dto.productId } });
+    const product = await this.prisma.product.findUnique({
+      where: { id: dto.productId },
+    });
     if (!product) throw new NotFoundException('Producto no encontrado');
+
+    const lot = this.parseLotFields(dto.lotNumber, dto.expiryDate);
+    if (product.controlled && !lot.lotNumber) {
+      throw new BadRequestException(
+        `El medicamento controlado ${product.name} requiere lote y caducidad.`,
+      );
+    }
 
     return await this.prisma.$transaction(async (tx) => {
       // 1. Crear el Item
       const subtotalItem = new Decimal(dto.quantity).mul(new Decimal(dto.cost));
-      
+
       const createdItem = await tx.purchaseItem.create({
         data: {
           purchaseId,
@@ -388,21 +453,26 @@ export class PurchaseService {
           quantity: dto.quantity,
           cost: dto.cost,
           subtotal: subtotalItem,
+          lotNumber: lot.lotNumber,
+          expiryDate: lot.expiryDate,
         },
       });
 
       // 2. Recalcular totales (SIN TOCAR INVENTARIO)
-      const agg = await tx.purchaseItem.aggregate({ where: { purchaseId }, _sum: { subtotal: true } });
+      const agg = await tx.purchaseItem.aggregate({
+        where: { purchaseId },
+        _sum: { subtotal: true },
+      });
       const newTotal = agg._sum.subtotal ?? new Decimal(0);
 
       await tx.purchase.update({
         where: { id: purchaseId },
-        data: { 
-            subtotal: newTotal, 
-            total: newTotal,
-            // Si no hay pagos previos, el balance es el total
-            balance: newTotal.sub(purchase.paidAmount) 
-        }
+        data: {
+          subtotal: newTotal,
+          total: newTotal,
+          // Si no hay pagos previos, el balance es el total
+          balance: newTotal.sub(purchase.paidAmount),
+        },
       });
 
       return createdItem;
@@ -413,23 +483,46 @@ export class PurchaseService {
    * Actualiza un item de una compra (Solo cantidad o costo pactado)
    * @param purchaseId el ID de la compra
    * @param itemId el ID del item a actualizar
-    * @param dto 
-    * @param userId el ID del usuario que actualiza
+   * @param dto
+   * @param userId el ID del usuario que actualiza
    * @returns el item actualizado
    */
-  async updateItem(purchaseId: number, itemId: number, dto: UpdatePurchaseItemDto){
+  async updateItem(
+    purchaseId: number,
+    itemId: number,
+    dto: UpdatePurchaseItemDto,
+  ) {
     const purchase = await this.validatePurchase(purchaseId);
 
     if (purchase.deliveryStatus === PurchaseDeliveryStatus.RECEIVED) {
-      throw new BadRequestException('No puedes modificar productos de una compra ya ingresada al almacén.');
+      throw new BadRequestException(
+        'No puedes modificar productos de una compra ya ingresada al almacén.',
+      );
     }
     if (purchase.status === PurchaseStatus.CANCELLED) {
       throw new BadRequestException('La compra está cancelada.');
     }
 
     return await this.prisma.$transaction(async (tx) => {
-      const item = await tx.purchaseItem.findUnique({ where: { id: itemId, purchaseId } });
-      if (!item) throw new NotFoundException('Producto no encontrado en esta compra');
+      const item = await tx.purchaseItem.findUnique({
+        where: { id: itemId, purchaseId },
+        include: { product: { select: { name: true, controlled: true } } },
+      });
+      if (!item)
+        throw new NotFoundException('Producto no encontrado en esta compra');
+
+      const lot =
+        dto.lotNumber !== undefined || dto.expiryDate !== undefined
+          ? this.parseLotFields(
+              dto.lotNumber !== undefined ? dto.lotNumber : item.lotNumber,
+              dto.expiryDate !== undefined ? dto.expiryDate : item.expiryDate,
+            )
+          : null;
+      if (lot && item.product.controlled && !lot.lotNumber) {
+        throw new BadRequestException(
+          `El medicamento controlado ${item.product.name} requiere lote y caducidad.`,
+        );
+      }
 
       const newQty = new Decimal(dto.quantity);
       const newCost = new Decimal(dto.cost);
@@ -437,16 +530,30 @@ export class PurchaseService {
 
       await tx.purchaseItem.update({
         where: { id: itemId },
-        data: { quantity: dto.quantity, cost: dto.cost, subtotal: newSubtotal }
+        data: {
+          quantity: dto.quantity,
+          cost: dto.cost,
+          subtotal: newSubtotal,
+          ...(lot
+            ? { lotNumber: lot.lotNumber, expiryDate: lot.expiryDate }
+            : {}),
+        },
       });
 
       // Recalcular
-      const agg = await tx.purchaseItem.aggregate({ where: { purchaseId }, _sum: { subtotal: true } });
+      const agg = await tx.purchaseItem.aggregate({
+        where: { purchaseId },
+        _sum: { subtotal: true },
+      });
       const newTotal = agg._sum.subtotal ?? new Decimal(0);
 
       await tx.purchase.update({
         where: { id: purchaseId },
-        data: { total: newTotal, subtotal: newTotal, balance: newTotal.sub(purchase.paidAmount) }
+        data: {
+          total: newTotal,
+          subtotal: newTotal,
+          balance: newTotal.sub(purchase.paidAmount),
+        },
       });
 
       return { message: 'Producto actualizado', newTotal };
@@ -459,11 +566,13 @@ export class PurchaseService {
    * @param itemId Id del item
    * @returns el item eliminado
    */
-  async removeItem(purcharseId: number, itemId: number){
+  async removeItem(purcharseId: number, itemId: number) {
     const purchase = await this.validatePurchase(purcharseId);
 
     if (purchase.deliveryStatus === PurchaseDeliveryStatus.RECEIVED) {
-      throw new BadRequestException('No puedes eliminar productos de una compra ya ingresada al almacén.');
+      throw new BadRequestException(
+        'No puedes eliminar productos de una compra ya ingresada al almacén.',
+      );
     }
     if (purchase.status === PurchaseStatus.CANCELLED) {
       throw new BadRequestException('La compra está cancelada.');
@@ -472,21 +581,21 @@ export class PurchaseService {
     return await this.prisma.$transaction(async (tx) => {
       await tx.purchaseItem.delete({ where: { id: itemId } });
 
-      const agg = await tx.purchaseItem.aggregate({ 
-        where: { 
-          purchaseId: purcharseId 
-        }, 
-        _sum: { subtotal: true } 
+      const agg = await tx.purchaseItem.aggregate({
+        where: {
+          purchaseId: purcharseId,
+        },
+        _sum: { subtotal: true },
       });
       const newTotal = agg._sum.subtotal ?? new Decimal(0);
 
       await tx.purchase.update({
         where: { id: purcharseId },
-        data: { 
-          total: newTotal, 
-          subtotal: newTotal, 
-          balance: newTotal.sub(purchase.paidAmount) 
-        }
+        data: {
+          total: newTotal,
+          subtotal: newTotal,
+          balance: newTotal.sub(purchase.paidAmount),
+        },
       });
 
       return { message: 'Producto eliminado', newTotal };
@@ -499,64 +608,104 @@ export class PurchaseService {
    * @param dto los datos del pago
    * @returns el pago agregado
    */
-  async addPayment(purcharseId: number, dto: AddPaymentDto, userId: number){
+  async addPayment(purcharseId: number, dto: AddPaymentDto, userId: number) {
     const purchase = await this.validatePurchase(purcharseId);
-    if(purchase.status === PurchaseStatus.CANCELLED) { 
+    if (purchase.status === PurchaseStatus.CANCELLED) {
       throw new BadRequestException('Compra cancelada, no se puede actualizar');
     }
-    if (purchase.balance.lte(0)) throw new BadRequestException('Esta compra ya está pagada completamente');
+    if (purchase.balance.lte(0))
+      throw new BadRequestException('Esta compra ya está pagada completamente');
+
+    const monto = new Decimal(dto.amount);
 
     return await this.prisma.$transaction(async (tx) => {
-      // 1. Control de caja (Saida de dineru)
-      let cashShiftId: number | null = null;
-      if(dto.method === PaymentMethod.CASH){
-        const shift = await this.cashShiftService.getCurrentShift(userId);
-        if(!shift) throw new ConflictException('ALERTA! Se requiere caja abierta para pagar en efectivo al proveedor.');
-        cashShiftId = shift.id;
+      // 1. GUARDA ATÓMICA DEL SALDO.
+      //
+      // La versión anterior leía `paidAmount` FUERA de la transacción y lo
+      // sumaba en JavaScript. Dos pagos simultáneos leían el mismo saldo y el
+      // segundo pisaba al primero: la compra quedaba con la mitad de lo pagado
+      // registrado y el proveedor con deuda de más. Además no había tope, así
+      // que pagar $5,000 sobre una factura de $2,000 dejaba el saldo en -$3,000.
+      //
+      // Ahora la base evalúa la condición y aplica el cambio en la MISMA
+      // sentencia: sólo afecta la fila si el saldo alcanza. Si otra operación
+      // cambió la compra entre la validación y este punto, count = 0.
+      const aplicado = await tx.purchase.updateMany({
+        where: {
+          id: purcharseId,
+          status: { not: PurchaseStatus.CANCELLED },
+          balance: { gte: monto },
+        },
+        data: {
+          paidAmount: { increment: monto },
+          balance: { decrement: monto },
+        },
+      });
+
+      if (aplicado.count === 0) {
+        throw new ConflictException(
+          `El pago de ${money(monto)} excede el saldo pendiente de la compra, o la compra cambió mientras se registraba. Actualiza la pantalla y verifica el saldo.`,
+        );
+      }
+
+      // Estado con el saldo YA actualizado, leído dentro de la transacción.
+      const fresh = await tx.purchase.findUniqueOrThrow({
+        where: { id: purcharseId },
+        select: {
+          balance: true,
+          supplierId: true,
+          deliveryStatus: true,
+          invoiceNumber: true,
+        },
+      });
+
+      await tx.purchase.update({
+        where: { id: purcharseId },
+        data: {
+          status: fresh.balance.lte(0)
+            ? PurchaseStatus.PAID
+            : PurchaseStatus.PARTIAL,
+        },
+      });
+
+      // 2. Control de caja (salida de efectivo)
+      if (dto.method === PaymentMethod.CASH) {
+        const shift = await this.cashShiftService.getCurrentShift(userId, tx);
+        if (!shift)
+          throw new ConflictException(
+            'Se requiere caja abierta para pagar en efectivo al proveedor.',
+          );
 
         await tx.cashTransaction.create({
           data: {
             shiftId: shift.id,
             type: CashTransactionType.EXPENSE, // Gastos de compra
-            amount: dto.amount,
-            reason: `Pago de orden de compra #${purchase.invoiceNumber}`,
-            referenceId: purchase.id,
+            amount: monto,
+            reason: `Pago de orden de compra #${fresh.invoiceNumber}`,
+            referenceId: purcharseId,
             relatedTable: 'Purchase',
             createdBy: userId,
-          }
+          },
         });
       }
 
-      // 2. Crear el pago
+      // 3. Asiento del pago
       const payment = await tx.purchasePayment.create({
         data: {
           purchaseId: purcharseId,
           method: dto.method,
-          amount: dto.amount,
+          amount: monto,
           references: dto.references,
-        }
+        },
       });
 
-      // 3. Recalcular saldos de la compra
-      const newPaidAmount = new Decimal(purchase.paidAmount).add(dto.amount);
-      const newBalance = new Decimal(purchase.total).sub(newPaidAmount);
-      const isPaid = newBalance.lte(0);
-
-      await tx.purchase.update({
-        where: { id: purcharseId },
-        data: {
-          paidAmount: newPaidAmount,
-          balance: newBalance,
-          status: isPaid ? PurchaseStatus.PAID : PurchaseStatus.PARTIAL
-        }
-      });
-
-      // 4. Si la compra ya había sido RECIBIDA, el proveedor ya tenía este saldo cargado.
-      // Debemos descontarle la deuda al proveedor.
-      if (purchase.deliveryStatus === PurchaseDeliveryStatus.RECEIVED) {
+      // 4. Si la mercancía ya se recibió, el proveedor ya tenía este saldo
+      // cargado: pagar le baja la deuda. Con el estado FRESCO, no con el leído
+      // antes de la transacción.
+      if (fresh.deliveryStatus === PurchaseDeliveryStatus.RECEIVED) {
         await tx.supplier.update({
-            where: { id: purchase.supplierId },
-            data: { balance: { decrement: dto.amount } }
+          where: { id: fresh.supplierId },
+          data: { balance: { decrement: monto } },
         });
       }
 
@@ -573,18 +722,22 @@ export class PurchaseService {
    */
   async removePayment(purchaseId: number, paymentId: number, userId: number) {
     const purchase = await this.validatePurchase(purchaseId);
-    
-    const payment = await this.prisma.purchasePayment.findUnique({ 
-        where: { id: paymentId, purchaseId: purchaseId } 
+
+    const payment = await this.prisma.purchasePayment.findUnique({
+      where: { id: paymentId, purchaseId: purchaseId },
     });
-    
-    if(!payment) throw new NotFoundException('Pago no encontrado en esta compra');
+
+    if (!payment)
+      throw new NotFoundException('Pago no encontrado en esta compra');
 
     return await this.prisma.$transaction(async (tx) => {
       // 1. REVERSIÓN DE CAJA (Si fue en efectivo)
       if (payment.method === PaymentMethod.CASH) {
-        const shift = await this.cashShiftService.getCurrentShift(userId);
-        if (!shift) throw new ConflictException('No tienes caja abierta para registrar la devolución de este efectivo.');
+        const shift = await this.cashShiftService.getCurrentShift(userId, tx);
+        if (!shift)
+          throw new ConflictException(
+            'No tienes caja abierta para registrar la devolución de este efectivo.',
+          );
 
         // Si cancelamos un pago de compra, significa que el dinero "regresa" a nuestra caja
         await tx.cashTransaction.create({
@@ -596,7 +749,7 @@ export class PurchaseService {
             relatedTable: 'PurchasePayment',
             referenceId: payment.id,
             createdBy: userId,
-            }
+          },
         });
       }
 
@@ -604,19 +757,21 @@ export class PurchaseService {
       await tx.purchasePayment.delete({ where: { id: paymentId } });
 
       // 3. RECALCULAR SALDOS DE LA COMPRA
-      const newPaidAmount = new Decimal(purchase.paidAmount).sub(payment.amount);
+      const newPaidAmount = new Decimal(purchase.paidAmount).sub(
+        payment.amount,
+      );
       const newBalance = new Decimal(purchase.total).sub(newPaidAmount);
-      
+
       let newStatus: PurchaseStatus = PurchaseStatus.PARTIAL;
       if (newPaidAmount.lte(0)) newStatus = PurchaseStatus.PENDING;
 
       await tx.purchase.update({
         where: { id: purchaseId },
-        data: { 
-          paidAmount: newPaidAmount, 
-          balance: newBalance, 
-          status: newStatus 
-        }
+        data: {
+          paidAmount: newPaidAmount,
+          balance: newBalance,
+          status: newStatus,
+        },
       });
 
       // 4. RECALCULAR DEUDA CON EL PROVEEDOR
@@ -625,11 +780,13 @@ export class PurchaseService {
       if (purchase.deliveryStatus === PurchaseDeliveryStatus.RECEIVED) {
         await tx.supplier.update({
           where: { id: purchase.supplierId },
-          data: { balance: { increment: payment.amount } } // Volvemos a deberle
+          data: { balance: { increment: payment.amount } }, // Volvemos a deberle
         });
       }
 
-      this.logger.warn(`Pago de $${payment.amount} eliminado de la compra #${purchaseId} por el usuario ${userId}`);
+      this.logger.warn(
+        `Pago de ${money(payment.amount)} eliminado de la compra #${purchaseId} por el usuario ${userId}`,
+      );
       return { message: 'Pago revertido correctamente', newBalance };
     });
   }
@@ -645,11 +802,19 @@ export class PurchaseService {
     const purchase = await this.validatePurchase(purcharseId);
 
     if (purchase.deliveryStatus === PurchaseDeliveryStatus.RECEIVED) {
-      throw new BadRequestException('Esta compra ya fue recibida e inventariada.');
+      throw new BadRequestException(
+        'Esta compra ya fue recibida e inventariada.',
+      );
     }
     if (purchase.status === PurchaseStatus.CANCELLED) {
-      throw new BadRequestException('No se puede recibir una compra cancelada.');
+      throw new BadRequestException(
+        'No se puede recibir una compra cancelada.',
+      );
     }
+
+    // Se lee UNA vez, fuera de la transacción: no hace falta bloquearla y
+    // así toda la recepción usa el mismo criterio aunque alguien lo cambie.
+    const { requireLotForAll } = await this.settings.get('inventory');
 
     return await this.prisma.$transaction(async (tx) => {
       // CLAIM ATÓMICO DE LA RECEPCIÓN:
@@ -682,7 +847,9 @@ export class PurchaseService {
 
       // 1. Procesar cada item para actualizar stock y costos.
       // Orden determinista por productId para prevenir deadlocks.
-      const orderedItems = [...fresh.items].sort((a, b) => a.productId - b.productId);
+      const orderedItems = [...fresh.items].sort(
+        (a, b) => a.productId - b.productId,
+      );
 
       for (const item of orderedItems) {
         // BLOQUEO DE FILA antes de leer para RECALCULAR el costo promedio:
@@ -691,9 +858,13 @@ export class PurchaseService {
         await this.inventoryService.lockProductRow(tx, item.productId);
 
         // Obtenemos producto actual para sus datos de stock/costo
-        const product = await tx.product.findUnique({ where: { id: item.productId } });
+        const product = await tx.product.findUnique({
+          where: { id: item.productId },
+        });
         if (!product) {
-          this.logger.warn(`Producto ${item.productId} no encontrado en la compra ${purcharseId}`);
+          this.logger.warn(
+            `Producto ${item.productId} no encontrado en la compra ${purcharseId}`,
+          );
           continue;
         }
 
@@ -702,63 +873,95 @@ export class PurchaseService {
         const currentCost = new Decimal(product.cost);
         const incomingQty = new Decimal(item.quantity);
         const incomingCost = new Decimal(item.cost);
-  
+
         // Fórmula: ( (StockActual * CostoActual) + (Entrada * CostoEntrada) ) / (StockActual + Entrada)
         const currentValue = currentStock.mul(currentCost);
         const incomingValue = incomingQty.mul(incomingCost);
         const totalStock = currentStock.add(incomingQty);
-        
+
         let newAverageCost = currentCost; // Por defecto si stock es 0 y entra 0 (raro)
         if (totalStock.gt(0)) {
           newAverageCost = currentValue.add(incomingValue).div(totalStock);
         }
-  
+
         // B. Actualizar SOLO el Costo en el Producto (El stock lo mueve el InventoryService)
         await tx.product.update({
-          where: { id: product.id},
-          data: { cost: newAverageCost } // Solo costo, el stock lo mueve el Kardex abajo
+          where: { id: product.id },
+          data: { cost: newAverageCost }, // Solo costo, el stock lo mueve el Kardex abajo
         });
-  
-        // C. REGISTRAR EN KARDEX (Suma el invetnario de forma auditable)
-        await this.inventoryService.registerMovement(
-          {
-            productId: item.productId,
-            type: MovementType.PURCHASE,
-            quantity: item.quantity,
-            reason: `Recepción Compra #${fresh.invoiceNumber}`,
-            referenceId: fresh.id
-          },
-          userId,
-          tx
-        );
-        
+
+        // C. REGISTRAR EN KARDEX (Suma el inventario de forma auditable)
+        const lot = this.parseLotFields(item.lotNumber, item.expiryDate);
+        if (product.controlled && !lot.lotNumber) {
+          throw new BadRequestException(
+            `El medicamento controlado ${product.name} debe recibirse con lote y caducidad.`,
+          );
+        }
+        if (requireLotForAll && !lot.lotNumber) {
+          throw new BadRequestException(
+            `${product.name} no tiene lote ni caducidad. La configuración de inventario los exige en toda entrada: edita la partida y captúralos antes de recibir.`,
+          );
+        }
+        if (lot.lotNumber && lot.expiryDate) {
+          await this.inventoryBatches.receiveIntoBatch(
+            tx,
+            {
+              productId: item.productId,
+              quantity: item.quantity,
+              unitCost: incomingCost,
+              lotNumber: lot.lotNumber,
+              expiryDate: lot.expiryDate,
+              purchaseItemId: item.id,
+              reason: `Recepción Compra #${fresh.invoiceNumber}`,
+              referenceId: fresh.id,
+            },
+            userId,
+          );
+        } else {
+          await this.inventoryService.registerMovement(
+            {
+              productId: item.productId,
+              type: MovementType.PURCHASE,
+              quantity: item.quantity,
+              reason: `Recepción Compra #${fresh.invoiceNumber}`,
+              referenceId: fresh.id,
+            },
+            userId,
+            tx,
+          );
+        }
+
         // D. Guardar historial si el costo cambió significativamente
         if (!currentCost.equals(newAverageCost)) {
           // Cerramos historial anterior (simplificado para no hacer muy larga la query)
-           await tx.productPriceHistory.create({
-              data: {
-                  productId: product.id,
-                  price: newAverageCost, // Guardamos el nuevo costo promedio
-                  changedById: userId,
-                  startDate: new Date()
-              }
+          await tx.productPriceHistory.create({
+            data: {
+              productId: product.id,
+              price: newAverageCost, // Guardamos el nuevo costo promedio
+              changedById: userId,
+              startDate: new Date(),
+            },
           });
         }
       }
-  
+
       // 2. ACTUALIZAR DEUDA CON PROVEEDOR (con el balance fresco)
       // La deuda con el proveedor solo es oficial cuando recibimos la mercancía.
       if (fresh.balance.gt(0)) {
         await tx.supplier.update({
-            where: { id: fresh.supplierId },
-            data: { balance: { increment: fresh.balance } }
+          where: { id: fresh.supplierId },
+          data: { balance: { increment: fresh.balance } },
         });
       }
 
       // 3. El deliveryStatus ya quedó en RECEIVED en el claim atómico.
-      const receivedPurcharse = await tx.purchase.findUniqueOrThrow({ where: { id: purcharseId } });
+      const receivedPurcharse = await tx.purchase.findUniqueOrThrow({
+        where: { id: purcharseId },
+      });
 
-      this.logger.log(`Compra #${purcharseId} Recibida. Costos promedio actualizados.`);
+      this.logger.log(
+        `Compra #${purcharseId} Recibida. Costos promedio actualizados.`,
+      );
       return receivedPurcharse;
     });
   }
@@ -813,7 +1016,7 @@ export class PurchaseService {
     // referencia para futuras compras: es la práctica contable estándar.
     if (newStock.lte(0)) {
       this.logger.log(
-        `Reversión de costo omitida (stock resultante 0) Producto #${productId}, Compra #${purchaseId}. Se conserva el costo ${currentCost}.`,
+        `Reversión de costo omitida (stock resultante 0) Producto #${productId}, Compra #${purchaseId}. Se conserva el costo ${decimalText(currentCost)}.`,
       );
       return currentCost;
     }
@@ -824,7 +1027,7 @@ export class PurchaseService {
     if (newValue.lt(0)) {
       this.logger.warn(
         `Reversión de costo abortada: valor negativo en Producto #${productId} (Compra #${purchaseId}). ` +
-        `Valor actual: ${currentValue}, a retirar: ${valueToRemove}. Se conserva el costo ${currentCost}. REVISAR MANUALMENTE.`,
+          `Valor actual: ${decimalText(currentValue)}, a retirar: ${decimalText(valueToRemove)}. Se conserva el costo ${decimalText(currentCost)}. REVISAR MANUALMENTE.`,
       );
       return currentCost;
     }
@@ -847,34 +1050,81 @@ export class PurchaseService {
         },
       });
       this.logger.log(
-        `Costo promedio revertido en Producto #${productId}: ${currentCost} -> ${newAverageCost} (Cancelación Compra #${purchaseId})`,
+        `Costo promedio revertido en Producto #${productId}: ${decimalText(currentCost)} -> ${decimalText(newAverageCost)} (Cancelación Compra #${purchaseId})`,
       );
     }
 
     return newAverageCost;
   }
 
+  /**
+   * Lote y caducidad van juntos o no van. Un lote sin fecha (o al revés)
+   * dejaría el Kardex FEFO ciego.
+   */
+  private parseLotFields(
+    lotNumber?: string | null,
+    expiryDate?: string | Date | null,
+  ): { lotNumber: string | null; expiryDate: Date | null } {
+    const lot = lotNumber ? normalizeLotNumber(lotNumber) : '';
+    const expiry = expiryDate ? toUtcDateOnly(expiryDate) : null;
+    const hasLot = lot.length > 0;
+    const hasExpiry = !!expiry && !Number.isNaN(expiry.getTime());
+    if (hasLot !== hasExpiry) {
+      throw new BadRequestException(
+        'El número de lote y la fecha de caducidad deben ir juntos.',
+      );
+    }
+    return {
+      lotNumber: hasLot ? lot : null,
+      expiryDate: hasExpiry ? expiry : null,
+    };
+  }
+
+  private async findBatchIdForPurchaseItem(
+    tx: Prisma.TransactionClient,
+    item: { productId: number; lotNumber: string | null },
+  ): Promise<number | undefined> {
+    if (!item.lotNumber) return undefined;
+    const lot = normalizeLotNumber(item.lotNumber);
+    if (!lot) return undefined;
+    const batch = await tx.productBatch.findUnique({
+      where: {
+        productId_lotNumber: {
+          productId: item.productId,
+          lotNumber: lot,
+        },
+      },
+      select: { id: true },
+    });
+    return batch?.id;
+  }
+
   //Helper: calcular total y subtotal de los items
-  private calculateTotals(items: {quantity: number, cost: number}[]) {
-    const subtotal = items.reduce((s, it) => s.add(new Decimal(it.quantity).mul(new Decimal(it.cost))), new Decimal(0));
+  private calculateTotals(items: { quantity: number; cost: number }[]) {
+    const subtotal = items.reduce(
+      (s, it) => s.add(new Decimal(it.quantity).mul(new Decimal(it.cost))),
+      new Decimal(0),
+    );
     return { subtotal, total: subtotal }; // O aplicar IVA si es necesario
   }
 
   //Validar que exita la compra
   private async validatePurchase(id: number) {
-    const purchase = await  this.prisma.purchase.findUnique({
+    const purchase = await this.prisma.purchase.findUnique({
       where: { id },
-      include: { 
-        items: { 
-          include: { 
-            product: { select: { name: true, sku: true } }
-          } 
+      include: {
+        items: {
+          include: {
+            product: { select: { name: true, sku: true } },
+          },
         },
         payments: true,
         supplier: true,
-      }
-    })
-    if(!purchase) { throw new NotFoundException('Compra no encontrada'); }
+      },
+    });
+    if (!purchase) {
+      throw new NotFoundException('Compra no encontrada');
+    }
 
     return purchase;
   }

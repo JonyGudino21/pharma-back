@@ -17,7 +17,9 @@ Este módulo mantiene el **catálogo de productos**: alta, edición, baja lógic
 | **Categorías opcionales** | Se envían como array de IDs. En actualización, si se envía `categories`, se reemplazan todas las asignaciones anteriores (delete + create). La primera categoría del array se considera principal. |
 | **Historial de precios** | Cada cambio de precio (creación o PATCH con precio distinto) se registra en `product_price_history` con fecha de inicio y usuario. El front no expone este historial aún; el backend lo persiste para reportes. |
 | **Precio y costo** | Siempre positivos (`@IsPositive()`). Se manejan como Decimal en base de datos. |
-| **Actualización de stock desde PATCH** | El backend permite enviar `stock` en `PATCH /products/:id`. Para auditoría se recomienda no cambiar stock desde la ficha de producto y usar solo el módulo de inventario (ajustes). |
+| **Stock fuera del PATCH** | `PATCH /products/:id` **no** acepta `stock`, `lotNumber` ni `expiryDate` (el `ValidationPipe` responde 400). El stock sólo se mueve por compras, ventas, devoluciones y ajustes de inventario. |
+| **Lote y caducidad del inventario inicial** | Al crear con `stock > 0` se puede enviar `lotNumber` + `expiryDate` (YYYY-MM-DD), juntos. Obligatorios si el producto es `controlled` o si `inventory.requireLotForAll` está activo. |
+| **Campos sensibles (farmacéutico)** | El PHARMACIST no puede quitar la marca de controlado, reescribir el costo promedio ni cambiar el IVA (403). MANAGER/ADMIN sí. |
 
 ---
 
@@ -27,11 +29,12 @@ Este módulo mantiene el **catálogo de productos**: alta, edición, baja lógic
 |--------|------|-------------|-------------------|
 | `POST` | `/products` | Crea un producto (SKU auto, opcional stock inicial vía movimiento). | MANAGER, PHARMACIST |
 | `GET`  | `/products` | Lista productos. Query: `active` (true/false), `page`, `limit`. Sin page/limit devuelve todos. | Cualquier usuario autenticado |
-| `POST` | `/products/search` | Búsqueda por nombre y/o letras iniciales. Body: name, letters[], page, limit. | Cualquier usuario autenticado |
+| `POST` | `/products/search` | Búsqueda por nombre **o SKU (parcial)** y/o letras iniciales. Body: name, letters[], active (bool, opcional), page, limit. | Cualquier usuario autenticado |
 | `GET`  | `/products/sku/:sku` | Obtiene un producto por SKU. | Cualquier usuario autenticado |
 | `GET`  | `/products/barcode/:barcode` | Obtiene un producto por código de barras (escáner POS). | Cualquier usuario autenticado |
 | `GET`  | `/products/:id` | Obtiene un producto por ID (con categorías). | Cualquier usuario autenticado |
-| `PATCH`| `/products/:id` | Actualiza producto (parcial). Incluye categorías, precio, barcode, stock, etc. | MANAGER, PHARMACIST |
+| `PATCH`| `/products/:id` | Actualiza producto (parcial). Incluye categorías, precio, barcode, etc. (**no** stock). | MANAGER, PHARMACIST |
+| `PATCH`| `/products/tax-category` | Asignación masiva de tratamiento de IVA (ver "IVA por producto"). | MANAGER |
 | `DELETE`| `/products/:id` | Desactiva el producto (soft delete: isActive = false). | MANAGER, PHARMACIST |
 
 Todos requieren **JWT**. Donde hay `@Roles`, se aplica además `RolesGuard`.
@@ -141,7 +144,16 @@ Ejemplo con categorías (reemplaza todas):
 - **Listado:** Enviar `active=true` por defecto para el catálogo activo. Para "productos desactivados" usar `active=false`. Paginar con `page` y `limit` cuando haya muchos registros; si no se envían, la respuesta viene en `data.products` sin `data.pagination`.
 - **Búsqueda:** En búsqueda por nombre, usar `POST /products/search` con `name` y opcionalmente `letters` (ej. autocompletado por iniciales). Misma estructura de paginación que el listado.
 - **Creación:** No enviar `sku`; el backend lo genera. Si hay stock inicial, enviar `stock`; el backend crea el movimiento. Mostrar el SKU generado en la respuesta para copiar o mostrar en etiquetas.
-- **Edición:** En PATCH no hace falta enviar todos los campos; solo los que cambian. Si se envían `categories`, se reemplazan todas. Cuidado con `stock` en PATCH: para trazabilidad es mejor no permitir editar stock desde la ficha y usar solo ajustes de inventario.
+- **Edición:** En PATCH no hace falta enviar todos los campos; solo los que cambian. Si se envían `categories`, se reemplazan todas. No enviar `stock` en PATCH (400): los cambios de stock van por ajuste de inventario.
 - **Eliminación:** Explicar al usuario que "eliminar" desactiva el producto (no se borra); seguirá apareciendo en ventas/compras históricas. Opcional: filtro "Incluir inactivos" en listados.
 - **Decimales:** Precios y costos pueden venir como string (Decimal). Formatear en front para moneda (ej. dos decimales, símbolo de moneda).
 - **Categorías:** En formularios, cargar categorías desde el módulo Category y enviar array de IDs. El backend devuelve productos con `categories` anidadas (objeto category con id, name, etc.) para mostrar nombres en la UI.
+
+## IVA por producto (desde v1.1)
+
+- `Product.taxCategory`: `GENERAL` (tasa de Configuración › Impuestos: 16 % u 8 %), `ZERO` (0 %),
+  `EXEMPT` (exento; 0 % pero distinto para el SAT). Default de BD: `ZERO` (catálogo de medicinas).
+- Alta sin `taxCategory` → `taxes.defaultCategory`. Edición: sólo MANAGER/ADMIN pueden cambiarlo (403 al farmacéutico).
+- `PATCH /products/tax-category` (MANAGER) `{ taxCategory, categoryId? | productIds? }`: asignación masiva,
+  sólo toca los que tenían otro tratamiento. No re-precia; las ventas cerradas conservan su tasa.
+  Log `event=product.tax_category_bulk`.

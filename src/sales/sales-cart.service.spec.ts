@@ -1,0 +1,310 @@
+import { Test, TestingModule } from '@nestjs/testing';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { Decimal } from '@prisma/client/runtime/library';
+import { SalesService } from './sales.service';
+import { PrismaService } from '../../prisma/prisma.service';
+import { InventoryService } from '../inventory/inventory.service';
+import { InventoryBatchesService } from '../inventory/inventory-batches.service';
+import { CashShiftService } from '../cash-shift/cash-shift.service';
+import { PaymentService } from '../payment/payment.service';
+import { argDe, dataDe } from '../common/testing/mock-inspect.util';
+import { SettingsService } from '../settings/settings.service';
+import { createSettingsMock } from '../common/testing/settings.mock';
+
+/**
+ * Contrato del CARRITO ATÓMICO (Fase 1 · hallazgos C-1, C-2, A-4).
+ *
+ * No requiere base de datos: lo que se fija aquí es la FORMA de las sentencias.
+ * Si alguien vuelve al patrón read-modify-write (leer cantidad, sumar en memoria
+ * y escribir el total), estas pruebas fallan.
+ *
+ * El bug que previenen: 20 escaneos del mismo producto en menos de un segundo
+ * registraban 1 unidad. Se entregaba mercancía que nunca se cobró.
+ */
+describe('SalesService — carrito atómico', () => {
+  let service: SalesService;
+
+  const tx = {
+    sale: {
+      findUnique: jest.fn(),
+      findUniqueOrThrow: jest.fn(),
+      update: jest.fn(),
+      updateMany: jest.fn(),
+    },
+    saleItem: {
+      upsert: jest.fn(),
+      update: jest.fn(),
+      findUniqueOrThrow: jest.fn(),
+      aggregate: jest.fn(),
+      findMany: jest.fn(),
+      findFirst: jest.fn(),
+      delete: jest.fn(),
+    },
+  };
+
+  const mockPrisma = {
+    $transaction: jest.fn((cb: (client: typeof tx) => unknown) => cb(tx)),
+    product: { findUnique: jest.fn() },
+    clientProductPrice: { findUnique: jest.fn() },
+    sale: { findUnique: jest.fn() },
+  };
+
+  const mockInventory = {
+    registerMovement: jest.fn(),
+    lockProductRow: jest.fn(),
+  };
+  const mockBatches = {
+    consumeForSale: jest.fn(),
+    restoreFromSaleItem: jest.fn(),
+    getSellableQuantity: jest.fn(),
+    writeControlledLog: jest.fn(),
+  };
+  const mockCashShift = { getCurrentShift: jest.fn() };
+  const mockPayment = {
+    applyToSale: jest.fn(),
+    decreaseClientDebt: jest.fn(),
+    resolveCashShiftId: jest.fn(),
+  };
+
+  const ventaDraft = {
+    id: 10,
+    clientId: null as number | null,
+    flowStatus: 'DRAFT',
+    status: 'PENDING',
+    paidAmount: new Decimal(0),
+    balance: new Decimal(0),
+    total: new Decimal(0),
+  };
+
+  const producto = {
+    id: 55,
+    name: 'Paracetamol 500mg',
+    isActive: true,
+    price: new Decimal(50),
+    cost: new Decimal(20),
+    taxCategory: 'ZERO',
+  };
+
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        SalesService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: InventoryService, useValue: mockInventory },
+        { provide: InventoryBatchesService, useValue: mockBatches },
+        { provide: CashShiftService, useValue: mockCashShift },
+        { provide: PaymentService, useValue: mockPayment },
+        { provide: SettingsService, useValue: createSettingsMock() },
+      ],
+    }).compile();
+
+    service = module.get<SalesService>(SalesService);
+    jest.clearAllMocks();
+
+    mockPrisma.sale.findUnique.mockResolvedValue(ventaDraft);
+    mockPrisma.product.findUnique.mockResolvedValue(producto);
+    mockPrisma.clientProductPrice.findUnique.mockResolvedValue(null);
+
+    tx.saleItem.upsert.mockResolvedValue({ id: 77 });
+    // Tras el upsert, la BD ya consolidó la cantidad.
+    tx.saleItem.findUniqueOrThrow.mockResolvedValue({
+      id: 77,
+      quantity: 3,
+      price: new Decimal(50),
+      discountPercent: new Decimal(0),
+      taxRate: new Decimal(0),
+    });
+    // Líneas ya guardadas que usa el recálculo de totales.
+    tx.saleItem.findMany.mockResolvedValue([
+      {
+        price: new Decimal(50),
+        quantity: 3,
+        discount: new Decimal(0),
+        subtotal: new Decimal(150),
+        taxAmount: new Decimal(0),
+        taxRate: new Decimal(0),
+      },
+    ]);
+    tx.sale.findUniqueOrThrow.mockResolvedValue({ paidAmount: new Decimal(0) });
+    tx.sale.update.mockResolvedValue(ventaDraft);
+    mockBatches.getSellableQuantity.mockResolvedValue({
+      stock: 100,
+      sellable: 100,
+      expired: 0,
+      name: producto.name,
+      controlled: false,
+    });
+  });
+
+  describe('acumulación de cantidad', () => {
+    it('usa upsert con increment: la suma la hace la base de datos', async () => {
+      await service.addItem(10, { productId: 55, quantity: 1 });
+
+      expect(tx.saleItem.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { saleId_productId: { saleId: 10, productId: 55 } },
+          update: { quantity: { increment: 1 } },
+        }),
+      );
+    });
+
+    it('NUNCA escribe una cantidad absoluta calculada en memoria', async () => {
+      await service.addItem(10, { productId: 55, quantity: 1 });
+
+      // La única actualización permitida sobre la línea es la del subtotal.
+      const updates = tx.saleItem.update.mock.calls as Array<
+        [{ data: Record<string, unknown> }]
+      >;
+      for (const [arg] of updates) {
+        expect(arg.data).not.toHaveProperty('quantity');
+      }
+    });
+
+    it('recalcula el subtotal sobre la cantidad ya consolidada por la BD', async () => {
+      // La BD reporta 3 unidades acumuladas a $50 => $150
+      await service.addItem(10, { productId: 55, quantity: 1 });
+
+      const { where } = argDe<{ where: unknown }>(tx.saleItem.update);
+      expect(where).toEqual({ id: 77 });
+      const data = dataDe<{ subtotal: Decimal }>(tx.saleItem.update);
+      expect(data.subtotal.toString()).toBe('150');
+    });
+
+    it('crea la línea con la cantidad inicial cuando el producto no estaba', async () => {
+      await service.addItem(10, { productId: 55, quantity: 4 });
+
+      const { create } = argDe<{ create: Record<string, unknown> }>(
+        tx.saleItem.upsert,
+      );
+      expect(create).toMatchObject({ productId: 55, quantity: 4 });
+    });
+  });
+
+  describe('descuento e IVA de la línea', () => {
+    it('al acumular conserva el % de descuento y la tasa congelados en la línea', async () => {
+      tx.saleItem.findUniqueOrThrow.mockResolvedValue({
+        id: 77,
+        quantity: 3,
+        price: new Decimal(116),
+        discountPercent: new Decimal(10),
+        taxRate: new Decimal(0.16),
+      });
+
+      await service.addItem(10, { productId: 55, quantity: 1 });
+
+      // 3 × 116 = 348 − 10 % = 313.20, que contiene 43.20 de IVA
+      const data = dataDe<{
+        discount: Decimal;
+        subtotal: Decimal;
+        taxAmount: Decimal;
+      }>(tx.saleItem.update);
+      expect(data.discount.toFixed(2)).toBe('34.80');
+      expect(data.subtotal.toFixed(2)).toBe('313.20');
+      expect(data.taxAmount.toFixed(2)).toBe('43.20');
+    });
+
+    it('un producto GENERAL nace con la tasa vigente (16 %) congelada', async () => {
+      mockPrisma.product.findUnique.mockResolvedValue({
+        ...producto,
+        price: new Decimal(116),
+        taxCategory: 'GENERAL',
+      });
+      await service.addItem(10, { productId: 55, quantity: 1 });
+      const { create } = argDe<{
+        create: { taxRate: Decimal; taxAmount: Decimal };
+      }>(tx.saleItem.upsert);
+      expect(create.taxRate.toFixed(2)).toBe('0.16');
+      expect(create.taxAmount.toFixed(2)).toBe('16.00');
+    });
+  });
+
+  describe('validaciones de la línea', () => {
+    it('rechaza un producto inactivo', async () => {
+      mockPrisma.product.findUnique.mockResolvedValue({
+        ...producto,
+        isActive: false,
+      });
+      await expect(
+        service.addItem(10, { productId: 55, quantity: 1 }),
+      ).rejects.toThrow(NotFoundException);
+      expect(tx.saleItem.upsert).not.toHaveBeenCalled();
+    });
+
+    it('rechaza un producto inexistente', async () => {
+      mockPrisma.product.findUnique.mockResolvedValue(null);
+      await expect(
+        service.addItem(10, { productId: 999, quantity: 1 }),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('existencias al armar el carrito (mismo criterio que el cierre)', () => {
+    it('valida contra la cantidad YA consolidada de la línea', async () => {
+      // La BD reporta 3 unidades acumuladas: con sólo 2 vendibles se rechaza
+      // aunque se pidiera agregar 1.
+      mockBatches.getSellableQuantity.mockResolvedValue({
+        stock: 2,
+        sellable: 2,
+        expired: 0,
+        name: producto.name,
+        controlled: false,
+      });
+      await expect(
+        service.addItem(10, { productId: 55, quantity: 1 }),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockBatches.getSellableQuantity).toHaveBeenCalledWith(55, tx);
+    });
+
+    it('rechaza al agregar si no alcanza lo vendible', async () => {
+      mockBatches.getSellableQuantity.mockResolvedValue({
+        stock: 2,
+        sellable: 2,
+        expired: 0,
+        name: producto.name,
+        controlled: false,
+      });
+      await expect(
+        service.addItem(10, { productId: 55, quantity: 1 }),
+      ).rejects.toThrow(
+        'Stock insuficiente para Paracetamol 500mg. Disponible: 2',
+      );
+      // Se lanza dentro de la transacción: el upsert se deshace.
+      expect(tx.saleItem.update).not.toHaveBeenCalled();
+    });
+
+    it('un controlado sin lotes vigentes se rechaza AL AGREGAR con instrucción', async () => {
+      mockBatches.getSellableQuantity.mockResolvedValue({
+        stock: 65,
+        sellable: 0,
+        expired: 0,
+        name: 'Amoxicilina',
+        controlled: true,
+      });
+      await expect(
+        service.addItem(10, { productId: 55, quantity: 1 }),
+      ).rejects.toThrow(
+        /Amoxicilina es un medicamento controlado y no tiene lotes vigentes/,
+      );
+    });
+  });
+
+  describe('balance con pagado fresco (A-4)', () => {
+    it('relee paidAmount DENTRO de la transacción, no desde la lectura previa', async () => {
+      // La venta se leyó fuera de la transacción con paidAmount 0, pero entre
+      // esa lectura y el recálculo entró un abono de $100.
+      tx.sale.findUniqueOrThrow.mockResolvedValue({
+        paidAmount: new Decimal(100),
+      });
+
+      await service.addItem(10, { productId: 55, quantity: 1 });
+
+      // El balance debe descontar el abono real ($150 - $100), no ignorarlo.
+      expect(tx.sale.findUniqueOrThrow).toHaveBeenCalledWith({
+        where: { id: 10 },
+        select: { paidAmount: true },
+      });
+      const data = dataDe<{ balance: Decimal }>(tx.sale.update);
+      expect(data.balance.toString()).toBe('50');
+    });
+  });
+});

@@ -116,3 +116,26 @@ Todos requieren **JWT**. Paginación en `GET /`: sin `page`/`limit` devuelve tod
 - **Listado de turnos:** Filtros por usuario (si puede ver todos), estado, rango de fechas. Paginación cuando haya muchos registros. Respuesta: `data.shifts` y, con paginación, `data.pagination`.
 - **Decimales:** Montos (initialAmount, realAmount, expected, difference, etc.) pueden venir como Decimal (string en JSON). Formatear para moneda.
 - **Variable de entorno:** El umbral de tolerancia (`TOLERANCE_THRESHOLD`) está en el backend; el front no lo necesita para el flujo, pero puede mostrar un mensaje genérico cuando `status === AUDIT_REQUIRED`.
+
+## Configuración › Caja (desde v1.1)
+
+- **Tolerancia del arqueo:** `cash.closeTolerance` (antes `TOLERANCE_THRESHOLD`, que ahora sólo es
+  el valor de fábrica). Ver `SETTINGS_MODULE.md`.
+- **Cierre ciego (`cash.blindClose`):** con el ajuste activo, `POST /cash-shift/close` responde al
+  CAJERO/FARMACÉUTICO `{ blind: true, summary: { initial, real } }`, sin esperado, diferencia ni
+  estado. El arqueo completo se guarda igual. `GET /cash-shift` (historial propio) devuelve
+  `expectedAmount`/`difference` en `null` y `AUDIT_REQUIRED` como `CLOSED`. Gerencia ve todo.
+- **Estado del cajón:** `GET /cash-shift/current-shift` agrega
+  `drawer: { limit, overLimit, cashOnHand, blindClose }`. `cashOnHand` (efectivo estimado)
+  **sólo** llega a MANAGER/ADMIN: si el cajero viera en vivo cuánto "debería" haber, contaría
+  hacia ese número. `overLimit` se enciende cuando el efectivo rebasa `cash.maxCashInDrawer`.
+- La fórmula del esperado vive en un solo método (`computeCashPosition`) usado por el cierre y por
+  el aviso de límite.
+
+## Aperturas de cajón sin venta (desde v1.1)
+
+- `POST /cash-shift/drawer-events` (MANAGER) `{ kind: MANUAL|TEST, reason, terminal? }` → `CashDrawerEvent`
+  ligado al turno abierto si lo hay. El front manda el pulso al cajón SÓLO si esto responde OK.
+- `GET /cash-shift/drawer-events?page&limit` (MANAGER) y `GET /cash-shift/:id` incluye `drawerEvents`.
+- Cobros en efectivo abren el cajón desde el perfil de la caja (front); esos no se registran aparte:
+  la venta ya es el registro.

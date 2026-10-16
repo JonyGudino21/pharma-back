@@ -56,6 +56,11 @@ model Product {
   minStock       Int @default(5)
   price          Decimal            @db.Decimal(10, 2)     // Precio de VENTA al público
   cost           Decimal            @db.Decimal(10, 2)     // Costo promedio actual
+  // Tratamiento de IVA. El precio de venta es SIEMPRE con IVA incluido (LFPC
+  // art. 7 Bis): el impuesto se desglosa hacia dentro. ZERO por defecto porque
+  // el grueso del catálogo son medicinas (LIVA art. 2o.-A); perfumería,
+  // refrescos, jugos y chicles deben marcarse GENERAL.
+  taxCategory    TaxCategory        @default(ZERO)
 
   isActive       Boolean            @default(true)
   createdAt      DateTime           @default(now())
@@ -70,10 +75,13 @@ model Product {
   clientPrice               ClientProductPrice[]
   clientPriceHistory        ClientProductPriceHistory[]
   movements                 InventoryMovement[]
+  batches                   ProductBatch[]
+  controlledLogs            ControlledSaleLog[]
 
   @@index([name])
   @@index([sku])
   @@index([barcode])
+  @@index([controlled])
 }
 
 model ProductPriceHistory {
@@ -111,9 +119,14 @@ model Sale {
   paidAmount       Decimal       @db.Decimal(12, 2) @default(0) // Cuánto han pagado
   balance          Decimal       @db.Decimal(12, 2) @default(0) // Cuánto deben (Deuda)
 
+  // Descuentos e impuestos. `subtotal` = suma bruta (precio × cantidad),
+  // `total` = subtotal − discountTotal. El IVA va INCLUIDO en `total`.
+  discountTotal    Decimal       @db.Decimal(12, 2) @default(0)
+  taxTotal         Decimal       @db.Decimal(12, 2) @default(0)
+
   // Snapshot de utilidad
   totalCost        Decimal       @db.Decimal(12, 2) @default(0) // Suma del costo de los items al momento de venta
-  profit           Decimal       @db.Decimal(12, 2) @default(0) // total - totalCost (Sin impuestos)
+  profit           Decimal       @db.Decimal(12, 2) @default(0) // total - taxTotal - totalCost (sin IVA)
 
   invoiceNumber    String?       @unique   //AAA010101AAA202401000000001  Para CFDI 4.0 en México
   flowStatus       SaleFlowStatus @default(DRAFT)
@@ -128,11 +141,22 @@ model Sale {
   payments         SalePayment[]
   saleReturn       SaleReturn[]
   saleRefunds      SaleRefund[]
+  receiptPrints    SaleReceiptPrint[]
+  controlledLogs   ControlledSaleLog[]
 
   @@index([createdAt])
   @@index([invoiceNumber])
   @@index([status])
   @@index([paymentMethod])
+  @@index([cashShiftId])
+  @@index([clientId])
+  @@index([userId])
+  @@index([flowStatus])
+
+  // Recuperación del carrito en curso (GET /sales/draft). Corre en cada carga
+  // del POS: sin el compuesto, filtrar por (userId, flowStatus) obligaba a
+  // ordenar en memoria todo el histórico del cajero para devolver una fila.
+  @@index([userId, flowStatus, createdAt])
 }
 
 model SaleItem {
@@ -144,13 +168,34 @@ model SaleItem {
   productId     Int
 
   quantity      Int
-  price         Decimal     @db.Decimal(10, 2) //Precio aplicado
+  price         Decimal     @db.Decimal(10, 2) //Precio aplicado (con IVA)
+  // Importe descontado de la línea (no por unidad). subtotal = price × qty − discount.
   discount      Decimal     @db.Decimal(10, 2) @default(0)
   subtotal      Decimal     @db.Decimal(10, 2)
+
+  // Descuento auditado: qué porcentaje, por qué, quién lo aplicó y quién lo
+  // autorizó si rebasaba el tope de su rol.
+  discountPercent        Decimal  @db.Decimal(5, 2) @default(0)
+  discountReason         String?
+  discountAppliedBy      User?    @relation("SaleItemDiscountAppliedBy", fields: [discountAppliedById], references: [id])
+  discountAppliedById    Int?
+  discountAuthorizedBy   User?    @relation("SaleItemDiscountAuthorizedBy", fields: [discountAuthorizedById], references: [id])
+  discountAuthorizedById Int?
+
+  // Impuesto CONGELADO al vender: tasa efectiva (0.16, 0.08, 0) y monto
+  // incluido en `subtotal`. Si mañana cambia la tasa, la venta de hoy no cambia.
+  taxRate       Decimal     @db.Decimal(5, 4) @default(0)
+  taxAmount     Decimal     @db.Decimal(10, 2) @default(0)
 
   // Guardamos cuánto costaba este producto HOY para calcular ganancia histórica
   costAtSale    Decimal     @db.Decimal(10, 2)
 
+  batches       SaleItemBatch[]
+
+  // Una sola línea por producto dentro de una venta.
+  // Habilita el upsert atómico de addItem: sin esta restricción, dos escaneos
+  // simultáneos del mismo producto creaban dos líneas y se perdían unidades.
+  @@unique([saleId, productId])
   @@index([saleId])
   @@index([productId])
 }
@@ -169,10 +214,19 @@ model SalePayment {
   cashShiftId   Int?
   isDeposit     Boolean     @default(true) // true = Pago, false = Reembolso
 
+  // Clave de idempotencia enviada por el cliente (header Idempotency-Key).
+  // Si una respuesta se pierde y el cajero reintenta, el UNIQUE impide un
+  // segundo cobro: el reintento devuelve el pago ya registrado.
+  // Nullable para no romper los pagos históricos ni los abonos internos.
+  idempotencyKey String?    @unique
+
   createdAt     DateTime    @default(now())
 
   @@index([saleId])
   @@index([method])
+  // Lo usa el `aggregate` de CADA cierre de caja para sumar el efectivo del
+  // turno. Sin índice, cerrar caja recorre todos los pagos históricos.
+  @@index([cashShiftId])
 }
 
 model SaleReturn { 
@@ -189,6 +243,7 @@ model SaleReturn {
 
   items          SaleReturnItem[]
   refund         SaleRefund[]
+  @@index([saleId])
 }
 
 model SaleReturnItem {
@@ -203,13 +258,20 @@ model SaleReturnItem {
   unitPrice     Decimal   @db.Decimal(10, 2)
   subtotal      Decimal   @db.Decimal(12, 2)
   reason        String?
+  @@index([saleItemId])
+  @@index([saleReturnId])
 }
 
 model SaleRefund {
   id           Int        @id @default(autoincrement())
 
+  // SIN @unique desde v1: una devolución de una venta pagada con varios medios
+  // (parte tarjeta, parte efectivo) genera UN reembolso POR MEDIO. Con el
+  // UNIQUE sólo cabía uno y todo se reembolsaba en efectivo, sacando del cajón
+  // dinero que había entrado por la terminal. La relación ya estaba declarada
+  // como lista (`SaleReturn.refund SaleRefund[]`); ahora la base coincide.
   saleReturn   SaleReturn @relation(fields: [saleReturnId], references: [id])
-  saleReturnId Int        @unique
+  saleReturnId Int
   sale         Sale       @relation(fields: [saleId], references: [id])
   saleId       Int
 
@@ -218,6 +280,8 @@ model SaleRefund {
   reference    String?
 
   createdAt    DateTime  @default(now())
+  @@index([saleId])
+  @@index([saleReturnId])
 }
 
 //TODO: Registrar el vuelto en un futuro: CashMovement, CashMovementType, CashMovementCategory 
@@ -277,12 +341,124 @@ model User {
   token                     UserToken[]
   saleReturn                SaleReturn[]
   cashData                  CashShift[]
+  saleReceiptPrints         SaleReceiptPrint[]
+  controlledSaleLogs        ControlledSaleLog[]
+  settingsUpdated           AppSetting[]      @relation("AppSettingUpdatedBy")
+  settingsChanges           AppSettingAudit[] @relation("AppSettingAuditChangedBy")
+  discountsApplied          SaleItem[]        @relation("SaleItemDiscountAppliedBy")
+  discountsAuthorized       SaleItem[]        @relation("SaleItemDiscountAuthorizedBy")
+  cashDrawerEvents          CashDrawerEvent[]
 
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
 
   @@index([userName])
   @@index([email])
+}
+
+// Ajustes de operación, UNA fila por sección ("inventory", "cash").
+//
+// El contenido (`value`) se valida en código contra la definición tipada de
+// cada sección (src/settings/definitions). Así, agregar un ajuste nuevo es
+// agregar un campo con su valor por defecto: sin migración.
+//
+// `version` es el bloqueo optimista: dos gerentes editando a la vez no se
+// pisan en silencio; el segundo recibe 409 y recarga.
+model AppSetting {
+  namespace   String   @id
+  value       Json
+  version     Int      @default(1)
+
+  updatedBy   User?    @relation("AppSettingUpdatedBy", fields: [updatedById], references: [id])
+  updatedById Int?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// Bitácora INMUTABLE de cambios de configuración: una fila por ajuste cambiado.
+// La tolerancia del arqueo o el criterio de caducidad son controles
+// antifraude y sanitarios: "quién lo cambió y cuándo" tiene que poder
+// responderse en una auditoría.
+model AppSettingAudit {
+  id          Int      @id @default(autoincrement())
+  namespace   String
+  key         String
+  oldValue    Json?
+  newValue    Json
+
+  changedBy   User     @relation("AppSettingAuditChangedBy", fields: [changedById], references: [id])
+  changedById Int
+  changedAt   DateTime @default(now())
+
+  @@index([namespace, changedAt])
+}
+
+// Una sola empresa por instalación. `singletonKey` impide que un GET
+// concurrente al primer arranque cree dos fichas fiscales.
+model Company {
+  id           Int      @id @default(autoincrement())
+  singletonKey String   @unique @default("default")
+
+  legalName    String
+  tradeName    String
+  rfc          String   @default("")
+  fiscalRegime String?
+  address      String   @default("")
+  phone        String?
+  email        String?
+  logoUrl      String?
+  ticketFooter String?  @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  templates ReceiptTemplate[]
+}
+
+model ReceiptTemplate {
+  id           Int     @id @default(autoincrement())
+  company      Company @relation(fields: [companyId], references: [id])
+  companyId    Int
+
+  name         String
+  paperWidthMm Int     @default(58)
+  showLogo     Boolean @default(true)
+  showTaxId    Boolean @default(true)
+  showAddress  Boolean @default(true)
+  showPhone    Boolean @default(true)
+  fontScale    Int     @default(1)
+  layout       Json
+  isDefault    Boolean @default(false)
+  isActive     Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  prints SaleReceiptPrint[]
+
+  @@index([companyId, isDefault])
+  @@index([companyId, isActive])
+}
+
+// Cada pulso de "Imprimir" deja rastro. copyNumber 1 = original, 2+ = copia.
+model SaleReceiptPrint {
+  id          Int              @id @default(autoincrement())
+  sale        Sale             @relation(fields: [saleId], references: [id])
+  saleId      Int
+  printedBy   User             @relation(fields: [printedById], references: [id])
+  printedById Int
+  template    ReceiptTemplate? @relation(fields: [templateId], references: [id])
+  templateId  Int?
+
+  document   PrintDocument @default(TICKET)
+  copyNumber Int
+  channel    PrintChannel
+  printedAt  DateTime     @default(now())
+
+  @@unique([saleId, document, copyNumber])
+  @@index([saleId])
+  @@index([printedById])
 }
 
 model Supplier {
@@ -331,6 +507,8 @@ model Purchase {
   @@index([status])
   @@index([deliveryStatus])
   @@index([invoiceNumber])
+  @@index([supplierId])
+  @@index([createdAt])
 }
 
 model PurchaseItem {
@@ -344,6 +522,15 @@ model PurchaseItem {
   quantity    Int
   cost        Decimal     @db.Decimal(10, 2)  // Precio de COMPRA real de este lote
   subtotal    Decimal     @db.Decimal(12, 2)
+
+  // Lote del fabricante. Obligatorio al recibir un controlado; opcional en el resto
+  // para no bloquear insumos sin caducidad (bolsas, material de curación).
+  lotNumber   String?
+  expiryDate  DateTime?   @db.Date
+
+  batches     ProductBatch[]
+  @@index([purchaseId])
+  @@index([productId])
 }
 
 model PurchasePayment {
@@ -394,6 +581,7 @@ model ClientProductPriceHistory {
 
   startDate   DateTime      @default(now())
   endDate     DateTime?
+  @@index([clientId, productId])
 }
 
 model UserToken {
@@ -402,7 +590,9 @@ model UserToken {
   user          User      @relation(fields: [userId], references: [id])
   userId        Int
 
-  token         String    @unique
+  // sha256 del refresh token. El token en claro NUNCA se persiste: un dump de
+  // esta tabla no debe entregar sesiones usables. Ver TokenService.
+  tokenHash     String    @unique
   type          TokenType @default(REFRESH)
   ipAddress     String?
   userAgent     String?
@@ -414,8 +604,11 @@ model UserToken {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
-  @@index([token])
+  // Sin @@index([tokenHash]): la columna ya es @unique y Postgres crea su propio
+  // índice. El índice extra que existía sobre `token` sólo duplicaba el B-tree y
+  // encarecía cada rotación.
   @@index([userId])
+  @@index([expiresAt])
 }
 
 model CashShift {
@@ -439,6 +632,7 @@ model CashShift {
   notes            String?
 
   transactions     CashTransaction[] // Movimientos de dinero (Entradas/Salidas/Ventas)
+  drawerEvents     CashDrawerEvent[] // Aperturas del cajón SIN venta (auditadas)
   sales            Sale[]            // Ventas ligadas a este turno
 
   @@index([userId])
@@ -485,9 +679,92 @@ model InventoryMovement {
   createdAt        DateTime  @default(now())
   createdBy        Int       // User ID
 
+  batch            ProductBatch? @relation(fields: [batchId], references: [id])
+  batchId          Int?
+
   @@index([productId])
   @@index([createdAt])
   @@index([type])
+  @@index([batchId])
+}
+
+// Existencia física desglosada por lote/caducidad. Product.stock sigue siendo
+// el total cacheado (mutación atómica); la suma de lotes + residual sin lote
+// debe coincidir. Nunca se recalcula el total como SUM en caliente: eso
+// reintroduce el read-modify-write que P0-1 cerró.
+model ProductBatch {
+  id             Int      @id @default(autoincrement())
+  // Restrict, NO Cascade: un lote es un registro financiero y regulatorio.
+  // Con Cascade, un borrado físico de producto destruiría los lotes y dejaría
+  // en NULL el batchId de los asientos del libro de controlados, anulando la
+  // trazabilidad exigida en una inspección. Hoy el borrado es lógico
+  // (isActive = false), así que esto sella una mina latente.
+  product        Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  productId      Int
+  lotNumber      String
+  expiryDate     DateTime @db.Date
+  quantity       Int      @default(0)
+  cost           Decimal  @db.Decimal(10, 2)
+  receivedAt     DateTime @default(now())
+
+  purchaseItem   PurchaseItem? @relation(fields: [purchaseItemId], references: [id])
+  purchaseItemId Int?
+
+  saleItemBatches SaleItemBatch[]
+  movements       InventoryMovement[]
+  controlledLogs  ControlledSaleLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([productId, lotNumber])
+  @@index([productId, expiryDate])
+  @@index([expiryDate])
+}
+
+// Cuántas unidades de cada lote salieron en una línea de venta (split FEFO).
+model SaleItemBatch {
+  id         Int          @id @default(autoincrement())
+  saleItem   SaleItem     @relation(fields: [saleItemId], references: [id], onDelete: Cascade)
+  saleItemId Int
+  batch      ProductBatch @relation(fields: [batchId], references: [id])
+  batchId    Int
+  quantity   Int
+
+  @@unique([saleItemId, batchId])
+  @@index([saleItemId])
+  @@index([batchId])
+}
+
+// Libro de controlados COFEPRIS: bitácora append-only. Nunca se borra una fila;
+// una devolución o destrucción se registra con otro entryType.
+model ControlledSaleLog {
+  id             Int                   @id @default(autoincrement())
+  entryType      ControlledLogEntryType @default(DISPENSE)
+
+  sale           Sale?                 @relation(fields: [saleId], references: [id])
+  saleId         Int?
+  product        Product               @relation(fields: [productId], references: [id])
+  productId      Int
+  batch          ProductBatch?         @relation(fields: [batchId], references: [id])
+  batchId        Int?
+
+  quantity       Int
+  prescriptionNo String?
+  doctorName     String?
+  doctorLicense  String?
+  patientName    String?
+
+  soldBy         User                  @relation(fields: [soldById], references: [id])
+  soldById       Int
+
+  createdAt      DateTime              @default(now())
+
+  @@index([productId, createdAt])
+  @@index([createdAt])
+  @@index([prescriptionNo])
+  @@index([doctorLicense])
+  @@index([saleId])
 }
 
 enum PaymentStatus {
@@ -505,6 +782,41 @@ enum MovementType {
   ADJUSTMENT      // Ajuste de inventario (Robo, Conteo)
   LOSS          // Merma conocida (roto, caducado, robo confirmado) - Gasto
   TRANSFER        // Movimiento entre sucursales (Futuro)
+}
+
+// Aperturas del cajón de dinero que NO vienen de un cobro en efectivo.
+// "Abrir sin venta" es la vía clásica para sacar dinero sin rastro: cada una
+// queda registrada con quién, cuándo, en qué caja y por qué.
+model CashDrawerEvent {
+  id        Int                 @id @default(autoincrement())
+  kind      CashDrawerEventKind
+  reason    String
+  terminal  String?
+
+  user      User                @relation(fields: [userId], references: [id])
+  userId    Int
+  shift     CashShift?          @relation(fields: [shiftId], references: [id])
+  shiftId   Int?
+
+  createdAt DateTime            @default(now())
+
+  @@index([shiftId])
+  @@index([createdAt])
+}
+
+enum CashDrawerEventKind {
+  MANUAL  // Apertura manual (cambio, revisión)
+  TEST    // Prueba desde Configuración › Dispositivos
+}
+
+// Tratamiento de IVA de un producto. La tasa de GENERAL (16 % u 8 % en región
+// fronteriza) sale de Configuración › Impuestos; ZERO y EXEMPT son 0 %, pero
+// NO son lo mismo para el SAT (tasa 0 % acredita, exento no): se distinguen
+// desde ahora para que el CFDI futuro no requiera reclasificar el catálogo.
+enum TaxCategory {
+  GENERAL
+  ZERO
+  EXEMPT
 }
 
 enum ShiftStatus {
@@ -571,4 +883,22 @@ enum PurchaseDeliveryStatus {
   PENDING    // Orden creada, mercancía no ha llegado
   RECEIVED   // Mercancía recibida e Inventario actualizado (Kardex)
   CANCELLED
+}
+
+enum PrintChannel {
+  THERMAL
+  BROWSER
+}
+
+// Qué documento se emitió: ticket térmico o nota de remisión en hoja carta.
+// La numeración de copias (original, copia 2…) es POR DOCUMENTO.
+enum PrintDocument {
+  TICKET
+  REMISSION
+}
+
+enum ControlledLogEntryType {
+  DISPENSE
+  RETURN
+  DESTRUCTION
 }

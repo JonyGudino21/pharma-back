@@ -1,7 +1,18 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, Query, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Patch,
+  Param,
+  Delete,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { ProductService } from './product.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
+import { SetTaxCategoryDto } from './dto/set-tax-category.dto';
 import {
   PaginationWithActiveQueryDto,
   parseQueryActiveFilter,
@@ -13,6 +24,7 @@ import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
+import type { AuthenticatedUser } from 'src/auth/types/authenticated-user.type';
 
 @Controller('products')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -24,13 +36,16 @@ export class ProductController {
    */
   @Post()
   @Roles(UserRole.MANAGER, UserRole.PHARMACIST)
-  async create(@Body() createProductDto: CreateProductDto, @GetUser('id') userId: number) {
+  async create(
+    @Body() createProductDto: CreateProductDto,
+    @GetUser('id') userId: number,
+  ) {
     const res = await this.productService.create(createProductDto, userId);
-    return ApiResponse.ok(res,'Producto creado correctamente');
+    return ApiResponse.ok(res, 'Producto creado correctamente');
   }
 
   /**
-   * [OPERATIVO] Obtiene lista de productos. 
+   * [OPERATIVO] Obtiene lista de productos.
    * Sin @Roles porque el Cajero necesita ver el catálogo.
    */
   @Get()
@@ -46,8 +61,13 @@ export class ProductController {
    */
   @Post('search')
   async search(@Body() searchDto: SearchProductDto) {
-    const { name, letters, ...pagination } = searchDto;
-    const res = await this.productService.search(name, letters, pagination);
+    const { name, letters, active, ...pagination } = searchDto;
+    const res = await this.productService.search(
+      name,
+      letters,
+      pagination,
+      active,
+    );
     return ApiResponse.ok(res, 'Producto encontrado exitosamente');
   }
 
@@ -59,7 +79,7 @@ export class ProductController {
     const res = await this.productService.findBySku(sku);
     return ApiResponse.ok(res, 'Producto encontrado exitosamente');
   }
-  
+
   /**
    * [OPERATIVO/POS] Escáner de código de barras.
    */
@@ -76,12 +96,42 @@ export class ProductController {
   }
 
   /**
+   * [FISCAL] Tratamiento de IVA en bloque (por categoría o lista). Sólo
+   * gerencia. Declarado ANTES de `:id` para que "tax-category" no se lea como id.
+   */
+  @Patch('tax-category')
+  @Roles(UserRole.MANAGER)
+  async setTaxCategory(
+    @Body() dto: SetTaxCategoryDto,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    const res = await this.productService.setTaxCategory(dto, user.id);
+    return ApiResponse.ok(
+      res,
+      res.updated > 0
+        ? `IVA actualizado en ${res.updated} productos`
+        : 'Ningún producto necesitaba cambio',
+    );
+  }
+
+  /**
    * [CATÁLOGO] Actualiza precio, costo o detalles.
    */
   @Patch(':id')
   @Roles(UserRole.MANAGER, UserRole.PHARMACIST)
-  async update(@Param('id') id: number, @Body() updateProductDto: UpdateProductDto, @GetUser('id') userId: number) {
-    const res = await this.productService.update(id, updateProductDto, userId);
+  async update(
+    @Param('id') id: number,
+    @Body() updateProductDto: UpdateProductDto,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    // El rol viaja al servicio: el PATCH está abierto a PHARMACIST, pero
+    // `controlled` y `cost` sólo los puede cambiar gerencia.
+    const res = await this.productService.update(
+      id,
+      updateProductDto,
+      user.id,
+      user.role,
+    );
     return ApiResponse.ok(res, 'Producto actualizado exitosamente');
   }
 

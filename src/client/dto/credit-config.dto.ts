@@ -8,4 +8,3 @@ export class UpdateCreditConfigDto {
   @Min(0)
   creditLimit: number;
 }
-

@@ -1,7 +1,11 @@
-import { IsOptional, IsString } from "class-validator";
-import { PaginationParamsDto } from "src/common/dto/pagination-params.dto";
+import { IsOptional, IsString } from 'class-validator';
+import { PaginationWithActiveQueryDto } from 'src/common/dto/pagination-with-active-query.dto';
 
-export class SearchSupplierDto extends PaginationParamsDto {
+/**
+ * Búsqueda de proveedores. Hereda `active` ('true' | 'false') del listado, para
+ * que el filtro Activos/Inactivos también aplique al buscar.
+ */
+export class SearchSupplierDto extends PaginationWithActiveQueryDto {
   @IsOptional()
   @IsString()
   name?: string;

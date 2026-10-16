@@ -1,32 +1,61 @@
-import {IsString, IsOptional, IsBoolean, IsNumber} from 'class-validator'
-import {UserRole} from '../../user/dto/create-user.dto'
+import {
+  IsBoolean,
+  IsEmail,
+  IsEnum,
+  IsOptional,
+  IsString,
+  Matches,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
+import { PASSWORD_MIN_LENGTH, UserRole } from './create-user.dto';
 
-export class EditUserDto{
+/**
+ * Edición de un usuario por el administrador. Todos los campos son opcionales.
+ *
+ * Antes `role` llevaba `@IsString()` SIN `@IsOptional()`: cualquier PATCH que
+ * no mandara el rol (por ejemplo, sólo reactivar al usuario) respondía 400.
+ * `userName` tenía `@IsOptional()` dos veces y ningún validador de tipo.
+ */
+export class EditUserDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  firstName?: string;
 
-    @IsString()
-    @IsOptional()
-    firstName?: string;
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  lastName?: string;
 
-    @IsString()
-    @IsOptional()
-    lastName?: string;
+  @IsOptional()
+  @IsString()
+  @MinLength(3)
+  @MaxLength(30)
+  @Matches(/^[a-zA-Z0-9._-]+$/, {
+    message:
+      'El usuario sólo puede tener letras, números, punto, guion y guion bajo.',
+  })
+  userName?: string;
 
-    @IsOptional()
-    @IsOptional()
-    userName?: string;
+  @IsOptional()
+  @IsEnum(UserRole, { message: 'Rol inválido.' })
+  role?: UserRole;
 
-    @IsString()
-    role?: UserRole;
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
 
-    @IsOptional()
-    @IsBoolean()
-    isActive?: boolean;
+  @IsOptional()
+  @IsString()
+  @MinLength(PASSWORD_MIN_LENGTH, {
+    message: `La contraseña debe tener al menos ${PASSWORD_MIN_LENGTH} caracteres.`,
+  })
+  @MaxLength(72)
+  password?: string;
 
-    @IsOptional()
-    @IsString()
-    password?: string;
-
-    @IsOptional()
-    @IsString()
-    email?: string;
+  @IsOptional()
+  @IsEmail()
+  @MaxLength(120)
+  email?: string;
 }

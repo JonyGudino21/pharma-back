@@ -1,7 +1,12 @@
-import { IsString, IsNotEmpty, IsEmail, IsOptional, IsInt } from 'class-validator';
+import {
+  IsString,
+  IsNotEmpty,
+  IsEmail,
+  IsOptional,
+  IsInt,
+} from 'class-validator';
 
 export class CreateSupplierDto {
-
   @IsString()
   @IsNotEmpty({ message: 'El nombre del proveedor es requerido' })
   name: string;
@@ -13,7 +18,7 @@ export class CreateSupplierDto {
   @IsString()
   @IsOptional()
   phone?: string;
-  
+
   @IsEmail()
   @IsOptional()
   email?: string;
@@ -21,5 +26,4 @@ export class CreateSupplierDto {
   @IsInt()
   @IsOptional()
   creditDays?: number;
-
 }

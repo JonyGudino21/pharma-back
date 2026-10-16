@@ -56,3 +56,13 @@ pids
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 /generated/prisma
+
+# Respaldos de la base (scripts/backup.js). Un volcado contiene TODOS los datos
+# de la farmacia: clientes, deudas, pacientes del libro de controlados. Nunca
+# debe acabar en git, ni por accidente.
+/backups
+*.dump
+*.sql.gz
+
+# Respaldos de la instalación en la nube (datos reales de la farmacia)
+/deploy/nube/respaldos/

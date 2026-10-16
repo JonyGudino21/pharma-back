@@ -1,0 +1,83 @@
+# PharmaPOS en la nube: base de datos + API + web (Caddy con HTTPS automático).
+#
+# Estructura esperada en el servidor (ver docs/produccion/03-NUBE.md):
+#   /opt/pharmapos/pharma-back    ← este repositorio
+#   /opt/pharmapos/pharma-front   ← el repositorio del front
+#
+# Uso (desde esta carpeta):
+#   cp .env.example .env    # y llena los valores
+#   docker compose up -d --build
+#
+# Sólo el servicio "web" publica puertos (80/443). La base de datos y la API
+# NO son accesibles desde internet: viven en la red interna de Docker.
+
+name: pharmapos
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pharmapos
+      POSTGRES_USER: pharmapos
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Falta DB_PASSWORD en deploy/nube/.env}
+      # Sin TZ a propósito: la base guarda UTC (como escribe Prisma). La app
+      # convierte al día de la farmacia (America/Mexico_City) en el código.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pharmapos -d pharmapos"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ../..
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3005
+      DATABASE_URL: postgresql://pharmapos:${DB_PASSWORD}@db:5432/pharmapos?schema=public
+      JWT_SECRET: ${JWT_SECRET:?Falta JWT_SECRET en deploy/nube/.env}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?Falta JWT_REFRESH_SECRET en deploy/nube/.env}
+      # Mismo origen (Caddy sirve el front y /api): cookies "lax" sin CORS cruzado.
+      FRONTEND_URL: https://${DOMINIO:?Falta DOMINIO en deploy/nube/.env}
+      COOKIE_SECURE: "true"
+      COOKIE_SAME_SITE: lax
+      # Detrás de Caddy: la IP real del cliente viene en X-Forwarded-For
+      # (límite de intentos de inicio de sesión y bitácora).
+      TRUST_PROXY: "true"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      TOLERANCE_THRESHOLD: ${TOLERANCE_THRESHOLD:-20}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  web:
+    build:
+      context: ${FRONT_DIR:-../../../pharma-front}
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      DOMINIO: ${DOMINIO}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+      - "${HTTPS_PORT:-443}:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

@@ -1,22 +1,51 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { PrismaService } from 'prisma/prisma.service';
 import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
 import { NotFoundException } from '@nestjs/common';
-import { MovementType } from '@prisma/client';
+import { MovementType, Prisma, TaxCategory, UserRole } from '@prisma/client';
+import { Decimal } from '@prisma/client/runtime/library';
+import {
+  buildPaginationMeta,
+  resolvePagination,
+} from 'src/common/utils/pagination.util';
+import { InventoryBatchesService } from 'src/inventory/inventory-batches.service';
+import { SettingsService } from 'src/settings/settings.service';
+import {
+  normalizeLotNumber,
+  todayInMexico,
+  toUtcDateOnly,
+} from 'src/inventory/fefo';
 
 @Injectable()
 export class ProductService {
+  private readonly logger = new Logger(ProductService.name);
 
-  constructor(private prisma: PrismaService){}
-  
+  constructor(
+    private prisma: PrismaService,
+    private inventoryBatches: InventoryBatchesService,
+    private settings: SettingsService,
+  ) {}
+
   /**
    * Crea un nuevo producto
    * @param createProductDto DTO de producto a crear
    * @returns El producto creado
    */
   async create(createProductDto: CreateProductDto, userId: number) {
+    // 0. Lote del inventario inicial: se valida ANTES de tocar la base.
+    const inventoryCfg = await this.settings.get('inventory');
+    const initialLot = this.resolveInitialLot(
+      createProductDto,
+      inventoryCfg.requireLotForAll,
+    );
+
     //1. Generar SKU automáticamente
     const sku = await this.generateSKU({
       name: createProductDto.name,
@@ -26,7 +55,6 @@ export class ProductService {
 
     // 2. Transaccion de nacimiento (blindaje)
     return await this.prisma.$transaction(async (tx) => {
-
       // A.Crear el producto (SIEMPRE con stock 0 al inicio)
       const product = await tx.product.create({
         data: {
@@ -39,23 +67,27 @@ export class ProductService {
           presentation: createProductDto.presentation,
           strength: createProductDto.strength,
           stock: 0, // SIEMPRE con stock 0 al inicio, la verdad la dicta el movimiento
-          minStock: createProductDto.minStock ?? 5,
+          // Sin valor explícito, el que definió gerencia en Configuración.
+          minStock: createProductDto.minStock ?? inventoryCfg.defaultMinStock,
+          taxCategory:
+            createProductDto.taxCategory ??
+            (await this.settings.get('taxes')).defaultCategory,
           price: createProductDto.price,
           cost: createProductDto.cost,
           isActive: true,
           categories: createProductDto.categories
             ? {
-              create: createProductDto.categories.map((catId) => ({
-                category: { connect: { id: catId } },
-              })),
-            }
-          : undefined,
+                create: createProductDto.categories.map((catId) => ({
+                  category: { connect: { id: catId } },
+                })),
+              }
+            : undefined,
         },
         include: {
           categories: {
             include: { category: true },
-          }
-        }
+          },
+        },
       });
 
       // B. Crear el historial de precio
@@ -65,24 +97,53 @@ export class ProductService {
           changedById: userId,
           price: createProductDto.price,
           startDate: new Date(),
-        }
+        },
       });
 
       // C. Gestion de stock inicial
       const initialStock = createProductDto.stock ?? 0;
 
-      if(initialStock > 0){
+      if (initialStock > 0 && initialLot) {
+        // Con lote: entra por el MISMO camino que una recepción de compra
+        // (lote único por producto, costo del lote, asiento en el Kardex con
+        // batchId y stock sumado de forma atómica). Así estas unidades quedan
+        // en el FEFO y en la alerta de caducidad desde el primer día.
+        await this.inventoryBatches.receiveIntoBatch(
+          tx,
+          {
+            productId: product.id,
+            quantity: initialStock,
+            unitCost: new Decimal(createProductDto.cost),
+            lotNumber: initialLot.lotNumber,
+            expiryDate: initialLot.expiryDate,
+            purchaseItemId: null,
+            reason: 'Inventario inicial al Crear el producto',
+            referenceId: product.id,
+            movementType: MovementType.ADJUSTMENT,
+          },
+          userId,
+        );
+
+        return await tx.product.findUniqueOrThrow({
+          where: { id: product.id },
+          include: { categories: { include: { category: true } } },
+        });
+      }
+
+      if (initialStock > 0) {
         // Crear movimiento que justifica la exitencia de estas unidades
         await tx.inventoryMovement.create({
           data: {
             productId: product.id,
-            type: MovementType.ADJUSTMENT, 
+            type: MovementType.ADJUSTMENT,
             quantity: initialStock,
             unitCost: createProductDto.cost,
-            totalCost: initialStock * createProductDto.cost,
+            // Decimal y no `*` de JavaScript: 3 × 0.1 da 0.30000000000000004 en
+            // coma flotante, y ese valor queda para siempre en la valuación.
+            totalCost: new Decimal(createProductDto.cost).mul(initialStock),
             reason: 'Inventario inicial al Crear el producto',
             createdBy: userId,
-          }
+          },
         });
 
         // Atualizar el cache de stock del producto
@@ -94,71 +155,157 @@ export class ProductService {
           include: {
             categories: {
               include: { category: true },
-            }
-          }
+            },
+          },
         });
 
         return updatedProduct;
       }
-      
+
       return product;
-    })
+    });
+  }
+
+  /**
+   * Reglas del lote del inventario inicial.
+   *
+   * - Lote y caducidad van juntos: uno sin el otro no identifica nada.
+   * - Un controlado con existencias DEBE traer lote: el libro de controlados
+   *   registra cada salida contra un lote, igual que en la recepción de compras.
+   *   Con `requireLotForAll` (Configuración › Inventario) la regla se extiende
+   *   a todos los productos.
+   * - No se da de alta inventario ya caducado: se vendería o se contaría como
+   *   existencia algo que por ley no puede salir del mostrador.
+   * - Sin stock, el lote no significa nada y se rechaza para no guardar datos
+   *   que el usuario cree registrados.
+   */
+  private resolveInitialLot(
+    dto: CreateProductDto,
+    requireLotForAll: boolean,
+  ): { lotNumber: string; expiryDate: Date } | null {
+    const stock = dto.stock ?? 0;
+    const lot = dto.lotNumber ? normalizeLotNumber(dto.lotNumber) : '';
+    const hasExpiry = !!dto.expiryDate;
+
+    if (lot.length > 0 !== hasExpiry) {
+      throw new BadRequestException(
+        'El número de lote y la fecha de caducidad deben ir juntos.',
+      );
+    }
+
+    if (!lot) {
+      if (stock > 0 && dto.controlled) {
+        throw new BadRequestException(
+          `El medicamento controlado ${dto.name} requiere lote y caducidad para su inventario inicial.`,
+        );
+      }
+      if (stock > 0 && requireLotForAll) {
+        throw new BadRequestException(
+          'La configuración de inventario exige lote y caducidad en toda entrada de mercancía.',
+        );
+      }
+      return null;
+    }
+
+    if (stock <= 0) {
+      throw new BadRequestException(
+        'El lote y la caducidad describen el inventario inicial: indica cuántas unidades entran.',
+      );
+    }
+
+    const expiry = toUtcDateOnly(dto.expiryDate as string);
+    if (Number.isNaN(expiry.getTime())) {
+      throw new BadRequestException('La fecha de caducidad no es válida');
+    }
+    if (expiry.getTime() < todayInMexico().getTime()) {
+      throw new BadRequestException(
+        'La caducidad ya pasó: no se puede dar de alta inventario caducado.',
+      );
+    }
+
+    return { lotNumber: lot, expiryDate: expiry };
+  }
+
+  /**
+   * Asigna el tratamiento de IVA en bloque: a todos los productos de una
+   * categoría (p. ej. "Perfumería" → GENERAL) o a una lista de ids.
+   *
+   * No re-precia nada: el precio sigue siendo el mismo con IVA incluido; sólo
+   * cambia cuánto de ese precio es impuesto. Las ventas ya cerradas conservan
+   * la tasa con que se vendieron.
+   */
+  async setTaxCategory(
+    dto: {
+      taxCategory: TaxCategory;
+      categoryId?: number;
+      productIds?: number[];
+    },
+    userId: number,
+  ) {
+    const hasCategory = dto.categoryId !== undefined;
+    const hasIds = !!dto.productIds?.length;
+    if (hasCategory === hasIds) {
+      throw new BadRequestException(
+        'Indica una categoría o una lista de productos (sólo una de las dos).',
+      );
+    }
+
+    if (hasCategory) {
+      const category = await this.prisma.category.findUnique({
+        where: { id: dto.categoryId },
+        select: { id: true },
+      });
+      if (!category) throw new NotFoundException('Categoría no encontrada');
+    }
+
+    const where: Prisma.ProductWhereInput = hasCategory
+      ? { categories: { some: { categoryId: dto.categoryId } } }
+      : { id: { in: dto.productIds } };
+
+    const res = await this.prisma.product.updateMany({
+      where: { ...where, taxCategory: { not: dto.taxCategory } },
+      data: { taxCategory: dto.taxCategory },
+    });
+
+    this.logger.log(
+      `event=product.tax_category_bulk taxCategory=${dto.taxCategory} ` +
+        `${hasCategory ? `categoryId=${dto.categoryId}` : `productIds=${dto.productIds!.join(',')}`} ` +
+        `updated=${res.count} userId=${userId}`,
+    );
+    return { updated: res.count };
   }
 
   async findAll(active?: boolean, pagination?: PaginationParamsDto) {
-    //Verificar si tiene parametros de paginacion
-    const hasPagination = pagination && (pagination.page !== undefined || pagination.limit !== undefined);
-    const page = hasPagination ? pagination.page ?? 1 : 1;
-    const limit = hasPagination ? pagination.limit ?? 20 : 20;
-    const skip = (page - 1) * limit;
+    // La paginación ya no es opcional: si no llega, se aplica la de por defecto.
+    const paginacion = resolvePagination(pagination);
 
     let whereClause = {};
-    if(active === true){
+    if (active === true) {
       whereClause = { isActive: true };
-    } else if(active === false){
+    } else if (active === false) {
       whereClause = { isActive: false };
-    }
-
-    //Si no tiene parametros de paginacion, devolver todos sin paginar
-    if(!hasPagination){
-      const products = await this.prisma.product.findMany({
-        where: whereClause,
-        orderBy: { name: 'asc' },
-        include: { 
-          categories: { 
-            include: { category: true },
-            orderBy: { order: 'asc' }
-          } 
-        }
-      });
-      return { products };
     }
 
     const [products, total] = await Promise.all([
       this.prisma.product.findMany({
         where: whereClause,
-        skip: skip,
-        take: limit,
+        skip: paginacion.skip,
+        take: paginacion.take,
         orderBy: { name: 'asc' },
-        include: { 
-          categories: { 
+        include: {
+          categories: {
             include: { category: true },
-            orderBy: { order: 'asc' }
-          } 
-        }
+            orderBy: { order: 'asc' },
+          },
+        },
       }),
-      this.prisma.product.count({ where: whereClause })
+      this.prisma.product.count({ where: whereClause }),
     ]);
 
     return {
       products,
-      pagination: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit)
-      }
-    }
+      pagination: buildPaginationMeta(total, paginacion),
+    };
   }
 
   /**
@@ -169,18 +316,18 @@ export class ProductService {
   async findOne(id: number) {
     const product = await this.prisma.product.findUnique({
       where: { id },
-      include: { 
-        categories: { 
+      include: {
+        categories: {
           include: { category: true },
-          orderBy: { order: 'asc' }
-        } 
-      }
+          orderBy: { order: 'asc' },
+        },
+      },
     });
-    
+
     if (!product) {
       throw new NotFoundException('Producto no encontrado');
     }
-    
+
     return product;
   }
 
@@ -191,16 +338,62 @@ export class ProductService {
    * @param userId ID del usuario que realiza la actualización
    * @returns el producto actualizado o error si no existe
    */
-  async update(id: number, updateProductDto: UpdateProductDto, userId: number) {
+  async update(
+    id: number,
+    updateProductDto: UpdateProductDto,
+    userId: number,
+    role?: UserRole,
+  ) {
     // Validar que el producto existe
     const existingProduct = await this.validateProduct(id);
-    
+
+    // CAMPOS SENSIBLES: sólo gerencia puede CAMBIARLOS.
+    //
+    // El PATCH está abierto a PHARMACIST para que pueda corregir nombres,
+    // presentaciones o precios de venta. Pero dos campos no son "datos de
+    // catálogo":
+    //   - `controlled`: quitar la marca elimina la exigencia de receta y la
+    //     anotación en el libro COFEPRIS. Es una decisión regulatoria.
+    //   - `cost`: es el costo promedio ponderado que mantienen las compras.
+    //     Editarlo a mano falsea la valuación del inventario y la utilidad de
+    //     cada venta desde ese momento.
+    //
+    // Se compara contra el valor ACTUAL, no contra la presencia del campo: el
+    // formulario del front manda la ficha completa en cada guardado, y rechazar
+    // un `cost` idéntico impediría al farmacéutico guardar cualquier cosa.
+    const esGerencia = role === UserRole.MANAGER || role === UserRole.ADMIN;
+    if (!esGerencia) {
+      const cambiaControlado =
+        updateProductDto.controlled !== undefined &&
+        updateProductDto.controlled !== existingProduct.controlled;
+      const cambiaCosto =
+        updateProductDto.cost !== undefined &&
+        !new Decimal(updateProductDto.cost).equals(
+          new Decimal(existingProduct.cost),
+        );
+      // El tratamiento de IVA es una decisión fiscal, no un dato de catálogo:
+      // cambiarlo altera cuánto impuesto se reporta de cada venta.
+      const cambiaIva =
+        updateProductDto.taxCategory !== undefined &&
+        updateProductDto.taxCategory !== existingProduct.taxCategory;
+
+      if (cambiaControlado || cambiaCosto || cambiaIva) {
+        throw new ForbiddenException(
+          cambiaControlado
+            ? 'Sólo un gerente puede cambiar si un medicamento es controlado.'
+            : cambiaCosto
+              ? 'Sólo un gerente puede modificar el costo. El costo se actualiza solo al recibir compras.'
+              : 'Sólo un gerente puede cambiar el tratamiento de IVA de un producto.',
+        );
+      }
+    }
+
     // Validar categorías si se proporcionan
     if (updateProductDto.categories) {
       const categories = await this.prisma.category.findMany({
         where: {
-          id: { in: updateProductDto.categories }
-        }
+          id: { in: updateProductDto.categories },
+        },
       });
       if (categories.length !== updateProductDto.categories.length) {
         throw new BadRequestException('Alguna categoría no existe');
@@ -212,57 +405,59 @@ export class ProductService {
       const existingProductByBarcode = await this.prisma.product.findFirst({
         where: {
           barcode: updateProductDto.barcode,
-          id: { not: id } // Excluir el producto actual
+          id: { not: id }, // Excluir el producto actual
         },
         include: {
           categories: {
-            include: { category: true }
-          }
-        }
+            include: { category: true },
+          },
+        },
       });
       if (existingProductByBarcode) {
         throw new BadRequestException(
-          `El código de barras ya existe en el producto: ${existingProductByBarcode.name} (ID: ${existingProductByBarcode.id}, SKU: ${existingProductByBarcode.sku})`
+          `El código de barras ya existe en el producto: ${existingProductByBarcode.name} (ID: ${existingProductByBarcode.id}, SKU: ${existingProductByBarcode.sku})`,
         );
       }
     }
 
     // Verificar si el precio cambió para registrar en historial
-    const priceChanged = updateProductDto.price && 
+    const priceChanged =
+      updateProductDto.price &&
       updateProductDto.price.toString() !== existingProduct.price.toString();
 
     // Verificar si se debe regenerar el SKU
-    const shouldRegenerateSKU = updateProductDto.name || 
-      updateProductDto.strength !== undefined || 
+    const shouldRegenerateSKU =
+      updateProductDto.name ||
+      updateProductDto.strength !== undefined ||
       updateProductDto.format !== undefined;
 
     let newSku = existingProduct.sku;
-    
+
     if (shouldRegenerateSKU) {
       // Generar nuevo SKU basado en los datos actualizados
       newSku = await this.generateSKU({
         name: updateProductDto.name ?? existingProduct.name,
         strength: updateProductDto.strength ?? '',
-        format: updateProductDto.format ?? ''
+        format: updateProductDto.format ?? '',
       });
 
       // Verificar que el nuevo SKU no exista (excepto para el producto actual)
       const existingProductWithSku = await this.prisma.product.findFirst({
         where: {
           sku: newSku,
-          id: { not: id }
-        }
+          id: { not: id },
+        },
       });
-      
+
       if (existingProductWithSku) {
         throw new BadRequestException(
-          `El nuevo SKU generado ya existe en el producto: ${existingProductWithSku.name} (ID: ${existingProductWithSku.id})`
+          `El nuevo SKU generado ya existe en el producto: ${existingProductWithSku.name} (ID: ${existingProductWithSku.id})`,
         );
       }
     }
 
     // Preparar datos de actualización
-    const updateData: any = {
+    const updateData: Prisma.ProductUpdateInput = {
       name: updateProductDto.name,
       description: updateProductDto.description,
       sku: newSku, // Incluir el SKU actualizado
@@ -271,10 +466,12 @@ export class ProductService {
       format: updateProductDto.format,
       presentation: updateProductDto.presentation,
       strength: updateProductDto.strength,
-      stock: updateProductDto.stock,
+      // `stock` ya no se toca aquí: sólo lo mueven compras, ventas, devoluciones
+      // y ajustes, que dejan asiento en el Kardex. Ver UpdateProductDto.
       minStock: updateProductDto.minStock,
       price: updateProductDto.price,
       cost: updateProductDto.cost,
+      taxCategory: updateProductDto.taxCategory,
       isActive: updateProductDto.isActive,
     };
 
@@ -285,8 +482,8 @@ export class ProductService {
         create: updateProductDto.categories.map((catId, index) => ({
           categoryId: catId,
           isPrimary: index === 0, // La primera categoría es la principal
-          order: index + 1
-        }))
+          order: index + 1,
+        })),
       };
     }
 
@@ -294,11 +491,11 @@ export class ProductService {
     const updatedProduct = await this.prisma.product.update({
       where: { id },
       data: updateData,
-      include: { 
-        categories: { 
+      include: {
+        categories: {
           include: { category: true },
-          orderBy: { order: 'asc' }
-        } 
+          orderBy: { order: 'asc' },
+        },
       },
     });
 
@@ -308,11 +505,11 @@ export class ProductService {
       await this.prisma.productPriceHistory.updateMany({
         where: {
           productId: id,
-          endDate: null
+          endDate: null,
         },
         data: {
-          endDate: new Date()
-        }
+          endDate: new Date(),
+        },
       });
 
       // Crear nuevo registro de historial
@@ -337,8 +534,8 @@ export class ProductService {
   async remove(id: number) {
     await this.validateProduct(id);
     return await this.prisma.product.update({
-      where: {id},
-      data: {isActive: false}
+      where: { id },
+      data: { isActive: false },
     });
   }
 
@@ -349,67 +546,57 @@ export class ProductService {
    * @param pagination parametros de paginacion (opcional)
    * @returns el producto encontrado o error si no existe
    */
-  async search(name: string, letters?: string[], pagination?: PaginationParamsDto) {
-    const hasPagination = pagination && (pagination.page !== undefined || pagination.limit !== undefined)
-    const page = hasPagination ? pagination?.page ?? 1 : 1;
-    const limit = hasPagination ? pagination?.limit ?? 20 : 20;
-    const skip = (page - 1) * limit;
+  async search(
+    name: string,
+    letters?: string[],
+    pagination?: PaginationParamsDto,
+    active?: boolean,
+  ) {
+    const paginacion = resolvePagination(pagination);
 
     const conditions: Array<{ [key: string]: any }> = [];
-    
-    if(name) {
-      conditions.push({ name: { contains: name, mode: 'insensitive' } });
+
+    if (name) {
+      // El mismo texto busca en nombre y en SKU (parcial): en Inventario y en
+      // el POS se escribe tanto "paracetamol" como "PARA-500".
+      conditions.push(
+        { name: { contains: name, mode: 'insensitive' } },
+        { sku: { contains: name, mode: 'insensitive' } },
+      );
     }
-    
-    if(letters && letters.length > 0) {
-      const letterConditions = letters.map(letter => ({
-        name: { startsWith: letter, mode: 'insensitive' }
+
+    if (letters && letters.length > 0) {
+      const letterConditions = letters.map((letter) => ({
+        name: { startsWith: letter, mode: 'insensitive' },
       }));
       conditions.push(...letterConditions);
     }
 
-    const where = conditions.length > 0 ? { OR: conditions } : {};
-
-    //Si no tiene parametros de paginacion, devolver todos sin paginar
-    if(!hasPagination){
-      const products = await this.prisma.product.findMany({
-        where,
-        orderBy: { name: 'asc' },
-        include: { 
-          categories: { 
-            include: { category: true },
-            orderBy: { order: 'asc' }
-          } 
-        }
-      });
-      return { products };
-    }
+    const where = {
+      ...(conditions.length > 0 ? { OR: conditions } : {}),
+      ...(active !== undefined ? { isActive: active } : {}),
+    };
 
     const [products, total] = await Promise.all([
       this.prisma.product.findMany({
         where,
-        skip,
-        take: limit,
+        skip: paginacion.skip,
+        take: paginacion.take,
         orderBy: { name: 'asc' },
-        include: { 
-          categories: { 
+        include: {
+          categories: {
             include: { category: true },
-            orderBy: { order: 'asc' }
-          } 
-        }
+            orderBy: { order: 'asc' },
+          },
+        },
       }),
-      this.prisma.product.count({ where })
+      this.prisma.product.count({ where }),
     ]);
 
     return {
       products,
-      pagination: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit)
-      }
-    }
+      pagination: buildPaginationMeta(total, paginacion),
+    };
   }
 
   /**
@@ -419,15 +606,15 @@ export class ProductService {
    */
   async findBySku(sku: string) {
     const product = await this.prisma.product.findUnique({
-      where: {sku},
+      where: { sku },
       include: {
         categories: {
           include: { category: true },
-          orderBy: { order: 'asc' }
-        }
-      }
+          orderBy: { order: 'asc' },
+        },
+      },
     });
-    if(!product) throw new NotFoundException('Producto no encontrado');
+    if (!product) throw new NotFoundException('Producto no encontrado');
     return product;
   }
 
@@ -438,23 +625,23 @@ export class ProductService {
    */
   async findByBarcode(barcode: string) {
     const product = await this.prisma.product.findUnique({
-      where: {barcode},
+      where: { barcode },
       include: {
         categories: {
           include: { category: true },
-          orderBy: { order: 'asc' }
-        }
-      }
+          orderBy: { order: 'asc' },
+        },
+      },
     });
-    if(!product) throw new NotFoundException('Producto no encontrado');
+    if (!product) throw new NotFoundException('Producto no encontrado');
     return product;
   }
 
-  private async validateProduct(id: number){
+  private async validateProduct(id: number) {
     const product = await this.prisma.product.findUnique({
-      where: {id}
-    })
-    if(!product) throw new NotFoundException('Producto no encontrado');
+      where: { id },
+    });
+    if (!product) throw new NotFoundException('Producto no encontrado');
 
     return product;
   }
@@ -463,202 +650,231 @@ export class ProductService {
     name: string;
     strength: string;
     format: string;
-  }): Promise<string>{
-
-     // 1. Abreviación del nombre (3 letras)
+  }): Promise<string> {
+    // 1. Abreviación del nombre (3 letras)
     const nameCode = this.getNameCode(productData.name);
-    
-    // 2. Concentración 
-    const concentrationCode = productData.strength 
+
+    // 2. Concentración
+    const concentrationCode = productData.strength
       ? this.formatConcentration(productData.strength)
       : '';
-    
+
     // 3. Formato (opcional)
     const formatCode = productData.format
       ? this.getFormatCode(productData.format)
       : 'GEN'; // General por defecto
-    
+
     // 4. Variante numérica
     const variantCode = await this.getNextVariant(
-      nameCode, 
-      concentrationCode, 
-      formatCode
+      nameCode,
+      concentrationCode,
+      formatCode,
     );
-    
+
     // Ensamblar SKU
-    const parts = [nameCode, concentrationCode, formatCode, variantCode]
-      .filter(part => part !== '');
-    
+    const parts = [nameCode, concentrationCode, formatCode, variantCode].filter(
+      (part) => part !== '',
+    );
+
     return parts.join('-');
   }
 
-  private getNameCode(productName: string): string{
+  private getNameCode(productName: string): string {
     // Remover caracteres especiales y espacios
     const cleanName = productName
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '') // Remover acentos
-    .replace(/[^a-zA-Z0-9]/g, '')    // Remover caracteres especiales
-    .toUpperCase();
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '') // Remover acentos
+      .replace(/[^a-zA-Z0-9]/g, '') // Remover caracteres especiales
+      .toUpperCase();
 
-  // Tomar primeras 3 letras significativas
-  if (cleanName.length < 4) return cleanName;
+    // Tomar primeras 3 letras significativas
+    if (cleanName.length < 4) return cleanName;
 
-  // Para nombres compuestos: mejorar la lógica
-  const words = productName.split(' ').filter(word => word.length > 0);
-  
-  if (words.length > 1) {
-    // Palabras comunes que indican variantes (no son el nombre principal)
-    const variantWords = ['COMPUESTO', 'COMPUESTA', 'FORTE', 'PLUS', 'MAX', 'EXTRA', 'SUAVE', 'FORTE', 'PEDIATRICO', 'PEDIATRICA', 'ADULTO', 'ADULTA', 'INFANTIL'];
-    
-    // Separar palabra principal de variantes
-    const mainWords = words.filter(word => !variantWords.includes(word.toUpperCase()));
-    const variantWords_found = words.filter(word => variantWords.includes(word.toUpperCase()));
-    
-    if (mainWords.length > 0) {
-      let mainCode = '';
-      
-      if (mainWords.length === 1) {
-        // Una sola palabra principal: tomar las primeras 4 letras
-        mainCode = mainWords[0].substring(0, 4).toUpperCase();
-      } else if (mainWords.length === 2) {
-        // Dos palabras principales: tomar 2 letras de cada una
-        mainCode = (mainWords[0].substring(0, 2) + mainWords[1].substring(0, 2)).toUpperCase();
+    // Para nombres compuestos: mejorar la lógica
+    const words = productName.split(' ').filter((word) => word.length > 0);
+
+    if (words.length > 1) {
+      // Palabras comunes que indican variantes (no son el nombre principal)
+      const variantWords = [
+        'COMPUESTO',
+        'COMPUESTA',
+        'FORTE',
+        'PLUS',
+        'MAX',
+        'EXTRA',
+        'SUAVE',
+        'FORTE',
+        'PEDIATRICO',
+        'PEDIATRICA',
+        'ADULTO',
+        'ADULTA',
+        'INFANTIL',
+      ];
+
+      // Separar palabra principal de variantes
+      const mainWords = words.filter(
+        (word) => !variantWords.includes(word.toUpperCase()),
+      );
+      const variantWords_found = words.filter((word) =>
+        variantWords.includes(word.toUpperCase()),
+      );
+
+      if (mainWords.length > 0) {
+        let mainCode = '';
+
+        if (mainWords.length === 1) {
+          // Una sola palabra principal: tomar las primeras 4 letras
+          mainCode = mainWords[0].substring(0, 4).toUpperCase();
+        } else if (mainWords.length === 2) {
+          // Dos palabras principales: tomar 2 letras de cada una
+          mainCode = (
+            mainWords[0].substring(0, 2) + mainWords[1].substring(0, 2)
+          ).toUpperCase();
+        } else {
+          // Más de dos palabras principales: tomar primera letra de cada una
+          mainCode = mainWords
+            .map((word) => word.charAt(0))
+            .join('')
+            .substring(0, 4)
+            .toUpperCase();
+        }
+
+        // Si hay variantes, agregar la primera letra de cada variante
+        if (variantWords_found.length > 0) {
+          const variantCode = variantWords_found
+            .map((word) => word.charAt(0))
+            .join('');
+          mainCode = (mainCode + variantCode).substring(0, 4);
+        }
+
+        return mainCode;
       } else {
-        // Más de dos palabras principales: tomar primera letra de cada una
-        mainCode = mainWords.map(word => word.charAt(0)).join('').substring(0, 4).toUpperCase();
+        // Si todas son variantes, usar la lógica original
+        return words
+          .map((word) => word.charAt(0))
+          .join('')
+          .substring(0, 4);
       }
-      
-      // Si hay variantes, agregar la primera letra de cada variante
-      if (variantWords_found.length > 0) {
-        const variantCode = variantWords_found.map(word => word.charAt(0)).join('');
-        mainCode = (mainCode + variantCode).substring(0, 4);
-      }
-      
-      return mainCode;
-    } else {
-      // Si todas son variantes, usar la lógica original
-      return words.map(word => word.charAt(0)).join('').substring(0, 4);
+      //     Identifica palabras principales (no están en variantWords)
+      // Aplica estrategia según cantidad:
+      // 1 palabra: Primeras 4 letras
+      // 2 palabras: 2 letras de cada una
+      // 3+ palabras: Primera letra de cada una
     }
-    //     Identifica palabras principales (no están en variantWords)
-    // Aplica estrategia según cantidad:
-    // 1 palabra: Primeras 4 letras
-    // 2 palabras: 2 letras de cada una
-    // 3+ palabras: Primera letra de cada una
+
+    return cleanName.substring(0, 4);
   }
 
-  return cleanName.substring(0, 4);
-  }
-
-  private formatConcentration(strength: string) : string {
+  private formatConcentration(strength: string): string {
     return strength
       .toUpperCase()
-      .replace(/\s+/g, '')    // Remover espacios
+      .replace(/\s+/g, '') // Remover espacios
       .replace(/[^A-Z0-9]/g, '') // Solo letras y números
-      .substring(0, 10);      // Máximo 10 caracteres
+      .substring(0, 10); // Máximo 10 caracteres
   }
 
   private getFormatCode(format: string): string {
     const formatMap: { [key: string]: string } = {
       // Formas sólidas
-      'Tabletas': 'TAB',
-      'Cápsulas': 'CAP',
-      'Comprimidos': 'COMP',
-      'Grageas': 'GRA',
-      'Pastillas': 'PAS',
-      'Polvo': 'POL',
-      'Granulado': 'GRA',
-      'Efervescente': 'EFE',
-      'Liofilizado': 'LIO',
-      'Óvulo': 'OVU',
-      'Supositorio': 'SUP',
-      'Implante': 'IMP',
-      'Parche': 'PAR',
-      
+      Tabletas: 'TAB',
+      Cápsulas: 'CAP',
+      Comprimidos: 'COMP',
+      Grageas: 'GRA',
+      Pastillas: 'PAS',
+      Polvo: 'POL',
+      Granulado: 'GRA',
+      Efervescente: 'EFE',
+      Liofilizado: 'LIO',
+      Óvulo: 'OVU',
+      Supositorio: 'SUP',
+      Implante: 'IMP',
+      Parche: 'PAR',
+
       // Formas líquidas
-      'Jarabe': 'JAR',
-      'Suspensión': 'SUS',
-      'Emulsión': 'EMU',
-      'Gotas': 'GOT',
-      'Elixir': 'ELI',
-      'Tintura': 'TIN',
-      'Solución': 'SOL',
-      'Inyectable': 'INY',
-      'Infusión': 'INF',
-      'Colirio': 'COL',
-      'Nebulizador': 'NEB',
-      'Spray': 'SPR',
-      'Aerosol': 'AER',
-      'Linimento': 'LIN',
-      
+      Jarabe: 'JAR',
+      Suspensión: 'SUS',
+      Emulsión: 'EMU',
+      Gotas: 'GOT',
+      Elixir: 'ELI',
+      Tintura: 'TIN',
+      Solución: 'SOL',
+      Inyectable: 'INY',
+      Infusión: 'INF',
+      Colirio: 'COL',
+      Nebulizador: 'NEB',
+      Spray: 'SPR',
+      Aerosol: 'AER',
+      Linimento: 'LIN',
+
       // Formas semisólidas
-      'Crema': 'CRE',
-      'Pomada': 'POM',
-      'Gel': 'GEL',
-      'Ungüento': 'UNG',
-      'Pasta': 'PAS',
-      'Emplasto': 'EMP',
-      'Shampoo': 'SHA',
-      'Jabón': 'JAB',
-      'Loción': 'LOC',
-      
+      Crema: 'CRE',
+      Pomada: 'POM',
+      Gel: 'GEL',
+      Ungüento: 'UNG',
+      Pasta: 'PAS',
+      Emplasto: 'EMP',
+      Shampoo: 'SHA',
+      Jabón: 'JAB',
+      Loción: 'LOC',
+
       // Formas especiales
-      'Inhalador': 'INH',
-      'Nebulización': 'NEB',
+      Inhalador: 'INH',
+      Nebulización: 'NEB',
       'Cápsula blanda': 'CAPB',
       'Cápsula dura': 'CAPD',
       'Tableta masticable': 'TABM',
       'Tableta sublingual': 'TABS',
       'Tableta de liberación prolongada': 'TABLP',
       'Comprimido bucal': 'COMPB',
-      
+
       // Dispositivos médicos
-      'Kit': 'KIT',
-      'Paquete': 'PAQ',
-      'Dispositivo': 'DIS',
-      'Sistema': 'SIS',
-      
+      Kit: 'KIT',
+      Paquete: 'PAQ',
+      Dispositivo: 'DIS',
+      Sistema: 'SIS',
+
       // Misceláneos
-      'Gas': 'GAS',
-      'General': 'GEN',
-      'Óptico': 'OPT',
-      'Ótico': 'OTO',
-      'Nasal': 'NAS',
-      'Bucal': 'BUC',
-      'Dental': 'DEN',
-      'Rectal': 'REC',
-      'Vaginal': 'VAG'
+      Gas: 'GAS',
+      General: 'GEN',
+      Óptico: 'OPT',
+      Ótico: 'OTO',
+      Nasal: 'NAS',
+      Bucal: 'BUC',
+      Dental: 'DEN',
+      Rectal: 'REC',
+      Vaginal: 'VAG',
     };
-    
+
     return formatMap[format] || format.substring(0, 3).toUpperCase();
   }
 
   private async getNextVariant(
-    nameCode: string, 
-    concentrationCode: string, 
-    formatCode: string
+    nameCode: string,
+    concentrationCode: string,
+    formatCode: string,
   ): Promise<string> {
     const basePattern = `${nameCode}-${concentrationCode}-${formatCode}`;
-    
+
     const existingProducts = await this.prisma.product.findMany({
       where: {
         sku: {
-          startsWith: basePattern
-        }
+          startsWith: basePattern,
+        },
       },
       orderBy: {
-        sku: 'desc'
+        sku: 'desc',
       },
-      take: 1
+      take: 1,
     });
-    
+
     if (existingProducts.length === 0) {
       return '01';
     }
-    
+
     const lastSKU = existingProducts[0].sku;
     const lastVariant = lastSKU.split('-').pop() || '00';
     const nextVariant = parseInt(lastVariant) + 1;
-    
+
     return nextVariant.toString().padStart(2, '0');
   }
 }

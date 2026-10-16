@@ -1,0 +1,421 @@
+import { Test, TestingModule } from '@nestjs/testing';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
+import { Decimal } from '@prisma/client/runtime/library';
+import { SalesService } from './sales.service';
+import { PrismaService } from '../../prisma/prisma.service';
+import { InventoryService } from '../inventory/inventory.service';
+import { InventoryBatchesService } from '../inventory/inventory-batches.service';
+import { CashShiftService } from '../cash-shift/cash-shift.service';
+import { PaymentService } from '../payment/payment.service';
+import { SettingsService } from '../settings/settings.service';
+import { createSettingsMock } from '../common/testing/settings.mock';
+
+/**
+ * Contrato de DEVOLUCIONES (P0-2). No requiere base de datos.
+ *
+ * Invariantes protegidos:
+ *   - Nunca se devuelve más de lo vendido (descontando devoluciones previas).
+ *   - El reembolso se reparte entre deuda y efectivo sin dejar saldos negativos.
+ *   - La mercancía dañada no descuenta stock dos veces.
+ */
+describe('SalesService — devoluciones', () => {
+  let service: SalesService;
+
+  const tx = {
+    $queryRaw: jest.fn(),
+    sale: {
+      findUnique: jest.fn(),
+      findUniqueOrThrow: jest.fn(),
+      update: jest.fn(),
+      updateMany: jest.fn(),
+    },
+    saleItem: { findMany: jest.fn() },
+    saleReturn: { create: jest.fn() },
+    saleReturnItem: { create: jest.fn(), groupBy: jest.fn() },
+    // Reparto del reembolso por método de pago (v1): el servicio agrupa lo
+    // cobrado y lo ya reembolsado por método para devolver por el mismo medio.
+    saleRefund: { create: jest.fn(), groupBy: jest.fn() },
+    salePayment: { groupBy: jest.fn() },
+    cashTransaction: { create: jest.fn() },
+    client: { update: jest.fn() },
+  };
+
+  const mockPrisma = {
+    $transaction: jest.fn((cb: (client: typeof tx) => unknown) => cb(tx)),
+  };
+  const mockInventory = {
+    registerMovement: jest.fn(),
+    lockProductRow: jest.fn(),
+  };
+  const mockBatches = {
+    consumeForSale: jest.fn(),
+    restoreFromSaleItem: jest.fn(),
+    getSellableQuantity: jest.fn(),
+    writeControlledLog: jest.fn(),
+  };
+  const mockCashShift = { getCurrentShift: jest.fn() };
+  const mockPayment = {
+    applyToSale: jest.fn(),
+    decreaseClientDebt: jest.fn(),
+    resolveCashShiftId: jest.fn(),
+  };
+
+  // Venta de contado: 10 u a $50 = $500, totalmente pagada
+  const ventaContado = {
+    id: 1,
+    clientId: null,
+    client: null,
+    total: new Decimal(500),
+    paidAmount: new Decimal(500),
+    balance: new Decimal(0),
+    flowStatus: 'COMPLETED',
+    status: 'COMPLETED',
+  };
+  const itemsVenta = [
+    {
+      id: 10,
+      saleId: 1,
+      productId: 100,
+      quantity: 10,
+      price: new Decimal(50),
+      subtotal: new Decimal(500),
+      product: { controlled: false },
+    },
+  ];
+
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        SalesService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: InventoryService, useValue: mockInventory },
+        { provide: InventoryBatchesService, useValue: mockBatches },
+        { provide: CashShiftService, useValue: mockCashShift },
+        { provide: PaymentService, useValue: mockPayment },
+        { provide: SettingsService, useValue: createSettingsMock() },
+      ],
+    }).compile();
+
+    service = module.get<SalesService>(SalesService);
+    jest.clearAllMocks();
+
+    tx.sale.findUnique.mockResolvedValue(ventaContado);
+    tx.saleItem.findMany.mockResolvedValue(itemsVenta);
+    tx.saleReturnItem.groupBy.mockResolvedValue([]); // sin devoluciones previas
+    tx.saleReturn.create.mockResolvedValue({ id: 55 });
+    tx.saleRefund.create.mockImplementation(
+      ({ data }: { data: Record<string, unknown> }) =>
+        Promise.resolve({ id: 9, ...data }),
+    );
+    mockCashShift.getCurrentShift.mockResolvedValue({ id: 42 });
+    tx.saleRefund.groupBy.mockResolvedValue([]);
+    tx.salePayment.groupBy.mockResolvedValue([
+      { method: 'CASH', _sum: { amount: new Decimal(100000) } },
+    ]);
+    mockBatches.restoreFromSaleItem.mockResolvedValue(undefined);
+  });
+
+  describe('acumulación de devoluciones previas', () => {
+    it('bloquea la venta antes de leer el histórico', async () => {
+      await service.createReturn(
+        1,
+        { items: [{ saleItemId: 10, quantity: 2, restock: true }] },
+        99,
+      );
+      // Sin el bloqueo, dos devoluciones simultáneas leerían "ya devuelto = 0".
+      expect(tx.$queryRaw).toHaveBeenCalled();
+    });
+
+    it('rechaza devolver más de lo que queda tras devoluciones previas', async () => {
+      // Ya se devolvieron 8 de 10 → solo quedan 2
+      tx.saleReturnItem.groupBy.mockResolvedValue([
+        { saleItemId: 10, _sum: { quantity: 8 } },
+      ]);
+
+      await expect(
+        service.createReturn(
+          1,
+          { items: [{ saleItemId: 10, quantity: 3, restock: true }] },
+          99,
+        ),
+      ).rejects.toThrow(BadRequestException);
+
+      // Falla ANTES de escribir nada
+      expect(tx.saleReturn.create).not.toHaveBeenCalled();
+      expect(mockBatches.restoreFromSaleItem).not.toHaveBeenCalled();
+    });
+
+    it('permite devolver exactamente lo que queda disponible', async () => {
+      tx.saleReturnItem.groupBy.mockResolvedValue([
+        { saleItemId: 10, _sum: { quantity: 8 } },
+      ]);
+
+      const res = await service.createReturn(
+        1,
+        { items: [{ saleItemId: 10, quantity: 2, restock: true }] },
+        99,
+      );
+      expect(res.totalReturned.toString()).toBe('100'); // 2 x $50
+    });
+
+    it('con descuento se reembolsa el NETO pagado, no el precio de lista', async () => {
+      // 10 × $50 = $500 con 50 % → se pagaron $250. Devolver 2 = $50, no $100.
+      tx.saleItem.findMany.mockResolvedValue([
+        {
+          ...itemsVenta[0],
+          subtotal: new Decimal(250),
+          discount: new Decimal(250),
+        },
+      ]);
+      const res = await service.createReturn(
+        1,
+        { items: [{ saleItemId: 10, quantity: 2, restock: true }] },
+        99,
+      );
+      expect(res.totalReturned.toFixed(2)).toBe('50.00');
+    });
+
+    it('devoluciones parciales sucesivas cuadran al centavo con lo pagado', async () => {
+      // 3 unidades por $100.00 netos: ya se devolvieron 2 → la última vale 33.33
+      tx.saleItem.findMany.mockResolvedValue([
+        { ...itemsVenta[0], quantity: 3, subtotal: new Decimal(100) },
+      ]);
+      tx.saleReturnItem.groupBy.mockResolvedValue([
+        { saleItemId: 10, _sum: { quantity: 2 } },
+      ]);
+      const res = await service.createReturn(
+        1,
+        { items: [{ saleItemId: 10, quantity: 1, restock: true }] },
+        99,
+      );
+      // asignado(3) − asignado(2) = 100.00 − 66.67 = 33.33
+      expect(res.totalReturned.toFixed(2)).toBe('33.33');
+    });
+
+    it('consolida líneas repetidas del mismo item en una sola petición', async () => {
+      // 6 + 6 = 12 sobre 10 vendidas: por separado cada línea pasaría
+      await expect(
+        service.createReturn(
+          1,
+          {
+            items: [
+              { saleItemId: 10, quantity: 6, restock: true },
+              { saleItemId: 10, quantity: 6, restock: true },
+            ],
+          },
+          99,
+        ),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('rechaza un item que no pertenece a la venta', async () => {
+      await expect(
+        service.createReturn(
+          1,
+          { items: [{ saleItemId: 999, quantity: 1, restock: true }] },
+          99,
+        ),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('rechaza una devolución vacía', async () => {
+      await expect(service.createReturn(1, { items: [] }, 99)).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+  });
+
+  describe('validación del estado de la venta', () => {
+    it('solo permite devoluciones sobre ventas finalizadas', async () => {
+      tx.sale.findUnique.mockResolvedValue({
+        ...ventaContado,
+        flowStatus: 'DRAFT',
+      });
+      await expect(
+        service.createReturn(
+          1,
+          { items: [{ saleItemId: 10, quantity: 1, restock: true }] },
+          99,
+        ),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('rechaza devoluciones sobre una venta cancelada', async () => {
+      tx.sale.findUnique.mockResolvedValue({
+        ...ventaContado,
+        status: 'CANCELLED',
+      });
+      await expect(
+        service.createReturn(
+          1,
+          { items: [{ saleItemId: 10, quantity: 1, restock: true }] },
+          99,
+        ),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('lanza NotFound si la venta no existe', async () => {
+      tx.sale.findUnique.mockResolvedValue(null);
+      await expect(
+        service.createReturn(
+          1,
+          { items: [{ saleItemId: 10, quantity: 1, restock: true }] },
+          99,
+        ),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('impacto en inventario', () => {
+    it('mercancía en buen estado: un solo reingreso al stock', async () => {
+      await service.createReturn(
+        1,
+        { items: [{ saleItemId: 10, quantity: 3, restock: true }] },
+        99,
+      );
+
+      expect(mockBatches.restoreFromSaleItem).toHaveBeenCalledTimes(1);
+      expect(mockBatches.restoreFromSaleItem).toHaveBeenCalledWith(
+        tx,
+        expect.objectContaining({
+          productId: 100,
+          quantity: 3,
+          restock: true,
+          alreadyReturned: 0,
+        }),
+        99,
+      );
+    });
+
+    it('mercancía dañada: se indica restock=false (reingreso + merma en el lote)', async () => {
+      await service.createReturn(
+        1,
+        { items: [{ saleItemId: 10, quantity: 3, restock: false }] },
+        99,
+      );
+
+      expect(mockBatches.restoreFromSaleItem).toHaveBeenCalledWith(
+        tx,
+        expect.objectContaining({
+          quantity: 3,
+          restock: false,
+        }),
+        99,
+      );
+    });
+  });
+
+  describe('reparto del reembolso', () => {
+    it('venta de contado: todo el reembolso sale en efectivo', async () => {
+      const res = await service.createReturn(
+        1,
+        {
+          items: [{ saleItemId: 10, quantity: 5, restock: true }],
+          refundToCustomer: true,
+        },
+        99,
+      );
+
+      expect(res.debtApplied.toString()).toBe('0');
+      expect(res.cashRefunded.toString()).toBe('250');
+      expect(tx.cashTransaction.create).toHaveBeenCalled(); // salida de caja
+      expect(tx.saleRefund.create).toHaveBeenCalled(); // registro contable
+    });
+
+    it('venta a crédito: primero cancela deuda y el resto en efectivo', async () => {
+      // Total $500, pagó $300, debe $200. Devuelve $500.
+      tx.sale.findUnique.mockResolvedValue({
+        ...ventaContado,
+        clientId: 7,
+        client: { id: 7 },
+        paidAmount: new Decimal(300),
+        balance: new Decimal(200),
+      });
+
+      const res = await service.createReturn(
+        1,
+        {
+          items: [{ saleItemId: 10, quantity: 10, restock: true }],
+          refundToCustomer: true,
+        },
+        99,
+      );
+
+      expect(res.debtApplied.toString()).toBe('200'); // se cancela el saldo
+      expect(res.cashRefunded.toString()).toBe('300'); // el resto, en efectivo
+      // Antes se bajaba la deuda por los $500 completos, dejando el balance en -300.
+      expect(mockPayment.decreaseClientDebt).toHaveBeenCalled();
+    });
+
+    it('exige caja abierta para devolver efectivo', async () => {
+      mockCashShift.getCurrentShift.mockResolvedValue(null);
+      await expect(
+        service.createReturn(
+          1,
+          {
+            items: [{ saleItemId: 10, quantity: 1, restock: true }],
+            refundToCustomer: true,
+          },
+          99,
+        ),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it('sin refundToCustomer no mueve dinero, solo inventario', async () => {
+      const res = await service.createReturn(
+        1,
+        {
+          items: [{ saleItemId: 10, quantity: 2, restock: true }],
+          refundToCustomer: false,
+        },
+        99,
+      );
+
+      expect(res.cashRefunded.toString()).toBe('0');
+      expect(res.debtApplied.toString()).toBe('0');
+      expect(tx.cashTransaction.create).not.toHaveBeenCalled();
+      expect(mockBatches.restoreFromSaleItem).toHaveBeenCalled();
+    });
+  });
+
+  describe('estado final de la venta', () => {
+    it('marca REFUNDED cuando se devuelve la venta completa', async () => {
+      await service.createReturn(
+        1,
+        {
+          items: [{ saleItemId: 10, quantity: 10, restock: true }],
+          refundToCustomer: false,
+        },
+        99,
+      );
+
+      expect(tx.sale.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: { status: 'REFUNDED' },
+      });
+    });
+
+    it('NO marca REFUNDED en una devolución parcial', async () => {
+      await service.createReturn(
+        1,
+        {
+          items: [{ saleItemId: 10, quantity: 4, restock: true }],
+          refundToCustomer: false,
+        },
+        99,
+      );
+
+      const actualizaciones = tx.sale.update.mock.calls as Array<
+        [{ data?: { status?: string } }]
+      >;
+      const refunded = actualizaciones.some(
+        (c) => c[0]?.data?.status === 'REFUNDED',
+      );
+      expect(refunded).toBe(false);
+    });
+  });
+});

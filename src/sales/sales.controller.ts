@@ -1,5 +1,21 @@
-import { Controller, Get, Post, Patch, Body, Param, Delete, Query, UseGuards, ParseIntPipe } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Patch,
+  Body,
+  Param,
+  Query,
+  UseGuards,
+  ParseIntPipe,
+  ParseEnumPipe,
+  Headers,
+} from '@nestjs/common';
+import { PrintDocument } from '@prisma/client';
 import { SalesService } from './sales.service';
+import { SaleDiscountsService } from './sale-discounts.service';
+import { ApplyDiscountDto } from './dto/apply-discount.dto';
+import { Throttle } from '@nestjs/throttler';
 import { CreateSaleDto, SaleItemDto } from './dto/create-sale.dto';
 import { SetClientDto } from './dto/set-client.dto';
 import { UpdateSaleItemDto } from './dto/update-sale-item.dto';
@@ -8,15 +24,22 @@ import { AddPaymentDto } from './dto/add-payment.dto';
 import { GetUser } from 'src/common/decorators/get-user.decorator';
 import { ReturnSaleDto } from './dto/return-sale.dto';
 import { FindAllSalesQueryDto } from './dto/find-all-sales-query.dto';
+import { RegisterSalePrintDto } from './dto/register-sale-print.dto';
+import { CompleteSaleDto } from './dto/complete-sale.dto';
+import { SalesSummaryQueryDto } from './dto/sales-summary-query.dto';
 import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
+import type { AuthenticatedUser } from 'src/auth/types/authenticated-user.type';
 
 @Controller('sales')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class SalesController {
-  constructor(private readonly salesService: SalesService) {}
+  constructor(
+    private readonly salesService: SalesService,
+    private readonly discounts: SaleDiscountsService,
+  ) {}
 
   /**
    * [OPERATIVO] Lista ventas con paginación. (Cajeros ven historial general).
@@ -33,12 +56,37 @@ export class SalesController {
    */
   @Get('summary')
   @Roles(UserRole.MANAGER)
-  async getSummary(
-    @Query('startDate') startDate?: string,
-    @Query('endDate') endDate?: string,
-  ) {
-    const data = await this.salesService.getSummary(startDate, endDate);
+  async getSummary(@Query() query: SalesSummaryQueryDto) {
+    const data = await this.salesService.getSummary(
+      query.startDate,
+      query.endDate,
+    );
     return ApiResponse.ok(data, 'Resumen de ventas obtenido correctamente');
+  }
+
+  /**
+   * [OPERATIVO/POS] Recupera el carrito DRAFT abierto del cajero autenticado.
+   *
+   * El carrito vivo sólo existía en la memoria de Pinia. Un F5, un corte de luz
+   * o una sesión caducada lo borraban de la pantalla mientras la venta DRAFT
+   * seguía en la base con sus 30 líneas capturadas: invisible para el cajero,
+   * imposible de cobrar y acumulándose como basura en la tabla.
+   *
+   * Devuelve `null` (no 404) cuando no hay carrito: "no tengo nada abierto" es
+   * una respuesta legítima, no un error, y un 404 obligaría al front a tratar
+   * el caso normal dentro de un catch.
+   *
+   * Debe declararse ANTES de `@Get(':id')`: Nest resuelve por orden de
+   * declaración y "draft" acabaría entrando por el parámetro `:id`, donde
+   * ParseIntPipe lo rechazaría con un 400.
+   */
+  @Get('draft')
+  async findMyDraft(@GetUser() user: AuthenticatedUser) {
+    const data = await this.salesService.findOpenDraftForUser(user.userId);
+    return ApiResponse.ok(
+      data,
+      data ? 'Carrito recuperado correctamente' : 'Sin carrito abierto',
+    );
   }
 
   /**
@@ -48,6 +96,20 @@ export class SalesController {
   async findByInvoiceNumber(@Param('invoiceNumber') invoiceNumber: string) {
     const data = await this.salesService.findByInvoiceNumber(invoiceNumber);
     return ApiResponse.ok(data, 'Venta obtenida correctamente');
+  }
+
+  /**
+   * [OPERATIVO] Historial de copias impresas de una venta.
+   * Debe ir antes de GET :id para que "prints" no se interprete como id.
+   */
+  @Get(':id/prints')
+  async listPrints(
+    @Param('id', ParseIntPipe) id: number,
+    @Query('document', new ParseEnumPipe(PrintDocument, { optional: true }))
+    document?: PrintDocument,
+  ) {
+    const data = await this.salesService.listPrints(id, document);
+    return ApiResponse.ok(data, 'Historial de impresiones obtenido');
   }
 
   /**
@@ -63,7 +125,10 @@ export class SalesController {
    * [OPERATIVO/POS] Crea un carrito de venta (Draft).
    */
   @Post()
-  async create(@Body() createSaleDto: CreateSaleDto, @GetUser() user: any) {
+  async create(
+    @Body() createSaleDto: CreateSaleDto,
+    @GetUser() user: AuthenticatedUser,
+  ) {
     const data = await this.salesService.create(createSaleDto, user.userId);
     return ApiResponse.ok(data, 'Venta creada correctamente');
   }
@@ -72,7 +137,14 @@ export class SalesController {
    * [OPERATIVO/POS] Agrega producto a la venta abierta.
    */
   @Post(':id/add-product')
-  async addProduct(@Param('id') id: number, @Body() addProductDto: SaleItemDto) {
+  async addProduct(
+    @Param('id') id: number,
+    @Body() addProductDto: SaleItemDto,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    // Todas las mutaciones del carrito comprueban primero que el carrito sea de
+    // quien opera (o que opere gerencia). Ver SalesService.assertCanOperateDraft.
+    await this.salesService.assertCanOperateDraft(id, user);
     const data = await this.salesService.addItem(id, addProductDto);
     return ApiResponse.ok(data, 'Producto agregado correctamente');
   }
@@ -81,7 +153,12 @@ export class SalesController {
    * [OPERATIVO/POS] Quita producto de la venta abierta.
    */
   @Post(':id/remove-product/:itemId')
-  async removeProduct(@Param('id') id: number, @Param('itemId') itemId: number) {
+  async removeProduct(
+    @Param('id') id: number,
+    @Param('itemId') itemId: number,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    await this.salesService.assertCanOperateDraft(id, user);
     const data = await this.salesService.deleteItem(id, itemId);
     return ApiResponse.ok(data, 'Producto eliminado correctamente');
   }
@@ -94,9 +171,48 @@ export class SalesController {
     @Param('id', ParseIntPipe) id: number,
     @Param('itemId', ParseIntPipe) itemId: number,
     @Body() dto: UpdateSaleItemDto,
+    @GetUser() user: AuthenticatedUser,
   ) {
+    await this.salesService.assertCanOperateDraft(id, user);
     const data = await this.salesService.updateItem(id, itemId, dto.quantity);
     return ApiResponse.ok(data, 'Cantidad actualizada correctamente');
+  }
+
+  /**
+   * [OPERATIVO/POS] Descuento en una línea. Por encima del tope del rol exige
+   * `authorizer` (credenciales de un gerente). Límite de intentos: la
+   * verificación de contraseña no debe poder probarse por fuerza bruta.
+   */
+  @Patch(':id/items/:itemId/discount')
+  @Throttle({ default: { limit: 20, ttl: 60000 } })
+  async discountItem(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('itemId', ParseIntPipe) itemId: number,
+    @Body() dto: ApplyDiscountDto,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    await this.salesService.assertCanOperateDraft(id, user);
+    const data = await this.discounts.applyToItem(id, itemId, dto, {
+      id: user.userId,
+      role: user.role,
+    });
+    return ApiResponse.ok(data, data.message);
+  }
+
+  /** [OPERATIVO/POS] Descuento en toda la venta (mismo % en cada línea). */
+  @Patch(':id/discount')
+  @Throttle({ default: { limit: 20, ttl: 60000 } })
+  async discountSale(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: ApplyDiscountDto,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    await this.salesService.assertCanOperateDraft(id, user);
+    const data = await this.discounts.applyToSale(id, dto, {
+      id: user.userId,
+      role: user.role,
+    });
+    return ApiResponse.ok(data, data.message);
   }
 
   /**
@@ -107,7 +223,9 @@ export class SalesController {
   async setClient(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: SetClientDto,
+    @GetUser() user: AuthenticatedUser,
   ) {
+    await this.salesService.assertCanOperateDraft(id, user);
     const data = await this.salesService.setClient(id, dto.clientId ?? null);
     return ApiResponse.ok(data, 'Cliente actualizado correctamente');
   }
@@ -116,8 +234,20 @@ export class SalesController {
    * [OPERATIVO/FINANZAS] Registra un pago de cliente (Ingreso a caja).
    */
   @Post(':id/add-payment')
-  async addPayment(@Param('id') id: number, @Body() addPaymentDto: AddPaymentDto, @GetUser() user: any) {
-    const data = await this.salesService.addPayment(id, addPaymentDto, user.userId);
+  async addPayment(
+    @Param('id') id: number,
+    @Body() addPaymentDto: AddPaymentDto,
+    @GetUser() user: AuthenticatedUser,
+    // Clave de idempotencia: un reintento tras timeout NO debe cobrar dos veces.
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    await this.salesService.assertCanOperateDraft(id, user);
+    const data = await this.salesService.addPayment(
+      id,
+      addPaymentDto,
+      user.userId,
+      idempotencyKey,
+    );
     return ApiResponse.ok(data, 'Pago agregado correctamente');
   }
 
@@ -125,27 +255,72 @@ export class SalesController {
    * [OPERATIVO/INVENTARIO] Cierra la venta y descuenta stock oficial.
    */
   @Post(':id/complete')
-  async completeSale(@Param('id') id: number, @GetUser() user: any) {
-    const data = await this.salesService.completeSale(id, user.userId);
+  async completeSale(
+    @Param('id') id: number,
+    @Body() dto: CompleteSaleDto,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    await this.salesService.assertCanOperateDraft(id, user);
+    const data = await this.salesService.completeSale(id, user.userId, dto);
     return ApiResponse.ok(data, 'Venta completada correctamente');
   }
 
   /**
-   * [GERENCIAL] Anula una venta completa (Devuelve stock y dinero).
+   * [MIXTO] Descarta un borrador o anula una venta cerrada.
+   *
+   * No lleva `@Roles` a proposito: la misma ruta cubre el descarte del carrito
+   * abierto, que es rutina de cajero, y la anulacion de una venta cerrada, que
+   * mueve stock y efectivo. El permiso lo decide el servicio segun el estado
+   * real de la venta, ya leida y bloqueada dentro de la transaccion.
    */
   @Post(':id/cancel')
-  async cancel(@Param('id') id: number, @GetUser() user: any) {
-    const data = await this.salesService.cancel(id, user.userId);
+  async cancel(
+    @Param('id', ParseIntPipe) id: number,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    const data = await this.salesService.cancel(id, user.userId, user.role);
     return ApiResponse.ok(data, 'Venta cancelada correctamente');
   }
 
   /**
    * [GERENCIAL] Procesa devolución parcial o total.
+   *
+   * Solo opera sobre ventas FINALIZADAS: reingresa mercancia al Kardex y saca
+   * dinero de la caja. A diferencia de `cancel`, aqui no hay caso operativo
+   * que atender, asi que el rol se exige en la propia ruta.
    */
   @Post(':id/return')
-  async createReturn(@Param('id') id: number, @Body() returnSaleDto: ReturnSaleDto, @GetUser() user: any) {
-    const data = await this.salesService.createReturn(id, returnSaleDto, user.userId);
+  @Roles(UserRole.MANAGER)
+  async createReturn(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() returnSaleDto: ReturnSaleDto,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    const data = await this.salesService.createReturn(
+      id,
+      returnSaleDto,
+      user.userId,
+    );
     return ApiResponse.ok(data, 'Devolución creada correctamente');
   }
 
+  /**
+   * [OPERATIVO] Registra una impresión (original o copia) y devuelve el copyNumber.
+   * El front imprime DESPUÉS de este llamado para que el papel coincida con el rastro.
+   */
+  @Post(':id/prints')
+  async registerPrint(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: RegisterSalePrintDto,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    const data = await this.salesService.registerPrint(
+      id,
+      user.userId,
+      dto.channel,
+      dto.templateId,
+      dto.document,
+    );
+    return ApiResponse.ok(data, 'Impresión registrada');
+  }
 }

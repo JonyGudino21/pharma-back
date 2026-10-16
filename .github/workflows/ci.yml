@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+  workflow_dispatch:
+
+# Si se empujan varios commits seguidos a un PR, se cancelan las corridas anteriores:
+# solo interesa validar el ultimo estado de la rama.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Calidad y pruebas unitarias
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Generar Prisma Client
+        run: npx prisma generate
+
+      # Bloqueante desde que la deuda llego a cero. Volver a ponerlo en
+      # informativo equivale a reabrir la puerta por la que entraron los 5554
+      # avisos originales.
+      - name: Lint
+        run: npm run lint:ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # Se ejecuta con cobertura para que `coverageThreshold` sea BLOQUEANTE.
+      # Con `npm test` a secas el umbral nunca se evaluaba: un PR podía añadir
+      # 500 lineas sin una sola prueba y pasar en verde.
+      #
+      # Los umbrales de package.json son un TRINQUETE, no una meta: estan fijados
+      # en la cobertura medida hoy menos ~2 puntos de tolerancia. La regla es que
+      # solo se suben, nunca se bajan. Un PR que baje la cobertura de un modulo ya
+      # cubierto falla aqui; un PR que la suba deberia subir tambien el piso.
+      #
+      # Los controladores estan fuera del denominador a proposito: son adaptadores
+      # HTTP delgados y quien los valida de verdad es el job e2e con PostgreSQL
+      # real. Incluirlos solo premiaria escribir pruebas de delegacion sin valor.
+      - name: Pruebas unitarias y umbral de cobertura
+        run: npm run test:ci
+
+      # El reporte queda disponible en el PR para ver QUÉ bajó, no solo que bajó.
+      - name: Publicar reporte de cobertura
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 7
+
+  e2e:
+    name: Integracion de concurrencia (PostgreSQL real)
+    runs-on: ubuntu-latest
+
+    # Contenedor efimero que vive y muere con este job. NO es la base de datos local
+    # ni ninguna base real: se crea vacia en cada corrida y se destruye al terminar.
+    # Los valores de abajo deben coincidir EXACTAMENTE con DATABASE_URL: si se cambia
+    # uno hay que cambiar el otro, o el job falla al conectar.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pharma_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Apunta al contenedor de arriba, no a ninguna base de desarrollo.
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/pharma_test?schema=public
+      NODE_ENV: test
+      # Valores desechables, validos solo dentro del runner. No corresponden a ningun entorno real.
+      JWT_SECRET: ci_throwaway_secret_used_only_inside_the_runner
+      JWT_REFRESH_SECRET: ci_throwaway_refresh_secret_used_only_inside_the_runner
+      FRONTEND_URL: http://localhost:3000
+      TOLERANCE_THRESHOLD: '20'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Generar Prisma Client
+        run: npx prisma generate
+
+      - name: Aplicar migraciones en la base efimera
+        run: npx prisma migrate deploy
+
+      # --runInBand: la suite comparte una sola base de datos. Los workers en paralelo
+      # se pisarian entre si y produciran fallos intermitentes que no son bugs reales.
+      - name: Pruebas de integracion
+        run: npm run test:e2e -- --runInBand

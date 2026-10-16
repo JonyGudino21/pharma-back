@@ -1,9 +1,20 @@
-import { IsString, IsOptional, IsNumber, IsBoolean, IsPositive } from 'class-validator';
+import {
+  IsString,
+  IsOptional,
+  IsNumber,
+  IsBoolean,
+  IsPositive,
+  IsInt,
+  Min,
+  Matches,
+  MaxLength,
+  IsEnum,
+} from 'class-validator';
+import { TaxCategory } from '@prisma/client';
 
 export class CreateProductDto {
-
   @IsString()
-  name: string
+  name: string;
 
   @IsString()
   @IsOptional()
@@ -11,11 +22,11 @@ export class CreateProductDto {
 
   @IsString()
   @IsOptional()
-  strength?: string;  // 500mg, 1000mg, etc.
+  strength?: string; // 500mg, 1000mg, etc.
 
   @IsString()
   @IsOptional()
-  format?: string;   //Tableta, capsula, etc.
+  format?: string; //Tableta, capsula, etc.
 
   @IsString()
   @IsOptional()
@@ -33,11 +44,15 @@ export class CreateProductDto {
   @IsOptional()
   controlled?: boolean;
 
-  @IsNumber()
+  // Enteros y no negativos: `@IsNumber()` a secas aceptaba -5 y 2.5 unidades
+  // de una caja de tabletas.
+  @IsInt()
+  @Min(0)
   @IsOptional()
   stock?: number;
 
-  @IsNumber()
+  @IsInt()
+  @Min(0)
   @IsOptional()
   minStock?: number;
 
@@ -48,4 +63,36 @@ export class CreateProductDto {
   @IsNumber()
   @IsPositive()
   cost: number;
+
+  /**
+   * Tratamiento de IVA. Sin valor, el de Configuración › Impuestos. Medicinas
+   * de patente: ZERO; perfumería, refrescos, jugos y chicles: GENERAL.
+   */
+  @IsOptional()
+  @IsEnum(TaxCategory, {
+    message: 'El IVA debe ser General, Tasa 0% o Exento.',
+  })
+  taxCategory?: TaxCategory;
+
+  /**
+   * Lote y caducidad del INVENTARIO INICIAL.
+   *
+   * La caducidad no es del producto sino de cada lote: el mismo Paracetamol
+   * tiene cajas que caducan en marzo y otras en diciembre. Antes el alta con
+   * existencias creaba unidades SIN lote: fuera del FEFO, invisibles para la
+   * alerta de caducidad y, en un controlado, sin trazabilidad para COFEPRIS.
+   *
+   * Obligatorios si el producto es controlado y trae stock; en los demás son
+   * opcionales, pero van juntos.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  lotNumber?: string;
+
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, {
+    message: 'La caducidad debe ser YYYY-MM-DD',
+  })
+  expiryDate?: string;
 }

@@ -42,15 +42,15 @@ El proyecto aplica una arquitectura modular (NestJS), validación y transformaci
 
 ## Stack tecnológico
 
-| Tecnología        | Uso                          |
-|-------------------|------------------------------|
-| **NestJS 11**     | Framework backend (Node.js)  |
-| **TypeScript 5**  | Lenguaje                     |
-| **Prisma 6**      | ORM y migraciones            |
-| **PostgreSQL**    | Base de datos                |
-| **Passport + JWT**| Autenticación                |
-| **bcrypt**        | Hash de contraseñas          |
-| **class-validator / class-transformer** | DTOs y validación   |
+| Tecnología                              | Uso                         |
+| --------------------------------------- | --------------------------- |
+| **NestJS 11**                           | Framework backend (Node.js) |
+| **TypeScript 5**                        | Lenguaje                    |
+| **Prisma 6**                            | ORM y migraciones           |
+| **PostgreSQL**                          | Base de datos               |
+| **Passport + JWT**                      | Autenticación               |
+| **bcrypt**                              | Hash de contraseñas         |
+| **class-validator / class-transformer** | DTOs y validación           |
 
 ---
 
@@ -76,22 +76,22 @@ Elementos transversales: **ApiResponse**, **ValidationPipe** global, **AllExcept
 
 En la carpeta **`docs/`** está la documentación oficial para integrar esta API (p. ej. desde un frontend Vue 3 / Nuxt):
 
-| Documento | Contenido |
-|-----------|-----------|
-| [**API_CONTRACT.md**](docs/API_CONTRACT.md) | Contrato general: formato de respuestas de éxito y error, paginación estándar, seguridad (Bearer token e interceptor para futura migración a cookies), RBAC con `GET /auth/me` y objeto `permissions`. |
+| Documento                                                               | Contenido                                                                                                                                                                                                                       |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [**API_CONTRACT.md**](docs/API_CONTRACT.md)                             | Contrato general: formato de respuestas de éxito y error, paginación estándar, seguridad (Bearer token e interceptor para futura migración a cookies), RBAC con `GET /auth/me` y objeto `permissions`.                          |
 | [**FRONTEND_RESPONSE_HANDLING.md**](docs/FRONTEND_RESPONSE_HANDLING.md) | **Estructura de comunicación para el Front:** manejo unificado de aciertos y errores (envelope, qué leer en éxito/error, códigos HTTP, flujo con interceptor y referencia a los archivos del Back que implementan el contrato). |
-| [**PERMISSIONS_MATRIX.md**](docs/PERMISSIONS_MATRIX.md) | Matriz de permisos por rol (CASHIER, PHARMACIST, MANAGER, ADMIN) y uso en la UI. |
-| [**AUTH_MODULE.md**](docs/AUTH_MODULE.md) | Login, refresh, logout, logout-all, GET /auth/me; payloads y manejo de errores. |
-| [**USER_MODULE.md**](docs/USER_MODULE.md) | CRUD de usuarios (solo ADMIN), listado, búsqueda, soft delete. |
-| [**CASH_SHIFT_MODULE.md**](docs/CASH_SHIFT_MODULE.md) | Turnos de caja, arqueo ciego, operaciones manuales, current-shift. |
-| [**CATEGORY_MODULE.md**](docs/CATEGORY_MODULE.md) | Categorías de productos: CRUD, listado, búsqueda. |
-| [**CLIENT_MODULE.md**](docs/CLIENT_MODULE.md) | Clientes, estado de cuenta, crédito, abonos, deudores. |
-| [**INVENTORY_MODULE.md**](docs/INVENTORY_MODULE.md) | Ajustes, alertas de stock, Kardex, valoración, stock por producto. |
-| [**PRODUCT_MODULE.md**](docs/PRODUCT_MODULE.md) | Catálogo: creación, listado, búsqueda, SKU/barcode, soft delete. |
-| [**PURCHASE_MODULE.md**](docs/PURCHASE_MODULE.md) | Compras: ítems, pagos, recepción, cancelación. |
-| [**SALES_MODULE.md**](docs/SALES_MODULE.md) | Ventas: carrito, ítems, pagos, completar, cancelar, devoluciones. |
-| [**SUPPLIERS_MODULE.md**](docs/SUPPLIERS_MODULE.md) | Proveedores, estado de cuenta (cuentas por pagar). |
-| [**ANALYTICS_MODULE.md**](docs/ANALYTICS_MODULE.md) | Dashboard: KPIs, liquidez, tendencias, top productos. |
+| [**PERMISSIONS_MATRIX.md**](docs/PERMISSIONS_MATRIX.md)                 | Matriz de permisos por rol (CASHIER, PHARMACIST, MANAGER, ADMIN) y uso en la UI.                                                                                                                                                |
+| [**AUTH_MODULE.md**](docs/AUTH_MODULE.md)                               | Login, refresh, logout, logout-all, GET /auth/me; payloads y manejo de errores.                                                                                                                                                 |
+| [**USER_MODULE.md**](docs/USER_MODULE.md)                               | CRUD de usuarios (solo ADMIN), listado, búsqueda, soft delete.                                                                                                                                                                  |
+| [**CASH_SHIFT_MODULE.md**](docs/CASH_SHIFT_MODULE.md)                   | Turnos de caja, arqueo ciego, operaciones manuales, current-shift.                                                                                                                                                              |
+| [**CATEGORY_MODULE.md**](docs/CATEGORY_MODULE.md)                       | Categorías de productos: CRUD, listado, búsqueda.                                                                                                                                                                               |
+| [**CLIENT_MODULE.md**](docs/CLIENT_MODULE.md)                           | Clientes, estado de cuenta, crédito, abonos, deudores.                                                                                                                                                                          |
+| [**INVENTORY_MODULE.md**](docs/INVENTORY_MODULE.md)                     | Ajustes, alertas de stock, Kardex, valoración, stock por producto.                                                                                                                                                              |
+| [**PRODUCT_MODULE.md**](docs/PRODUCT_MODULE.md)                         | Catálogo: creación, listado, búsqueda, SKU/barcode, soft delete.                                                                                                                                                                |
+| [**PURCHASE_MODULE.md**](docs/PURCHASE_MODULE.md)                       | Compras: ítems, pagos, recepción, cancelación.                                                                                                                                                                                  |
+| [**SALES_MODULE.md**](docs/SALES_MODULE.md)                             | Ventas: carrito, ítems, pagos, completar, cancelar, devoluciones.                                                                                                                                                               |
+| [**SUPPLIERS_MODULE.md**](docs/SUPPLIERS_MODULE.md)                     | Proveedores, estado de cuenta (cuentas por pagar).                                                                                                                                                                              |
+| [**ANALYTICS_MODULE.md**](docs/ANALYTICS_MODULE.md)                     | Dashboard: KPIs, liquidez, tendencias, top productos.                                                                                                                                                                           |
 
 Cada módulo documenta: resumen de negocio, reglas clave, endpoints (método, ruta, roles), payloads destacados, manejo de errores para la UI y consejos de implementación en frontend.
 
@@ -113,9 +113,12 @@ Enums utilizados: `PaymentStatus`, `PaymentMethod`, `SaleStatus`, `SaleFlowStatu
 
 ## Requisitos previos
 
-- **Node.js** ≥ 18
-- **PostgreSQL**
-- **npm** (o pnpm/yarn)
+- **Node.js** 22 (el mismo que usa CI; ver `.nvmrc`)
+- **PostgreSQL** 16
+- **npm**
+
+> Para **instalar en una farmacia o en la nube** sigue la guía de producción:
+> [`docs/produccion/README.md`](docs/produccion/README.md). Esta sección es para desarrollo.
 
 ---
 
@@ -149,21 +152,25 @@ Por defecto la API escucha en el puerto definido en `PORT` (ej. `3005`).
 
 ## Variables de entorno
 
-Ejemplo de variables necesarias (crear `.env` en la raíz):
+El contrato completo, con valores por omisión y comentarios, está en [`.env.example`](.env.example)
+y se valida al arrancar (`src/config/env.validation.ts`): si falta algo, la API no levanta y dice qué.
 
-| Variable              | Descripción                          |
-|-----------------------|--------------------------------------|
-| `DATABASE_URL`        | URL de conexión PostgreSQL           |
-| `JWT_SECRET`          | Secreto para firmar JWTs             |
-| `JWT_EXPIRES_IN`      | Caducidad del access token (ej. 15m) |
-| `REFRESH_TOKEN_EXPIRES_IN` | Caducidad del refresh token   |
-| `JWT_REFRESH_DAYS_REMEMBER` | Días de validez del refresh si "recordar sesión" (ej. 7) |
-| `JWT_REFRESH_DAYS_DEFAULT`  | Días de validez del refresh por defecto (ej. 1) |
-| `FRONTEND_URL`        | Origen permitido para CORS           |
-| `PORT`                | Puerto del servidor (ej. 3005)       |
-| `TOLERANCE_THRESHOLD` | Umbral de diferencia (en unidades) en cierre de caja; si se supera, el turno queda `AUDIT_REQUIRED` (ej. 10) |
-
-Ajustar según existan más configuraciones en el código.
+| Variable | Obligatoria | Descripción |
+| --- | --- | --- |
+| `DATABASE_URL` | Sí | Conexión a PostgreSQL. |
+| `JWT_SECRET`, `JWT_REFRESH_SECRET` | Sí | ≥ 32 caracteres y distintos entre sí. |
+| `FRONTEND_URL` | Sí | Orígenes permitidos (CORS), separados por comas. |
+| `NODE_ENV` | No | `production` exige `COOKIE_SECURE=true`. |
+| `HOST`, `PORT` | No | Interfaz y puerto (`0.0.0.0`, `3005`). En una PC detrás de Caddy: `HOST=127.0.0.1`. |
+| `COOKIE_SECURE`, `COOKIE_SAME_SITE`, `COOKIE_DOMAIN` | No | Cookies de sesión. Mismo origen: `lax`. |
+| `TRUST_PROXY` | No | `true` detrás de un proxy (Caddy/Nginx). |
+| `JWT_EXPIRES_IN`, `JWT_REFRESH_EXPIRES_IN`, `JWT_REFRESH_DAYS_*` | No | Duración de la sesión. |
+| `TOLERANCE_THRESHOLD` | No | Diferencia de arqueo tolerada antes de auditoría. |
+| `EXPIRY_INCLUSIVE` | No | Valor de fábrica: el día impreso de caducidad todavía se vende (`true`). El vigente se cambia en Configuración › Inventario. |
+| `THROTTLE_TTL_MS`, `THROTTLE_LIMIT` | No | Límite global de peticiones por IP. |
+| `LOG_LEVEL` | No | `info` o `warn` en producción. |
+| `SEED_ADMIN_*`, `SEED_COMPANY_*` | Sólo semilla | Primer administrador y datos de la farmacia. |
+| `BACKUP_DIR`, `BACKUP_KEEP_DAYS` | Sólo respaldo | Carpeta y días que se conservan. |
 
 ---
 
@@ -218,4 +225,4 @@ Proyecto de uso privado / sin licencia pública (UNLICENSED). Ver `package.json`
 
 ---
 
-*README actualizado con la documentación técnica en `docs/`. Para integrar el frontend, empezar por [docs/API_CONTRACT.md](docs/API_CONTRACT.md) y luego la ficha de cada módulo. Scripts de tests y lint en `package.json`.*
+_README actualizado con la documentación técnica en `docs/`. Para integrar el frontend, empezar por [docs/API_CONTRACT.md](docs/API_CONTRACT.md) y luego la ficha de cada módulo. Scripts de tests y lint en `package.json`._

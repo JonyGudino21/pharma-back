@@ -1,0 +1,40 @@
+# PharmaPOS en la nube. Caddy obtiene y renueva solo el certificado HTTPS
+# (Let's Encrypt) para {$DOMINIO}; el dominio debe apuntar ya a este servidor.
+
+{$DOMINIO} {
+	encode zstd gzip
+
+	# API y sonda de salud → contenedor "api". Mismo origen que el front.
+	@api path /api/* /health /health/*
+	handle @api {
+		reverse_proxy api:3005
+	}
+
+	# Front: SPA estática. Rutas que no son archivo → 200.html (la app enruta).
+	handle {
+		root * /srv
+
+		# Todo lo que no es un archivo con hash (páginas de la app y el manifiesto
+		# de versión) se revalida siempre: así cada caja detecta la versión nueva
+		# (ADR-0018). Ojo: `header` evalúa la ruta ORIGINAL, antes de try_files.
+		@revalidar expression `!path('/_nuxt/*') || path('/_nuxt/builds/*')`
+		header @revalidar Cache-Control "no-cache"
+
+		# Archivos con hash en el nombre: nunca cambian, se cachean un año.
+		@inmutables {
+			path /_nuxt/*
+			not path /_nuxt/builds/*
+		}
+		header @inmutables Cache-Control "public, max-age=31536000, immutable"
+
+		try_files {path} /200.html
+		file_server
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}

@@ -1,0 +1,10 @@
+# Generado por npm: formatearlo provoca ruido en cada install.
+package-lock.json
+
+# Artefactos de build y dependencias.
+dist
+node_modules
+coverage
+
+# Prisma genera el cliente aqui.
+prisma/generated
