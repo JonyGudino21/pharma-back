@@ -1222,7 +1222,7 @@ export class SalesService {
       // aplicar el descuento, pero después se puede cambiar de cliente y su
       // precio especial bajar la línea. Se revisa otra vez aquí, antes de
       // tocar inventario, sólo en líneas CON descuento.
-      const { allowBelowCost } = await this.settings.get('discounts');
+      const { allowBelowCost } = await this.settings.get('discounts', tx);
       if (!allowBelowCost) {
         for (const item of sale.items) {
           if (new Decimal(item.discountPercent ?? 0).lte(0)) continue;

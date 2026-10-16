@@ -355,7 +355,9 @@ describe('InventoryBatchesService — consumo FEFO', () => {
     it('inclusivo (fábrica): el lote que caduca HOY todavía se vende', async () => {
       const res = await service.consumeForSale(txClient, venta, 99);
       expect(res.takes).toEqual([{ batchId: 4, quantity: 1 }]);
-      expect(settings.get).toHaveBeenCalledWith('inventory');
+      // Se lee POR LA TRANSACCIÓN: pedir otra conexión aquí agotaba el pool
+      // con varios cierres simultáneos (ver SettingsService.get).
+      expect(settings.get).toHaveBeenCalledWith('inventory', txClient);
     });
 
     it('exclusivo: el mismo lote se rechaza, sin tocar el Kardex', async () => {

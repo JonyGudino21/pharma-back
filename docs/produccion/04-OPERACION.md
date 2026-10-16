@@ -123,8 +123,9 @@ npm ci
 npx prisma generate
 npm run db:migrate
 npm run build
+npm run verificar                                       # todo en ✓ salvo "API" (aún detenida)
 nssm start PharmaPOS-API
-Invoke-RestMethod http://127.0.0.1:3005/health/ready   # status: ok
+npm run verificar                                       # ✓ Todo listo
 
 # 2) Front: descomprime el ZIP nuevo ENCIMA de C:\PharmaPOS\web (reemplazar archivos).
 #    No borres la carpeta antes: las cajas que aún tienen abierta la versión anterior
@@ -176,6 +177,9 @@ Instala el soporte remoto el día de la instalación y prueba la conexión antes
 | Síntoma | Causa probable | Qué hacer |
 |---|---|---|
 | Aviso rojo *"Sin conexión con el servidor"* en todas las cajas | API o PostgreSQL detenidos | Local: `Get-Service …` y `nssm start PharmaPOS-API`. Nube: `docker compose ps` y `docker compose up -d`. Revisa la bitácora. |
+| *Missing script: "db:migrate"* (o `"verificar"`) | El código instalado es una versión vieja: `main` no tenía los últimos cambios | Haz el PR `develop → main` (CI en verde) y sigue 02-LOCAL.md § Anexo *Retomar una instalación*. |
+| `start:prod`: *Cannot find module …\dist\main* | Código viejo (buscaba `dist\main`) o falta compilar | `npm run verificar`; si dice versión vieja, el Anexo de 02-LOCAL.md; si no, `npm run build`. |
+| `verificar`: *La base tiene migraciones que el código no conoce* | Se corrió `prisma migrate dev` en el cliente y creó una migración propia | **Sin operación real todavía:** respalda y recrea la base (02-LOCAL.md paso 2.3 con `DROP DATABASE pharmapos;` antes del `CREATE`), luego `npm run db:migrate` y la semilla. **Con operación:** no borres nada; respalda y pide soporte. |
 | La API no arranca y el log dice *Config validation error* | Falta o está mal una variable del `.env` | El mensaje dice cuál. Corrige y reinicia. |
 | *COOKIE_SECURE debe ser "true" en produccion…* | `.env` con `NODE_ENV=production` y cookies inseguras | `COOKIE_SECURE=true`. |
 | Inicia sesión y vuelve a pedir contraseña | Abren el sistema por una dirección que no es la configurada (p. ej. `http://192.168…` sin HTTPS) | Usa exactamente `http://localhost` (una caja) o `https://IP` (varias). Revisa `FRONTEND_URL`. |

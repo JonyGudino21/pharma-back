@@ -5,6 +5,25 @@ AAAA-MM-DD.
 
 ## Sin publicar
 
+### Corregido — instalación real y CI (16/10/2026)
+
+- **Bloqueo del pool de conexiones al cerrar ventas simultáneas** (falla de CI «Integración de
+  concurrencia»). El cierre de venta, el despacho FEFO y la validación de existencias leían la
+  configuración con una SEGUNDA conexión mientras retenían la de su transacción. Con el pool de un
+  servidor de 2 CPU (5 conexiones) y 5+ cobros a la vez, las transacciones se esperaban entre sí y
+  todas caducaban (12 de 12 rechazadas). `SettingsService.get(ns, tx)` lee por la transacción;
+  las lecturas simultáneas sin transacción comparten una consulta; una lectura en curso al guardar
+  ya no reinstala el valor viejo en caché. Alta de producto lee sus ajustes antes de la transacción.
+- La prueba de concurrencia fija el pool en 5 (como CI y producción pequeña) e informa el motivo de
+  cada rechazo: el error ya no depende de cuántos núcleos tenga la máquina.
+- **`npm run verificar`**: revisa versión del código, Node, `.env`, base y migraciones, compilación,
+  API y herramientas de respaldo, con la corrección de cada problema.
+- **CI**: paso «Compilar y arrancar como en producción» (`start:prod` + `/health/ready`) y job nuevo
+  «Integración y arranque en Node 24».
+- **Guías**: liberar versión (PR `develop → main` con CI en verde) antes de instalar; `verificar`
+  en cada etapa; Node 22 o 24; advertencia contra `prisma migrate dev` en clientes; anexo «Retomar
+  una instalación» y nuevos casos en Problemas comunes.
+
 ### Producción e instalación (ADR-0024, 11/10/2026)
 
 - **Guía de producción** `docs/produccion/`: preparación, instalación local en Windows (una caja y

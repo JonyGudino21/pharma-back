@@ -48,6 +48,15 @@ describe('Concurrencia de inventario y ventas (integración)', () => {
   };
 
   beforeAll(async () => {
+    // POOL FIJO DE 5 CONEXIONES, como en CI (runner de 2 CPU: Prisma usa
+    // 2×CPU+1) y como en un servidor pequeño de producción. Sin esto, en una
+    // máquina con muchos núcleos el pool es grande y esconde los bloqueos por
+    // agotamiento: una transacción que pide una SEGUNDA conexión (p. ej. leer
+    // ajustes fuera de `tx`) pasaba aquí y en CI rechazaba los 12 cierres.
+    const url = new URL(process.env.DATABASE_URL ?? '');
+    url.searchParams.set('connection_limit', '5');
+    process.env.DATABASE_URL = url.toString();
+
     moduleRef = await Test.createTestingModule({
       // La tolerancia del arqueo, el criterio de caducidad y el lote obligatorio
       // vienen de SettingsService (tabla AppSetting). ConfigService sigue
@@ -197,8 +206,18 @@ describe('Concurrencia de inventario y ventas (integración)', () => {
       _sum: { quantity: true },
     });
 
+    // Motivos de rechazo agrupados: si la prueba falla en CI, el log dice POR
+    // QUÉ se rechazó cada cierre (sin esto sólo se veía "rechazados: 12").
+    const motivos = new Map<string, number>();
+    for (const r of resultados) {
+      if (r.status !== 'rejected') continue;
+      const reason: unknown = r.reason;
+      const msg = reason instanceof Error ? reason.message : String(reason);
+      motivos.set(msg, (motivos.get(msg) ?? 0) + 1);
+    }
     console.log(
-      `   cierres OK: ${exitosos}, rechazados: ${fallidos}, stock final: ${final?.stock}`,
+      `   cierres OK: ${exitosos}, rechazados: ${fallidos}, stock final: ${final?.stock}` +
+        [...motivos].map(([m, n]) => `\n     ${n}× ${m}`).join(''),
     );
 
     expect(final?.stock).toBe(0); // nunca negativo

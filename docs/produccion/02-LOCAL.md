@@ -20,6 +20,15 @@ Dos variantes. Elige antes de empezar:
 
 Los pasos 1 a 8 son iguales. La variante B agrega el paso 9.
 
+> **Antes de ir: confirma la versión.** Se instala lo que hay en la rama `main` (o en una etiqueta
+> `vX.Y.Z`). Si los últimos cambios siguen en `develop` porque no se hizo el *pull request*
+> `develop → main` (con CI en verde), el cliente recibe una versión vieja y los pasos de esta guía no
+> coinciden con su código. En GitHub: ningún PR pendiente hacia `main` y CI en verde en su último merge.
+>
+> **En cada etapa: `npm run verificar`** (desde `C:\PharmaPOS\pharma-back`). Revisa versión del
+> código, `.env`, base de datos, migraciones, compilación y API, y dice exactamente qué corregir. La
+> guía indica qué resultado esperar en cada punto.
+
 > Tiempo estimado: 1 h 30 min la primera vez; 45 min con práctica.
 > Todo se hace en **PowerShell como administrador** (Inicio → escribe *PowerShell* → clic derecho →
 > *Ejecutar como administrador*), salvo que se indique lo contrario.
@@ -76,13 +85,15 @@ Debe imprimir `base lista`.
 
 ---
 
-## Paso 3 · Node.js 22
+## Paso 3 · Node.js (LTS)
 
 1. Descarga **Node.js 22 LTS** para Windows (x64, `.msi`): <https://nodejs.org/en/download>.
+   También sirve la **24 LTS** (el sistema completo se probó en ella). No uses versiones *Current*
+   (números impares).
 2. Instala con las opciones por defecto (no hace falta *Tools for Native Modules*).
 3. **Cierra y vuelve a abrir** PowerShell como administrador.
 
-**Comprueba:** `node -v` → `v22.x.x`.
+**Comprueba:** `node -v` → `v22.x.x` o `v24.x.x`.
 
 Si vas a clonar con Git en el servidor, instala también Git (<https://git-scm.com/download/win>).
 
@@ -94,14 +105,18 @@ Si vas a clonar con Git en el servidor, instala también Git (<https://git-scm.c
 
 ```powershell
 cd C:\PharmaPOS
-git clone https://github.com/JonyGudino21/pharma-back.git
+git clone --branch main https://github.com/JonyGudino21/pharma-back.git
 cd pharma-back
-git checkout main
 npm ci
+npm run verificar
 ```
-(Git pide usuario de GitHub y, como contraseña, el **token** de 01-PREPARACION.md §1.2.)
+(Git pide usuario de GitHub y, como contraseña, el **token** de 01-PREPARACION.md §1.2. Si ya hay
+etiqueta de versión, usa `--branch v1.2.0` en lugar de `--branch main`.)
 
-**Comprueba:** existe `C:\PharmaPOS\pharma-back\node_modules`.
+**Comprueba** con `npm run verificar`:
+- `✓ Versión del código`. Los `✗` de `.env` y base de datos son **normales aquí**: todavía no existen.
+- Si responde **`Missing script: "verificar"`**, el código clonado es **viejo** (`main` no tiene los
+  últimos cambios). Detente: haz el *pull request* `develop → main` y después `git pull`.
 
 ### 4.2 Configurar (`.env`)
 
@@ -139,7 +154,13 @@ THROTTLE_LIMIT=600
 LOG_LEVEL=info
 ```
 
-Guarda (Ctrl+S) y cierra.
+Guarda (Ctrl+S) y cierra. Para generar cada secreto (64 caracteres; usa uno distinto para cada uno):
+
+```powershell
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+**Comprueba:** `npm run verificar` → `✓ Archivo .env — NODE_ENV=production`.
 
 | Línea | Por qué |
 |---|---|
@@ -153,7 +174,12 @@ Guarda (Ctrl+S) y cierra.
 npx prisma generate
 npm run db:migrate
 ```
-**Comprueba:** termina con *All migrations have been successfully applied* (o *No pending migrations*).
+**Comprueba:** termina con *All migrations have been successfully applied* (o *No pending migrations*)
+y `npm run verificar` → `✓ Base de datos — conectada y con todas las migraciones`.
+
+> ⚠️ **En un cliente, NUNCA `npx prisma migrate dev`.** Es un comando de desarrollo: puede crear
+> migraciones que no existen en el código y hasta **ofrecer borrar la base**. En producción siempre
+> `npm run db:migrate` (= `prisma migrate deploy`), que sólo aplica las migraciones que trae el código.
 
 Crea el administrador y los datos de la farmacia (cambia los valores):
 
@@ -172,7 +198,7 @@ Remove-Item Env:SEED_ADMIN_PASSWORD
 ```powershell
 npm run build
 ```
-**Comprueba:** existe `C:\PharmaPOS\pharma-back\dist\src\main.js`.
+**Comprueba:** `npm run verificar` → `✓ Compilación — dist/src/main.js al día`.
 
 ### 4.4 Prueba manual
 
@@ -184,6 +210,9 @@ Deja esa ventana abierta y en **otra** PowerShell:
 Invoke-RestMethod http://127.0.0.1:3005/health/ready
 ```
 Debe responder `status: ok`. Vuelve a la primera ventana y detenla con **Ctrl+C**.
+
+Si `start:prod` dice **`Cannot find module …\dist\…`**: falta compilar o el código es viejo (las
+versiones anteriores buscaban `dist\main`). Corre `npm run verificar` y sigue lo que indique.
 
 ---
 
@@ -266,6 +295,8 @@ Get-Service postgresql-x64-16, PharmaPOS-API, PharmaPOS-Web
 ```
 Los tres en `Running`. Si uno no arranca, mira `C:\PharmaPOS\logs\api.log` o `web.log`
 (ver [04-OPERACION.md](04-OPERACION.md) § Problemas comunes).
+
+Y `npm run verificar` (en `C:\PharmaPOS\pharma-back`) → `✓ API — responde en …/health/ready`.
 
 ---
 
@@ -363,6 +394,7 @@ El simulacro mensual de restauración está en [04-OPERACION.md](04-OPERACION.md
 
 ## Lista final (no entregues sin esto)
 
+- [ ] `npm run verificar` → `✓ Todo listo` (sin `✗`; revisa cada `!`).
 - [ ] `Get-Service postgresql-x64-16, PharmaPOS-API, PharmaPOS-Web` → todos `Running`.
 - [ ] Tras **reiniciar** la PC, el sistema abre sin intervención.
 - [ ] `Invoke-RestMethod http://127.0.0.1:3005/health/ready` → `ok`.
@@ -372,3 +404,55 @@ El simulacro mensual de restauración está en [04-OPERACION.md](04-OPERACION.md
 - [ ] Simulacro de restauración hecho (04-OPERACION.md).
 - [ ] Contraseña del administrador cambiada por el dueño; secretos en el gestor de contraseñas.
 - [ ] Acceso remoto de soporte instalado (04-OPERACION.md § Soporte remoto).
+
+---
+
+## Anexo · Retomar una instalación a medias o con código viejo
+
+Para cuando la instalación se quedó en algún paso, o se instaló una versión vieja y hay que traer la
+nueva **sin perder lo ya hecho** (PostgreSQL, `.env`, carpetas, front, Caddy). Nada de esto borra datos.
+
+| Lo que ya tienes | ¿Se conserva? |
+|---|---|
+| PostgreSQL, su usuario `pharmapos` y la base | Sí. Las migraciones nuevas se aplican encima. |
+| `C:\PharmaPOS\pharma-back\.env` | Sí. Git nunca lo toca (está en `.gitignore`). |
+| Carpetas `web`, `caddy`, `logs` | Sí. Están fuera del repositorio. |
+| Usuarios y datos de la farmacia | Sí. La semilla no duplica ni sobrescribe lo personalizado. |
+
+1. **Respaldo primero** (aunque la base esté casi vacía):
+   ```powershell
+   $env:PATH = "C:\Program Files\PostgreSQL\16\bin;$env:PATH"
+   cd C:\PharmaPOS\pharma-back
+   New-Item -ItemType Directory -Force C:\PharmaPOS\respaldos | Out-Null
+   pg_dump -h 127.0.0.1 -U pharmapos -d pharmapos -F c -f C:\PharmaPOS\respaldos\antes-de-actualizar.dump
+   ```
+   (pide la contraseña de `pharmapos`; deja un archivo de varios KB).
+2. **Detén la API** si ya estaba como servicio: `nssm stop PharmaPOS-API` (si aún no llegaste al
+   paso 7, cierra cualquier ventana con `start:prod`).
+3. **Revisa que no haya cambios locales** que estorben:
+   ```powershell
+   git status --short
+   ```
+   Debe salir vacío. Si aparece una carpeta nueva en `prisma\migrations\` (creada por
+   `prisma migrate dev`), **no sigas**: guarda la salida y pide apoyo (§ Problemas comunes de 04-OPERACION.md).
+4. **Trae la versión nueva:**
+   ```powershell
+   git fetch --tags
+   git checkout main
+   git pull
+   npm ci
+   npx prisma generate
+   npm run db:migrate
+   npm run build
+   ```
+5. **Compara tu `.env` con la plantilla** por si la versión nueva pide variables:
+   ```powershell
+   npm run verificar
+   ```
+   Corrige cada `✗` de arriba hacia abajo hasta ver `✓ Versión`, `.env`, `Base de datos` y
+   `Compilación`.
+6. **Semilla** (si nunca la corriste o la versión vieja no la tenía): paso 4.3. Es segura de repetir.
+7. **Front:** si tu ZIP es de antes del último `main` del front, compila otro (01-PREPARACION.md §1.4)
+   y descomprímelo **encima** de `C:\PharmaPOS\web`.
+8. Prueba manual (paso 4.4) o, si ya existe el servicio, `nssm start PharmaPOS-API`, y **continúa en
+   el paso donde te quedaste**.
