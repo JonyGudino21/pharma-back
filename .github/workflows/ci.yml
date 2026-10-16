@@ -126,3 +126,88 @@ jobs:
       # se pisarian entre si y produciran fallos intermitentes que no son bugs reales.
       - name: Pruebas de integracion
         run: npm run test:e2e -- --runInBand
+
+      # Arranque REAL como en producción: compila, corre `npm run start:prod` y
+      # espera a /health/ready. Detecta lo que las pruebas no ven: una ruta de
+      # arranque equivocada (`start:prod` buscando `dist/main`) llegó a un
+      # cliente y falló a mitad de la instalación.
+      - name: Compilar y arrancar como en producción
+        env:
+          NODE_ENV: production
+          COOKIE_SECURE: 'true'
+          HOST: 127.0.0.1
+          PORT: '3005'
+        run: |
+          npm run build
+          npm run start:prod > api.log 2>&1 &
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3005/health/ready; then echo; echo "API arriba"; exit 0; fi
+            sleep 2
+          done
+          echo "La API no respondió en 60 s:"; cat api.log; exit 1
+
+  # Las instalaciones pueden quedar en Node 24 LTS (el instalador de nodejs.org
+  # lo ofrece primero). Misma integración y mismo arranque que arriba, en 24.
+  e2e-node24:
+    name: Integracion y arranque en Node 24
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pharma_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/pharma_test?schema=public
+      NODE_ENV: test
+      JWT_SECRET: ci_throwaway_secret_used_only_inside_the_runner
+      JWT_REFRESH_SECRET: ci_throwaway_refresh_secret_used_only_inside_the_runner
+      FRONTEND_URL: http://localhost:3000
+      TOLERANCE_THRESHOLD: '20'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Generar Prisma Client
+        run: npx prisma generate
+
+      - name: Aplicar migraciones en la base efimera
+        run: npx prisma migrate deploy
+
+      - name: Pruebas de integracion
+        run: npm run test:e2e -- --runInBand
+
+      - name: Compilar y arrancar como en producción
+        env:
+          NODE_ENV: production
+          COOKIE_SECURE: 'true'
+          HOST: 127.0.0.1
+          PORT: '3005'
+        run: |
+          npm run build
+          npm run start:prod > api.log 2>&1 &
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3005/health/ready; then echo; echo "API arriba"; exit 0; fi
+            sleep 2
+          done
+          echo "La API no respondió en 60 s:"; cat api.log; exit 1
