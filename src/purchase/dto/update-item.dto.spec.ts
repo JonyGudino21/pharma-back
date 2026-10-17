@@ -1,4 +1,4 @@
-import { ValidationPipe } from '@nestjs/common';
+import { crearValidationPipe } from '../../common/pipes/validation.pipe';
 import { UpdatePurchaseItemDto } from './update-item.dto';
 
 /**
@@ -6,13 +6,8 @@ import { UpdatePurchaseItemDto } from './update-item.dto';
  * pasar la validación global intacto (no rechazarse ni convertirse en otra cosa).
  */
 describe('UpdatePurchaseItemDto con el ValidationPipe de la app', () => {
-  // Mismas opciones que configure-http.ts.
-  const pipe = new ValidationPipe({
-    transform: true,
-    whitelist: true,
-    forbidNonWhitelisted: true,
-    transformOptions: { enableImplicitConversion: true },
-  });
+  // El MISMO pipe que usa la app (configure-http.ts).
+  const pipe = crearValidationPipe();
 
   const validar = (body: Record<string, unknown>) =>
     pipe.transform(body, {

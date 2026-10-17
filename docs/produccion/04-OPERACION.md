@@ -100,6 +100,9 @@ Usa los mismos secretos (`.env`) del gestor de contraseñas.
 
 ## 4.5 Actualizar a una versión nueva
 
+> **Guía completa y paso a paso: [07-ACTUALIZAR.md](07-ACTUALIZAR.md)** (liberar la versión, backend, front,
+> cajas, prueba rápida y cómo volver atrás). Aquí queda el resumen.
+
 Reglas (CONTRIBUTING.md): sólo se publica `main`; **primero el backend** (con sus migraciones),
 **después el front**; fuera de horario pico. Las cajas verán el aviso *"Hay una versión nueva de PharmaPOS"* y
 actualizan cuando terminen lo que estaban haciendo (ADR-0018). Nadie pierde una venta.

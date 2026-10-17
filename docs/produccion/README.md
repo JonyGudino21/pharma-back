@@ -19,6 +19,7 @@ ha administrado un servidor**: cada paso dice qué hacer, qué escribir y cómo 
 | 4 | [Operación diaria](04-OPERACION.md) | Respaldos, restaurar, actualizar, vigilar, soporte remoto, problemas comunes. |
 | 5 | [Instalar en un cliente](05-INSTALAR-CLIENTE.md) | La visita a la farmacia: equipo, impresora, cajón, lector, capacitación y entrega. |
 | 6 | [Costos y planes](06-COSTOS-Y-PLANES.md) | Cuánto cuesta cada opción y propuesta de planes y precios para tus clientes. |
+| 7 | [Actualizar](07-ACTUALIZAR.md) | Llevar una versión nueva (backend y front) a la farmacia o a la nube sin perder nada, y cómo volver atrás. |
 
 ---
 

@@ -1,11 +1,8 @@
-import {
-  INestApplication,
-  RequestMethod,
-  ValidationPipe,
-} from '@nestjs/common';
+import { INestApplication, RequestMethod } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
+import { crearValidationPipe } from './common/pipes/validation.pipe';
 
 /**
  * Configuración HTTP compartida entre bootstrap y los e2e.
@@ -66,16 +63,8 @@ export function configureHttp(app: INestApplication, config: ConfigService) {
     exposedHeaders: ['x-request-id'],
   });
 
-  app.useGlobalPipes(
-    new ValidationPipe({
-      transform: true,
-      whitelist: true,
-      forbidNonWhitelisted: true,
-      transformOptions: {
-        enableImplicitConversion: true,
-      },
-    }),
-  );
+  // Ver crearValidationPipe: también lo usan las pruebas de contrato.
+  app.useGlobalPipes(crearValidationPipe());
 
   app.useGlobalFilters(new AllExceptionsFilter());
 }

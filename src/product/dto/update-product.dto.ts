@@ -1,6 +1,5 @@
 import { OmitType, PartialType } from '@nestjs/mapped-types';
 import { CreateProductDto } from './create-product.dto';
-import { IsBoolean, IsOptional } from 'class-validator';
 
 /**
  * Edición del ficha del producto.
@@ -21,8 +20,4 @@ import { IsBoolean, IsOptional } from 'class-validator';
  */
 export class UpdateProductDto extends PartialType(
   OmitType(CreateProductDto, ['stock', 'lotNumber', 'expiryDate'] as const),
-) {
-  @IsBoolean()
-  @IsOptional()
-  isActive?: boolean;
-}
+) {}

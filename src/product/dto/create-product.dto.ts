@@ -44,6 +44,16 @@ export class CreateProductDto {
   @IsOptional()
   controlled?: boolean;
 
+  /**
+   * Por omisión el producto nace ACTIVO. Se acepta en el alta porque el
+   * formulario lo enviaba y la validación estricta respondía 400 al crear
+   * cualquier producto; además, una caja con la versión anterior del front
+   * abierta lo seguirá enviando hasta recargar.
+   */
+  @IsBoolean()
+  @IsOptional()
+  isActive?: boolean;
+
   // Enteros y no negativos: `@IsNumber()` a secas aceptaba -5 y 2.5 unidades
   // de una caja de tabletas.
   @IsInt()

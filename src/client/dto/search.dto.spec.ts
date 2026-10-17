@@ -1,4 +1,4 @@
-import { ValidationPipe } from '@nestjs/common';
+import { crearValidationPipe } from '../../common/pipes/validation.pipe';
 import { SearchClientDto } from './search.dto';
 
 /**
@@ -7,13 +7,8 @@ import { SearchClientDto } from './search.dto';
  * ("property page should not exist") y la búsqueda nunca funcionó.
  */
 describe('SearchClientDto con el ValidationPipe de la app', () => {
-  // Mismas opciones que configure-http.ts.
-  const pipe = new ValidationPipe({
-    transform: true,
-    whitelist: true,
-    forbidNonWhitelisted: true,
-    transformOptions: { enableImplicitConversion: true },
-  });
+  // El MISMO pipe que usa la app (configure-http.ts).
+  const pipe = crearValidationPipe();
 
   const validar = (query: Record<string, string>) =>
     pipe.transform(query, { type: 'query', metatype: SearchClientDto });
