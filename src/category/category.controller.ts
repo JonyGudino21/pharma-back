@@ -54,8 +54,12 @@ export class CategoryController {
    */
   @Get('search')
   async search(@Query() searchDto: SearchCategoryDto) {
-    const { name, ...pagination } = searchDto;
-    const res = await this.categoryService.search(name, pagination);
+    const { name, active, ...pagination } = searchDto;
+    const res = await this.categoryService.search(
+      name,
+      pagination,
+      parseQueryActiveFilter(active),
+    );
     return ApiResponse.ok(res, 'Categories retrieved successfully');
   }
 

@@ -74,7 +74,7 @@ export class ProductService {
           taxCategory: createProductDto.taxCategory ?? taxesCfg.defaultCategory,
           price: createProductDto.price,
           cost: createProductDto.cost,
-          isActive: true,
+          isActive: createProductDto.isActive ?? true,
           categories: createProductDto.categories
             ? {
                 create: createProductDto.categories.map((catId) => ({

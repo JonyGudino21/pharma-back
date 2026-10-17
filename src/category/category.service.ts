@@ -134,7 +134,11 @@ export class CategoryService {
     });
   }
 
-  async search(name: string, pagination?: PaginationParamsDto) {
+  async search(
+    name: string | undefined,
+    pagination?: PaginationParamsDto,
+    isActive?: boolean,
+  ) {
     const paginacion = resolvePagination(pagination);
 
     const conditions: Array<{
@@ -144,7 +148,10 @@ export class CategoryService {
       conditions.push({ name: { contains: name, mode: 'insensitive' } });
     }
 
-    const where = conditions.length > 0 ? { OR: conditions } : {};
+    const where = {
+      ...(conditions.length > 0 ? { OR: conditions } : {}),
+      ...(isActive !== undefined ? { isActive } : {}),
+    };
 
     const [categories, total] = await Promise.all([
       this.prisma.category.findMany({

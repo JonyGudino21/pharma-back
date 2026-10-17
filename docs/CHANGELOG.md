@@ -5,6 +5,20 @@ AAAA-MM-DD.
 
 ## Sin publicar
 
+### Corregido — contrato front ↔ back (16/10/2026, v1.3.0)
+
+- **Crear producto respondía 400** «property isActive should not exist» (con el cliente enfrente).
+  El formulario mandaba `isActive` desde mayo y `CreateProductDto` no lo declaraba. El alta ahora lo
+  acepta (por omisión, activo), para no romper cajas con la versión anterior del front abierta.
+- **Buscar categorías con Activas/Inactivas respondía 400** (`active` no declarado):
+  `SearchCategoryDto` hereda `PaginationWithActiveQueryDto` y el servicio filtra.
+- **Mensaje entendible para campos no reconocidos**: el ValidationPipe global
+  (`common/pipes/validation.pipe.ts`, única fuente para la app y las pruebas) responde en español,
+  con `codigo: CAMPOS_NO_RECONOCIDOS` y `campos` con el detalle.
+- Pruebas de contrato con el pipe real y los cuerpos exactos de la pantalla (producto, categorías).
+  Auditoría de las ~60 llamadas del front: sin más desajustes de campos.
+- Guía nueva `docs/produccion/07-ACTUALIZAR.md`.
+
 ### Corregido — instalación real y CI (16/10/2026)
 
 - **Bloqueo del pool de conexiones al cerrar ventas simultáneas** (falla de CI «Integración de
