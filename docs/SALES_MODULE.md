@@ -203,6 +203,26 @@ Antes se reembolsaba `price × cantidad`: con 50 % de descuento se devolvía al 
 
 `GET /sales/summary` agrega `totalDiscounts` y `totalTax`.
 
+## Cambio de precio en caja y precios por cliente (ADR-0025, v1.4)
+
+| Método | Ruta | Uso |
+|---|---|---|
+| PATCH | `/sales/:id/items/:itemId/price` | `{ price, saveForClient?, reason? }`. Cambia el precio unitario (con IVA) de una línea. |
+
+Reglas:
+- Quién: según **Configuración › Precios en caja** (`pricing`). Gerencia y administración siempre
+  (si `enabled`); farmacéutico y cajero según `pharmacistCanEdit` / `cashierCanEdit`. 403 si no.
+- Sólo en borrador y **sin pagos** (409), como los descuentos. Bloquea la venta (`FOR UPDATE`).
+- Margen: neto por pieza (con el % de descuento de la línea) contra `costAtSale`. Bajo costo: 400
+  salvo `allowBelowCost`. Igual al costo: se acepta y la respuesta trae `margin: SIN_GANANCIA`.
+- Con cliente y `saveForClient`: queda como su precio especial con historial (`saleId`, motivo,
+  precio anterior). Igual al precio de lista: se **quita** el especial (el cliente sigue la lista).
+- La línea guarda `listPrice`, `priceSource` (`LIST | CLIENT | MANUAL`), `priceChangedById` y
+  `priceReason`.
+- `PATCH /sales/:id/set-client` re-precia a los precios especiales del cliente (o a lista, también
+  lo editado a mano) y responde `repriced` (líneas que cambiaron).
+- El cierre de venta **ya no** escribe precios especiales (antes congelaba la lista; ver ADR-0025).
+
 ## 7. Comprobantes impresos: ticket y nota de remisión (sin publicar)
 
 Cada impresión de un comprobante se registra **antes** de mandar el papel a la impresora, para que

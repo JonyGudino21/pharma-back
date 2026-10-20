@@ -51,17 +51,17 @@ Si uno está en ✗ rojo: **no se instala**. Se corrige primero.
 cd C:\Projects\pharma-back
 git checkout main
 git pull
-git tag -a v1.3.0 -m "Versión 1.3.0"
-git push origin v1.3.0
+git tag -a v1.4.0 -m "Versión 1.4.0"
+git push origin v1.4.0
 
 cd C:\Projects\pharma-front
 git checkout main
 git pull
-git tag -a v1.3.0 -m "Versión 1.3.0"
-git push origin v1.3.0
+git tag -a v1.4.0 -m "Versión 1.4.0"
+git push origin v1.4.0
 ```
 
-Usa el mismo número en los dos. Súbelo en cada versión (1.3.0 → 1.3.1 para correcciones, 1.4.0 para
+Usa el mismo número en los dos. Súbelo en cada versión (1.4.0 → 1.4.1 para correcciones, 1.5.0 para
 funciones nuevas). Con la etiqueta siempre puedes volver exactamente a esa versión.
 
 ### A3. Compilar el front (el ZIP que llevarás)
@@ -74,7 +74,7 @@ pnpm install
 $env:NUXT_PUBLIC_API_BASE_URL = "/api"
 pnpm generate
 New-Item -ItemType Directory -Force C:\Releases | Out-Null
-Compress-Archive -Path .output\public\* -DestinationPath C:\Releases\pharmapos-web-v1.3.0.zip -Force
+Compress-Archive -Path .output\public\* -DestinationPath C:\Releases\pharmapos-web-v1.4.0.zip -Force
 ```
 
 **Comprueba:** abre el ZIP: en la raíz deben estar `index.html`, `200.html` y la carpeta `_nuxt`
@@ -100,7 +100,7 @@ Si todavía no:
 ```powershell
 $env:PATH = "C:\Program Files\PostgreSQL\16\bin;$env:PATH"
 New-Item -ItemType Directory -Force C:\PharmaPOS\respaldos | Out-Null
-pg_dump -h 127.0.0.1 -U pharmapos -d pharmapos -F c -f C:\PharmaPOS\respaldos\antes-de-v1.3.0.dump
+pg_dump -h 127.0.0.1 -U pharmapos -d pharmapos -F c -f C:\PharmaPOS\respaldos\antes-de-v1.4.0.dump
 ```
 (pide la contraseña de `pharmapos`).
 
@@ -127,13 +127,13 @@ sigas**: anota lo que salió y revisa 04-OPERACION.md § Problemas comunes.
 ```powershell
 git log -1 --oneline
 ```
-La primera vez que uses etiquetas, empieza en `v1.3.0`.
+La primera vez que uses etiquetas, empieza en `v1.4.0`.
 
 ### B4. Traer la versión nueva del backend
 
 ```powershell
 git fetch --tags
-git checkout v1.3.0
+git checkout v1.4.0
 ```
 (Si no usas etiquetas: `git checkout main` y luego `git pull`.)
 
@@ -173,10 +173,10 @@ npm run verificar
 
 ### B8. Front nuevo
 
-1. Copia el ZIP a la PC (p. ej. `C:\Releases\pharmapos-web-v1.3.0.zip`).
+1. Copia el ZIP a la PC (p. ej. `C:\Releases\pharmapos-web-v1.4.0.zip`).
 2. Descomprímelo **encima** de la carpeta actual (reemplaza archivos, **no borres antes**):
    ```powershell
-   Expand-Archive -Path C:\Releases\pharmapos-web-v1.3.0.zip -DestinationPath C:\PharmaPOS\web -Force
+   Expand-Archive -Path C:\Releases\pharmapos-web-v1.4.0.zip -DestinationPath C:\PharmaPOS\web -Force
    ```
 **Comprueba:** `Test-Path C:\PharmaPOS\web\index.html` → `True` y la fecha de modificación de
 `C:\PharmaPOS\web\index.html` es la de hoy.
@@ -220,8 +220,8 @@ Luego la prueba rápida (B10) en `https://tudominio`.
 
 Para instalar una etiqueta en lugar de `main`, antes de `./actualizar.sh`:
 ```bash
-git -C /opt/pharmapos/pharma-back fetch --tags && git -C /opt/pharmapos/pharma-back checkout v1.3.0
-git -C /opt/pharmapos/pharma-front fetch --tags && git -C /opt/pharmapos/pharma-front checkout v1.3.0
+git -C /opt/pharmapos/pharma-back fetch --tags && git -C /opt/pharmapos/pharma-back checkout v1.4.0
+git -C /opt/pharmapos/pharma-front fetch --tags && git -C /opt/pharmapos/pharma-front checkout v1.4.0
 docker compose up -d --build
 ```
 
@@ -232,9 +232,44 @@ docker compose up -d --build
 | Qué falló | Qué hacer |
 |---|---|
 | Las pantallas nuevas fallan | Descomprime el **ZIP anterior** encima de `C:\PharmaPOS\web` (B8) y F5 en las cajas. |
-| La API no arranca y **no** había migraciones nuevas | Vuelve a la versión anterior: `git checkout v1.2.0` (su etiqueta) o, si aún no usas etiquetas, el *commit* anterior que anotaste en B4 (`git checkout <commit>`) → B5 → B7. |
+| La API no arranca y **no** había migraciones nuevas | Vuelve a la versión anterior: `git checkout v1.3.0` (su etiqueta) o, si aún no usas etiquetas, el *commit* anterior que anotaste en B4 (`git checkout <commit>`) → B5 → B7. |
 | La API no arranca y **sí** había migraciones nuevas | Restaura el respaldo de B1 (04-OPERACION.md §4.4) y vuelve a la versión anterior (fila de arriba). |
 | No sabes qué pasó | `npm run verificar` y `Get-Content C:\PharmaPOS\logs\api.log -Tail 50`. Con el código de referencia del error, busca en ese log. |
+
+---
+
+## Notas de la versión 1.4.0 (20/10/2026)
+
+> ⚠️ **Lee esto antes de actualizar.** Esta versión trae una migración con **corrección de datos**:
+> los "precios especiales" que el sistema guardaba solo al cerrar cada venta con cliente eran en
+> realidad precios de **lista congelados** (nunca hubo forma de capturarlos a propósito). Se
+> **desactivan sin borrarse**: esos clientes vuelven a pagar el precio de lista vigente.
+>
+> Si algún cliente tenía un precio realmente pactado, después de actualizar captúralo en
+> **Clientes › (cliente) › Precios especiales › Agregar precio**, o desde caja (abajo).
+
+**Qué cambia para el usuario**
+- **Cambiar el precio en caja**: en cada producto del carrito, el precio subrayado (**$45.50 c/u ✎**)
+  abre «Cambiar precio». Con cliente elegido, la casilla **Guardar como precio especial de …** lo deja
+  como su precio: la próxima vez se le cobra solo. Etiquetas **Precio cliente** y **Precio editado**.
+- **Avisos de ganancia**: igual al costo → aviso «sin ganancia» (se permite); debajo del costo → no se
+  acepta (salvo que se permita). Icono de aviso en la línea con la explicación al pasar el cursor.
+- **Al cambiar de cliente** con productos en el carrito, los precios cambian a los del cliente (o a la
+  lista) y se avisa cuántos cambiaron.
+- **Clientes › Estado de cuenta › Precios especiales**: ver, agregar, cambiar, quitar e historial.
+- **Configuración › Precios en caja**: quién puede cambiar precios (gerencia siempre; farmacéutico sí y
+  cajero no, de fábrica), motivo obligatorio, casilla de cliente y vender bajo costo.
+- **Ticket**: ya se puede guardar el nombre comercial (el aviso de versión nueva tapaba el botón); el
+  Encabezado ya no se va al final; avisos de logo/RFC/domicilio en la térmica.
+- **Nota de remisión**: logo, razón social, RFC, régimen fiscal (nuevo), domicilio, teléfono y correo se
+  muestran u ocultan uno por uno (Configuración › Nota de remisión).
+
+**Prueba rápida de esta versión (además de B10)**
+- [ ] POS: un producto, elige un cliente, cambia su precio con la casilla marcada → etiqueta **Precio
+      cliente**. Cambia a Público General (vuelve a lista) y otra vez al cliente (vuelve su precio).
+      Descarta la venta.
+- [ ] Clientes › ese cliente → aparece en **Precios especiales**; quítalo si era de prueba.
+- [ ] Configuración › Ticket: cambia el nombre comercial y **Guardar cambios** funciona.
 
 ---
 
