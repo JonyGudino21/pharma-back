@@ -50,12 +50,8 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
     saleRefund: { create: jest.fn(), aggregate: jest.fn(), groupBy: jest.fn() },
     salePayment: { groupBy: jest.fn() },
     cashTransaction: { create: jest.fn() },
-    // updateClientPricesOnSaleComplete al cerrar una venta con cliente.
-    //
-    // `findMany` y `createMany` entraron con la corrección del N+1 (Fase 4): la
-    // rutina pasó de cuatro consultas por línea del ticket a una lectura en lote
-    // más escrituras agrupadas. Un mock incompleto aquí no falla con un mensaje
-    // útil, falla con "tx.clientProductPrice.findMany is not a function".
+    // Precios especiales del cliente: el carrito los LEE (create/addItem/
+    // setClient). Desde ADR-0025 el cierre de venta ya no los escribe.
     clientProductPrice: {
       findUnique: jest.fn(),
       findMany: jest.fn().mockResolvedValue([]),
