@@ -5,6 +5,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { CreateProductDto } from './dto/create-product.dto';
+import type { SearchField } from './dto/search-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { PrismaService } from 'prisma/prisma.service';
 import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
@@ -544,6 +545,7 @@ export class ProductService {
    * @param name nombre del producto a buscar
    * @param letters arreglo de letras iniciales del nombre del producto a buscar
    * @param pagination parametros de paginacion (opcional)
+   * @param by dónde buscar: 'all' (de fábrica), 'name' o 'code' (SKU y código de barras)
    * @returns el producto encontrado o error si no existe
    */
   async search(
@@ -551,18 +553,24 @@ export class ProductService {
     letters?: string[],
     pagination?: PaginationParamsDto,
     active?: boolean,
+    by: SearchField = 'all',
   ) {
     const paginacion = resolvePagination(pagination);
 
     const conditions: Array<{ [key: string]: any }> = [];
 
     if (name) {
-      // El mismo texto busca en nombre y en SKU (parcial): en Inventario y en
-      // el POS se escribe tanto "paracetamol" como "PARA-500".
-      conditions.push(
-        { name: { contains: name, mode: 'insensitive' } },
-        { sku: { contains: name, mode: 'insensitive' } },
-      );
+      // El mismo texto busca en nombre, SKU y código de barras (parcial): se
+      // escribe "paracetamol", "PARA-500" o lo que captura el escáner.
+      if (by !== 'code') {
+        conditions.push({ name: { contains: name, mode: 'insensitive' } });
+      }
+      if (by !== 'name') {
+        conditions.push(
+          { sku: { contains: name, mode: 'insensitive' } },
+          { barcode: { contains: name.trim() } },
+        );
+      }
     }
 
     if (letters && letters.length > 0) {
