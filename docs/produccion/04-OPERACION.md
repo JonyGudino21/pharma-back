@@ -89,7 +89,8 @@ cd /opt/pharmapos/pharma-back/deploy/nube
 ./restaurar.sh respaldos/pharma-AAAA-MM-DDTHH-MM-SS.dump --confirmar
 ```
 
-**Si se descompuso la PC del servidor:** en la PC nueva sigue [02-LOCAL.md](02-LOCAL.md) pasos 1 a 7
+**Si se descompuso la PC del servidor o cambian de computadora:** guía completa en
+[08-RESPALDO-Y-CAMBIO-DE-PC.md](08-RESPALDO-Y-CAMBIO-DE-PC.md). En resumen: en la PC nueva sigue [02-LOCAL.md](02-LOCAL.md) pasos 1 a 7
 (**sin** la semilla del paso 4.3) y luego restaura el último respaldo de OneDrive con `--confirmar`.
 Usa los mismos secretos (`.env`) del gestor de contraseñas.
 

@@ -70,7 +70,7 @@ Viven en el repositorio `engineering-playbook`, carpeta `adrs/`:
 | ADR-0026 | Folio sugerido, búsqueda por código y alta de producto desde Compras | `engineering-playbook/adrs/ADR-0026-pharma-purchase-folio-and-inline-product.md` |
 | ADR-0027 | Volver a vender una venta anulada | `engineering-playbook/adrs/ADR-0027-pharma-reorder-cancelled-sale.md` |
 | ADR-0028 | Exportar listas de precios (propuesta) | `engineering-playbook/adrs/ADR-0028-pharma-price-list-export.md` |
-| ADR-0029 | Días de crédito y cartera vencida (propuesta) | `engineering-playbook/adrs/ADR-0029-pharma-credit-days-and-receivables.md` |
+| ADR-0029 | Días de crédito, cobranza por antigüedad y cuentas por pagar | `engineering-playbook/adrs/ADR-0029-pharma-credit-days-and-receivables.md` |
 
 ## 4. Flujo de trabajo
 

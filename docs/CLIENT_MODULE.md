@@ -28,7 +28,7 @@ Este módulo cubre el **CRM y las cuentas por cobrar**: alta y edición de clien
 | GET | /client/debtors | Lista clientes con deuda. Incluye totalCompanyDebt. Query: page, limit. | MANAGER |
 | GET | /client/:id/account-statement | Estado de cuenta: movimientos, totales por periodo. Query: page, limit, startDate, endDate. | Cualquier usuario autenticado |
 | GET | /client/:id | Detalle de un cliente (con _count de ventas). | Cualquier usuario autenticado |
-| PATCH | /client/:id/credit-config | Actualiza hasCredit y creditLimit. | MANAGER |
+| PATCH | /client/:id/credit-config | Actualiza hasCredit, creditLimit y `creditDays` (opcional; `null` = sin días propios). | MANAGER |
 | POST | /client/:id/payment | Registra abono a la deuda (FIFO). | Cualquier usuario autenticado |
 | PATCH | /client/:id | Actualiza datos del cliente. | MANAGER |
 | DELETE | /client/:id | Desactiva el cliente (soft delete). | MANAGER |
@@ -45,6 +45,22 @@ Todos requieren JWT. Paginación estándar; estado de cuenta incluye hasNext, ha
 | GET | `/client/:clientId/prices/:productId/history` | MANAGER | Historial (más reciente primero). |
 
 Escritor único: `src/client/client-prices.ts` (`fijarPrecioCliente`), también usado por caja.
+
+### Cobranza y días de crédito (ADR-0029, v1.6)
+
+| Método | Ruta | Rol | Uso |
+|---|---|---|---|
+| GET | `/client/receivables` | MANAGER | Cartera: `totals` (balance, overdue, dueSoon, current, noDate…), `aging` (AL_CORRIENTE, D1_30, D31_60, D61_90, D90_MAS, SIN_FECHA), `clients` (ordenados por urgencia) y `sales` (en orden de cobro). Query opcional `clientId`. |
+| PATCH | `/client/receivables/:saleId/due-date` | MANAGER | `{ dueDate: "AAAA-MM-DD" \| null }`. Sólo ventas cerradas con saldo; no anterior a hoy. |
+| GET | `/client/:id/credit-status` | Cualquiera | Para la caja: `suggestedDays`, `overdue`, `overdueCount`, `maxDaysOverdue`, `warnAtPos`, `blocksCredit`. |
+
+- `Client.creditDays` (opcional) y `Sale.dueDate` (DATE, opcional). La fecha se fija al cerrar la
+  venta (`CompleteSaleDto.dueDate`: fecha, `null` = sin fecha, ausente = sugerida con los días del
+  cliente o `credit.defaultCreditDays`); cambiar después los días del cliente no mueve fechas pasadas.
+- Estados (calendario de la farmacia): **VENCIDA** (fecha < hoy), **POR_VENCER** (hoy … hoy +
+  `credit.dueSoonDays`), **AL_CORRIENTE**, **SIN_FECHA**. Reglas puras en
+  `src/common/utils/credit-terms.ts`.
+- `account-statement` incluye `dueDate` en cada movimiento.
 
 ## 4. Payload destacado
 

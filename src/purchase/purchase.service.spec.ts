@@ -1051,9 +1051,16 @@ describe('PurchaseService — recepción, costo promedio y cancelación', () => 
         { invoiceNumber: 'FAC-002-ALV-20261023' },
       ]);
 
+      mockPrisma.supplier.findUnique.mockResolvedValue({
+        ...alvex,
+        creditDays: 30,
+      });
+
       await expect(service.suggestFolio(3)).resolves.toEqual({
         folio: 'FAC-003-ALV-20261023',
         supplierCode: 'ALV',
+        creditDays: 30,
+        suggestedDueDate: '2026-11-22',
       });
     });
 

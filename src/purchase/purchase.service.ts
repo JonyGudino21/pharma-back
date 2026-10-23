@@ -38,7 +38,11 @@ import {
   FOLIO_PREFIJO,
   siguienteConsecutivo,
 } from './purchase-folio';
-import { resolverFechaPago } from 'src/common/utils/credit-terms';
+import {
+  fechaSugerida,
+  resolverFechaPago,
+  ymdDe,
+} from 'src/common/utils/credit-terms';
 
 /** Candado por proveedor al asignar folio (pg_advisory_xact_lock(clase, proveedor)). */
 const LOCK_FOLIO_POR_PROVEEDOR = 7003;
@@ -318,14 +322,18 @@ export class PurchaseService {
   async suggestFolio(supplierId: number) {
     const supplier = await this.prisma.supplier.findUnique({
       where: { id: supplierId },
-      select: { id: true, name: true },
+      select: { id: true, name: true, creditDays: true },
     });
     if (!supplier) {
       throw new NotFoundException('Proveedor no encontrado');
     }
+    const fechaPago = fechaSugerida(supplier.creditDays);
     return {
       folio: await this.sugerirFolio(this.prisma, supplier),
       supplierCode: claveProveedor(supplier.name),
+      // Para proponer la fecha de pago en la captura (ADR-0029).
+      creditDays: supplier.creditDays,
+      suggestedDueDate: fechaPago ? ymdDe(fechaPago) : null,
     };
   }
 
