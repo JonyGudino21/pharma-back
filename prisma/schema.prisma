@@ -27,6 +27,9 @@ model Client {
   hasCredit   Boolean @default(false)
   creditLimit Decimal @default(0) @db.Decimal(12, 2)
   currentDebt Decimal @default(0) @db.Decimal(12, 2) // Campo calculado/caché para velocidad
+  // Días de crédito pactados (opcional, ADR-0029). Sólo SUGIEREN la fecha de
+  // pago al vender a crédito; la caja puede cambiarla o dejar la venta sin fecha.
+  creditDays  Int?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -133,6 +136,9 @@ model Sale {
   status        SaleStatus     @default(PENDING)
   paymentMethod PaymentMethod  @default(CASH)
   note          String?
+  // Fecha límite de pago de una venta a crédito (opcional, ADR-0029). Se fija
+  // al cobrar: cambiar después los días del cliente no mueve lo ya pactado.
+  dueDate       DateTime?      @db.Date
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -153,6 +159,7 @@ model Sale {
   @@index([clientId])
   @@index([userId])
   @@index([flowStatus])
+  @@index([dueDate])
   // Recuperación del carrito en curso (GET /sales/draft). Corre en cada carga
   // del POS: sin el compuesto, filtrar por (userId, flowStatus) obligaba a
   // ordenar en memoria todo el histórico del cajero para devolver una fila.
@@ -512,6 +519,10 @@ model Purchase {
   // Define si la mercancía ya entró al almacén o es solo un pedido
   deliveryStatus PurchaseDeliveryStatus @default(PENDING)
 
+  // Fecha límite para pagarle al proveedor (opcional, ADR-0029). Se sugiere con
+  // los días de crédito del proveedor.
+  dueDate DateTime? @db.Date
+
   items    PurchaseItem[]
   payments PurchasePayment[]
 
@@ -523,6 +534,7 @@ model Purchase {
   @@index([invoiceNumber])
   @@index([supplierId])
   @@index([createdAt])
+  @@index([dueDate])
 }
 
 model PurchaseItem {
