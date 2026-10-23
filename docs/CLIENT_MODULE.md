@@ -35,6 +35,17 @@ Este módulo cubre el **CRM y las cuentas por cobrar**: alta y edición de clien
 
 Todos requieren JWT. Paginación estándar; estado de cuenta incluye hasNext, hasPrev.
 
+### Precios especiales (ADR-0025, v1.4)
+
+| Método | Ruta | Rol | Uso |
+|---|---|---|---|
+| GET | `/client/:clientId/prices` | Cualquiera | Precios vigentes con precio de lista, costo, diferencia, margen y último cambio. |
+| PUT | `/client/:clientId/prices/:productId` | MANAGER | `{ price, reason? }`. Igual a la lista = quita el especial. Bajo costo: 400 salvo `pricing.allowBelowCost`. |
+| DELETE | `/client/:clientId/prices/:productId` | MANAGER | `{ reason? }`. Desactiva (no borra); 404 si no tenía. |
+| GET | `/client/:clientId/prices/:productId/history` | MANAGER | Historial (más reciente primero). |
+
+Escritor único: `src/client/client-prices.ts` (`fijarPrecioCliente`), también usado por caja.
+
 ## 4. Payload destacado
 
 **POST /client**

@@ -15,6 +15,8 @@ import { PrintDocument } from '@prisma/client';
 import { SalesService } from './sales.service';
 import { SaleDiscountsService } from './sale-discounts.service';
 import { ApplyDiscountDto } from './dto/apply-discount.dto';
+import { SetItemPriceDto } from './dto/set-item-price.dto';
+import { SalePricesService } from './sale-prices.service';
 import { Throttle } from '@nestjs/throttler';
 import { CreateSaleDto, SaleItemDto } from './dto/create-sale.dto';
 import { SetClientDto } from './dto/set-client.dto';
@@ -39,6 +41,7 @@ export class SalesController {
   constructor(
     private readonly salesService: SalesService,
     private readonly discounts: SaleDiscountsService,
+    private readonly prices: SalePricesService,
   ) {}
 
   /**
@@ -209,6 +212,26 @@ export class SalesController {
   ) {
     await this.salesService.assertCanOperateDraft(id, user);
     const data = await this.discounts.applyToSale(id, dto, {
+      id: user.userId,
+      role: user.role,
+    });
+    return ApiResponse.ok(data, data.message);
+  }
+
+  /**
+   * [OPERATIVO/POS] Cambia el precio unitario de una línea (ADR-0025). Con
+   * cliente y `saveForClient`, queda como su precio especial.
+   */
+  @Patch(':id/items/:itemId/price')
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
+  async setItemPrice(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('itemId', ParseIntPipe) itemId: number,
+    @Body() dto: SetItemPriceDto,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    await this.salesService.assertCanOperateDraft(id, user);
+    const data = await this.prices.setItemPrice(id, itemId, dto, {
       id: user.userId,
       role: user.role,
     });

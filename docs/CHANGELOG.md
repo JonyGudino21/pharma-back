@@ -5,6 +5,19 @@ AAAA-MM-DD.
 
 ## Sin publicar
 
+### Precios por cliente y comprobantes (20/10/2026, v1.4.0)
+
+- **Cambio de precio en caja** (`PATCH /sales/:id/items/:itemId/price`) y **precios especiales por
+  cliente** con historial (ficha: `/client/:clientId/prices`). Sección de configuración `pricing`.
+  ADR-0025.
+- **Corregido: precios congelados.** El cierre de venta copiaba el precio de lista como "especial" del
+  cliente. Se eliminó; la migración `20261020212412_precios_especiales_cliente` desactiva (sin borrar)
+  esas filas capturadas automáticamente.
+- `set-client` responde cuántas líneas cambiaron de precio (`repriced`); las líneas guardan el origen del precio.
+- **Nota de remisión:** datos de la farmacia opcionales uno por uno (logo, razón social, RFC, régimen
+  fiscal —nuevo—, domicilio, teléfono, correo).
+- **Semilla:** el RFC se normaliza y valida (`common/utils/rfc.util.ts`).
+
 ### Corregido — contrato front ↔ back (16/10/2026, v1.3.0)
 
 - **Crear producto respondía 400** «property isActive should not exist» (con el cliente enfrente).

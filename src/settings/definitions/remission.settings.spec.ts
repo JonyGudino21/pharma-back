@@ -46,6 +46,63 @@ describe('Configuración › Nota de remisión', () => {
     );
   });
 
+  it('datos de la farmacia: todos se imprimen de fábrica', () => {
+    expect(defaults).toMatchObject({
+      showLogo: true,
+      showLegalName: true,
+      showRfc: true,
+      showFiscalRegime: true,
+      showAddress: true,
+      showPhone: true,
+      showEmail: true,
+    });
+  });
+
+  it('datos de la farmacia: cada uno se puede apagar y sólo acepta sí o no', () => {
+    const apagados = {
+      showLogo: false,
+      showLegalName: false,
+      showRfc: false,
+      showFiscalRegime: false,
+      showAddress: false,
+      showPhone: false,
+      showEmail: false,
+    };
+    expect(errores({ ...defaults, ...apagados })).toEqual([]);
+    expect(errores({ ...defaults, showFiscalRegime: 'si' })).toContain(
+      'Mostrar el régimen fiscal debe ser sí o no.',
+    );
+    expect(errores({ ...defaults, showLogo: 1 })).toContain(
+      'Mostrar el logo debe ser sí o no.',
+    );
+  });
+
+  it('una sección guardada antes de estos ajustes se completa con los de fábrica', () => {
+    // Lo que hace SettingsService.materialize: { ...defaults, ...guardado }.
+    const guardadoAntes: Partial<RemissionSettings> = {
+      enabled: true,
+      paper: 'A4',
+      legend: DEFAULT_REMISSION_LEGEND,
+      terms: '',
+      showSignatures: false,
+      showPayments: true,
+      showSku: true,
+      showLot: true,
+      showExpiry: true,
+      showTaxBreakdown: false,
+      density: 'AUTO',
+    };
+    const efectivo = { ...defaults, ...guardadoAntes };
+    expect(errores(efectivo)).toEqual([]);
+    expect(efectivo).toMatchObject({
+      paper: 'A4',
+      showSignatures: false,
+      showLogo: true,
+      showRfc: true,
+      showEmail: true,
+    });
+  });
+
   it('densidad: automática de fábrica; sólo valores conocidos', () => {
     expect(defaults.density).toBe('AUTO');
     expect(errores({ ...defaults, density: 'COMPACT' })).toEqual([]);

@@ -1,6 +1,7 @@
 import { Prisma, PrismaClient, UserRole } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { DEFAULT_RECEIPT_LAYOUT } from '../src/company/receipt-layout';
+import { rfcDeSemilla } from '../src/common/utils/rfc.util';
 
 /**
  * SEMILLA MÍNIMA: lo indispensable para que el sistema sea usable.
@@ -57,6 +58,11 @@ async function main() {
     );
   }
 
+  // El RFC se normaliza y valida con la misma regla que la API ANTES de
+  // escribir nada: un valor tecleado a mano ("xaxx-010101-000") dejaba la
+  // ficha con un RFC que Configuración marcaba inválido y no dejaba guardar.
+  const rfcSemilla = rfcDeSemilla(process.env.SEED_COMPANY_RFC);
+
   // ── 1. Usuario administrador ────────────────────────────────────────────
   const existente = await prisma.user.findFirst({
     where: { OR: [{ email }, { userName }] },
@@ -107,7 +113,7 @@ async function main() {
     ...(process.env.SEED_COMPANY_TRADE_NAME && {
       tradeName: process.env.SEED_COMPANY_TRADE_NAME,
     }),
-    ...(process.env.SEED_COMPANY_RFC && { rfc: process.env.SEED_COMPANY_RFC }),
+    ...(rfcSemilla && { rfc: rfcSemilla }),
     ...(process.env.SEED_COMPANY_ADDRESS && {
       address: process.env.SEED_COMPANY_ADDRESS,
     }),

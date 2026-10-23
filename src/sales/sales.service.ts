@@ -12,9 +12,9 @@ import { PrismaService } from '../../prisma/prisma.service';
 import {
   PaymentMethod,
   SaleFlowStatus,
+  SalePriceSource,
   SaleStatus,
   Sale,
-  SaleItem,
   ClientProductPrice,
   CashTransactionType,
   SaleRefund,
@@ -136,6 +136,11 @@ export class SalesService {
         product: { connect: { id: product.id } },
         quantity: itemDto.quantity,
         price: finalPrice, // Guardamos el precio que se usó realmente
+        // Origen del precio (ADR-0025): referencia de lista y si es especial.
+        listPrice: product.price,
+        priceSource: priceMap.has(itemDto.productId)
+          ? SalePriceSource.CLIENT
+          : SalePriceSource.LIST,
         discount: p.discount,
         subtotal: p.net,
         taxRate,
@@ -866,6 +871,7 @@ export class SalesService {
 
     // Lógica de precio especial (Simplificada para un item, idealmente reutilizar lógica de create)
     let price = product.price;
+    let priceSource: SalePriceSource = SalePriceSource.LIST;
     if (sale.clientId) {
       const specialPrice = await this.prisma.clientProductPrice.findUnique({
         where: {
@@ -875,7 +881,10 @@ export class SalesService {
           },
         },
       });
-      if (specialPrice && specialPrice.isActive) price = specialPrice.price;
+      if (specialPrice && specialPrice.isActive) {
+        price = specialPrice.price;
+        priceSource = SalePriceSource.CLIENT;
+      }
     }
 
     const taxRate = await this.taxRateOf(product.taxCategory);
@@ -906,6 +915,8 @@ export class SalesService {
           productId: dto.productId,
           quantity: dto.quantity,
           price,
+          listPrice: product.price,
+          priceSource,
           subtotal: inicial.net,
           taxRate,
           taxAmount: inicial.tax,
@@ -1096,18 +1107,31 @@ export class SalesService {
       });
       const listPriceMap = new Map(products.map((p) => [p.id, p.price]));
 
-      // RE-PRECIAR cada línea
+      // RE-PRECIAR cada línea: precio especial del cliente nuevo o, si no
+      // tiene, el de lista. Un precio cambiado a mano en caja también se
+      // reemplaza: al elegir cliente manda su lista de precios (ADR-0025).
+      let repriced = 0;
       for (const item of items) {
-        const newPrice =
-          priceMap.get(item.productId) ??
-          listPriceMap.get(item.productId) ??
-          item.price;
+        const special = priceMap.get(item.productId);
+        const list = listPriceMap.get(item.productId);
+        const newPrice = special ?? list ?? item.price;
+        const source = special ? SalePriceSource.CLIENT : SalePriceSource.LIST;
 
-        if (!newPrice.equals(item.price)) {
+        const cambiaPrecio = !newPrice.equals(item.price);
+        if (cambiaPrecio || item.priceSource !== source) {
           await tx.saleItem.update({
             where: { id: item.id },
-            data: { price: newPrice },
+            data: {
+              price: newPrice,
+              listPrice: list ?? item.listPrice,
+              priceSource: source,
+              priceChangedById: null,
+              priceReason: null,
+            },
           });
+        }
+        if (cambiaPrecio) {
+          repriced++;
           // Mismo % de descuento e IVA, sobre el precio nuevo.
           await writeLinePricing(tx, { ...item, price: newPrice });
         }
@@ -1124,7 +1148,7 @@ export class SalesService {
         `Venta #${saleId}: cliente asignado ${clientId ?? 'Público General'}. Total re-preciado: ${money(newTotal)}`,
       );
 
-      return { message: 'Cliente actualizado', newTotal };
+      return { message: 'Cliente actualizado', newTotal, repriced };
     });
   }
 
@@ -1334,8 +1358,9 @@ export class SalesService {
         },
       });
 
-      // 6. Actualizar precios históricos del cliente
-      await this.updateClientPricesOnSaleComplete(tx, sale, userId);
+      // (Antes, el paso 6 copiaba el precio de cada línea como precio especial
+      // del cliente y congelaba la lista. Ahora un precio especial sólo nace
+      // cuando alguien lo captura: ADR-0025, src/client/client-prices.ts.)
 
       this.logger.log(`Venta #${saleId} finalizada. Factura: ${invoiceNumber}`);
       return completedSale;
@@ -1623,106 +1648,6 @@ export class SalesService {
       totalDiscounts: totalRevenue._sum.discountTotal ?? 0,
       totalTax: totalRevenue._sum.taxTotal ?? 0,
     };
-  }
-
-  /**
-   * Actualiza los precios especiales del cliente en la venta completa
-   * @param tx transacción de prisma
-   * @param sale la venta
-   * @param userId el ID del usuario que actualiza los precios
-   */
-  private async updateClientPricesOnSaleComplete(
-    tx: Prisma.TransactionClient,
-    sale: Sale & { items: SaleItem[] },
-    userId?: number,
-  ) {
-    // 1. Validar que la venta tenga un cliente
-    if (!sale.clientId) return;
-    if (sale.items.length === 0) return;
-
-    const clientId = sale.clientId;
-    const ahora = new Date();
-
-    // ─────────────────────────────────────────────────────────────────────
-    // LECTURA EN LOTE (corrige el N+1).
-    //
-    // Esta función corre DENTRO de la transacción que cierra la venta, con las
-    // filas de stock ya bloqueadas. La versión anterior hacía cuatro consultas
-    // POR LÍNEA del ticket —findUnique, updateMany, upsert, create—, así que un
-    // ticket de 30 productos disparaba 120 idas y vueltas a PostgreSQL con los
-    // bloqueos retenidos todo ese tiempo. En el momento más sensible a latencia
-    // del sistema: el cajero esperando a que se cierre el cobro, y cualquier
-    // otra caja que tocara esos productos esperando detrás.
-    //
-    // Ahora se leen todos los precios vigentes de una vez.
-    // ─────────────────────────────────────────────────────────────────────
-    const productIds = sale.items.map((it) => it.productId);
-
-    const vigentes = await tx.clientProductPrice.findMany({
-      where: { clientId, productId: { in: productIds } },
-      select: { productId: true, price: true },
-    });
-
-    const precioVigente = new Map(
-      vigentes.map((p) => [p.productId, new Decimal(p.price)]),
-    );
-
-    // Sólo las líneas cuyo precio REALMENTE cambió generan escrituras. En la
-    // operación normal de una farmacia eso son cero: el precio especial del
-    // cliente ya estaba aplicado. El caso frecuente pasa de 120 consultas a UNA.
-    const cambios = sale.items
-      .map((it) => ({ productId: it.productId, precio: new Decimal(it.price) }))
-      .filter(({ productId, precio }) => {
-        const actual = precioVigente.get(productId);
-        return !actual || !actual.equals(precio);
-      });
-
-    if (cambios.length === 0) return;
-
-    const idsCambiados = cambios.map((c) => c.productId);
-
-    // 2. Cerrar el historial abierto de TODOS los productos afectados de golpe.
-    await tx.clientProductPriceHistory.updateMany({
-      where: { clientId, productId: { in: idsCambiados }, endDate: null },
-      data: { endDate: ahora },
-    });
-
-    // 3. Fijar el precio activo.
-    //
-    // Prisma no tiene `upsertMany`, así que este bucle se queda — pero ahora
-    // recorre sólo lo que cambió, no la venta entera. Separar en updateMany +
-    // createMany daría una consulta menos a cambio de una condición de carrera
-    // entre la lectura y la escritura; no compensa.
-    for (const { productId, precio } of cambios) {
-      await tx.clientProductPrice.upsert({
-        where: { clientId_productId: { clientId, productId } },
-        update: { price: precio, isActive: true },
-        create: { clientId, productId, price: precio },
-      });
-    }
-
-    // 4. Abrir el historial nuevo, también en lote.
-    //
-    // `changedById` puede venir sin valor si la venta la cerró un proceso
-    // automático. Antes se forzaba con `userId!`, lo que insertaba `undefined`
-    // en una columna obligatoria y reventaba con un error de Prisma que no
-    // mencionaba ni el usuario ni la venta.
-    if (userId !== undefined) {
-      await tx.clientProductPriceHistory.createMany({
-        data: cambios.map(({ productId, precio }) => ({
-          clientId,
-          productId,
-          changedById: userId,
-          price: precio,
-          startDate: ahora,
-        })),
-      });
-    } else {
-      this.logger.warn(
-        `Venta #${sale.id}: precios especiales actualizados sin usuario responsable. ` +
-          'No se registra historial de cambio de precio.',
-      );
-    }
   }
 
   private async validateSale(saleId: number) {
