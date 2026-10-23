@@ -38,6 +38,7 @@ import {
   FOLIO_PREFIJO,
   siguienteConsecutivo,
 } from './purchase-folio';
+import { resolverFechaPago } from 'src/common/utils/credit-terms';
 
 /** Candado por proveedor al asignar folio (pg_advisory_xact_lock(clase, proveedor)). */
 const LOCK_FOLIO_POR_PROVEEDOR = 7003;
@@ -100,6 +101,9 @@ export class PurchaseService {
       };
     });
 
+    // Fecha de pago al proveedor (opcional): sin dato, la de sus días de crédito.
+    const dueDate = this.fechaDePago(dto.dueDate, supplier.creditDays);
+
     //crear purchase e items, pagos y actualizar stock automaticamente
     const purchase = await this.prisma.$transaction(async (tx) => {
       // A. Crear la cabecera de la compra
@@ -112,6 +116,7 @@ export class PurchaseService {
             supplier,
             dto.invoiceNumber,
           ),
+          dueDate,
           total,
           subtotal,
           status: PurchaseStatus.PENDING,
@@ -285,9 +290,25 @@ export class PurchaseService {
                 id,
               )
             : undefined,
+          dueDate:
+            dto.dueDate === undefined
+              ? undefined
+              : this.fechaDePago(dto.dueDate, null),
         },
       }),
     );
+  }
+
+  /** Fecha de pago validada (no anterior a hoy); errores como 400. */
+  private fechaDePago(
+    pedida: string | null | undefined,
+    diasProveedor: number | null,
+  ): Date | null {
+    try {
+      return resolverFechaPago(pedida, diasProveedor, 0);
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
   }
 
   /**

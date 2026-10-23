@@ -1082,6 +1082,34 @@ describe('PurchaseService — recepción, costo promedio y cancelación', () => 
       expect(tx.purchase.create).not.toHaveBeenCalled();
     });
 
+    it('fecha de pago: sin dato usa los días del proveedor; null la deja sin fecha', async () => {
+      mockPrisma.supplier.findUnique.mockResolvedValue({
+        ...alvex,
+        creditDays: 30,
+      });
+
+      await service.create(nuevaCompra('A-1'), 99);
+      expect(dataDe(tx.purchase.create).dueDate).toEqual(
+        new Date('2026-11-22T00:00:00.000Z'),
+      );
+
+      tx.purchase.create.mockClear();
+      await service.create(
+        { ...(nuevaCompra('A-2') as object), dueDate: null } as never,
+        99,
+      );
+      expect(dataDe(tx.purchase.create).dueDate).toBeNull();
+    });
+
+    it('rechaza una fecha de pago anterior a hoy', async () => {
+      await expect(
+        service.create(
+          { ...(nuevaCompra('A-3') as object), dueDate: '2026-10-01' } as never,
+          99,
+        ),
+      ).rejects.toThrow('anterior a hoy');
+    });
+
     it('al editar el folio no se compara contra la misma compra', async () => {
       await service.update(5, { invoiceNumber: 'F-002' });
 

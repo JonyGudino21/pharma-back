@@ -52,6 +52,11 @@ import {
   rangeEnd,
   rangeStart,
 } from 'src/common/utils/mx-date-range.util';
+import {
+  fechaSoloDia,
+  resolverFechaPago,
+  ymdDe,
+} from 'src/common/utils/credit-terms';
 
 @Injectable()
 export class SalesService {
@@ -1263,6 +1268,7 @@ export class SalesService {
       const prescription = this.requirePrescription(dto, hasControlled);
 
       // 3. Validacion financiera (credito vs contado)
+      let dueDate: Date | null = null;
       if (sale.balance.gt(0)) {
         if (!sale.client)
           throw new BadRequestException(
@@ -1272,6 +1278,22 @@ export class SalesService {
           throw new BadRequestException(
             `El cliente ${sale.client.name} no tiene credito. Debe liquidar el saldo: ${money(sale.balance)}`,
           );
+
+        // Fecha de pago (opcional, ADR-0029) y, si así se configuró, nada de
+        // crédito nuevo a quien ya tiene saldo vencido.
+        const credit = await this.settings.get('credit', tx);
+        try {
+          dueDate = resolverFechaPago(
+            dto.dueDate,
+            sale.client.creditDays,
+            credit.defaultCreditDays,
+          );
+        } catch (e) {
+          throw new BadRequestException((e as Error).message);
+        }
+        if (credit.blockCreditWhenOverdue) {
+          await this.assertNoOverdue(tx, sale.client, saleId);
+        }
 
         // LÍMITE DE CRÉDITO A PRUEBA DE CONCURRENCIA:
         // Antes se leía `currentDebt`, se sumaba en memoria y se escribía el total.
@@ -1354,6 +1376,7 @@ export class SalesService {
           totalCost: totalCostOfSale,
           profit: profit,
           invoiceNumber: invoiceNumber,
+          dueDate,
           // Si quedó saldo, el estado sigue siendo PARTIAL o PENDING, eso está bien.
         },
       });
@@ -1669,6 +1692,36 @@ export class SalesService {
    * y pago para que el cierre rechazara la venta. La verificación autoritativa y
    * atómica sigue ocurriendo en completeSale.
    */
+  /**
+   * Bloqueo opcional de crédito (Configuración › Crédito): el cliente no debe
+   * tener otra venta a crédito con fecha de pago ya pasada y saldo pendiente.
+   */
+  private async assertNoOverdue(
+    tx: Prisma.TransactionClient,
+    client: { id: number; name: string },
+    saleId: number,
+  ) {
+    const vencida = await tx.sale.findFirst({
+      where: {
+        clientId: client.id,
+        id: { not: saleId },
+        flowStatus: SaleFlowStatus.COMPLETED,
+        status: { not: SaleStatus.CANCELLED },
+        balance: { gt: 0 },
+        dueDate: { lt: fechaSoloDia(pharmacyToday()) },
+      },
+      orderBy: { dueDate: 'asc' },
+      select: { id: true, invoiceNumber: true, dueDate: true },
+    });
+    if (vencida) {
+      const folio = vencida.invoiceNumber ?? `#${vencida.id}`;
+      const desde = ymdDe(vencida.dueDate!).split('-').reverse().join('/');
+      throw new BadRequestException(
+        `${client.name} tiene saldo vencido (venta ${folio}, venció el ${desde}). Cobra ese saldo o recibe esta venta completa: la configuración no permite crédito nuevo con saldo vencido.`,
+      );
+    }
+  }
+
   private async assertSellable(
     productId: number,
     quantity: number,

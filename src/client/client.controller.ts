@@ -7,8 +7,11 @@ import {
   Param,
   Delete,
   Query,
+  ParseIntPipe,
 } from '@nestjs/common';
 import { ClientService } from './client.service';
+import { ReceivablesService } from './receivables.service';
+import { ReceivablesQueryDto, SetSaleDueDateDto } from './dto/receivables.dto';
 import { CreateClientDto } from './dto/create-client.dto';
 import { UpdateClientDto } from './dto/update-client.dto';
 import { ApiResponse } from 'src/common/dto/response.dto';
@@ -32,7 +35,10 @@ import type { AuthenticatedUser } from 'src/auth/types/authenticated-user.type';
 @Controller('client')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class ClientController {
-  constructor(private readonly clientService: ClientService) {}
+  constructor(
+    private readonly clientService: ClientService,
+    private readonly receivables: ReceivablesService,
+  ) {}
 
   /**
    * [CRM] Registra un nuevo cliente en el sistema.
@@ -68,6 +74,40 @@ export class ClientController {
       pagination,
     );
     return ApiResponse.ok(res, 'Clientes encontrados exitosamente');
+  }
+
+  /**
+   * [FINANZAS] Cobranza (ADR-0029): totales, antigüedad de saldos, resumen por
+   * cliente y cada venta pendiente en orden de cobro. Gerencia.
+   */
+  @Get('receivables')
+  @Roles(UserRole.MANAGER)
+  async getReceivables(@Query() query: ReceivablesQueryDto) {
+    const res = await this.receivables.getReceivables(query.clientId);
+    return ApiResponse.ok(res, 'Cobranza obtenida');
+  }
+
+  /**
+   * [FINANZAS] Cambia o quita la fecha de pago de una venta a crédito.
+   */
+  @Patch('receivables/:saleId/due-date')
+  @Roles(UserRole.MANAGER)
+  async setSaleDueDate(
+    @Param('saleId', ParseIntPipe) saleId: number,
+    @Body() dto: SetSaleDueDateDto,
+  ) {
+    const res = await this.receivables.setDueDate(saleId, dto.dueDate ?? null);
+    return ApiResponse.ok(res, 'Fecha de pago actualizada');
+  }
+
+  /**
+   * [OPERATIVO/POS] Saldo vencido del cliente y días de crédito sugeridos,
+   * para avisar en caja al elegirlo y proponer la fecha de pago.
+   */
+  @Get(':id/credit-status')
+  async getCreditStatus(@Param('id', ParseIntPipe) id: number) {
+    const res = await this.receivables.getClientCreditStatus(id);
+    return ApiResponse.ok(res, 'Estado de crédito del cliente');
   }
 
   /**

@@ -268,6 +268,8 @@ export class ClientService {
       data: {
         hasCredit: dto.hasCredit,
         creditLimit: dto.creditLimit,
+        // `undefined` no toca la columna (clientes con la versión anterior).
+        creditDays: dto.creditDays,
       },
     });
   }
@@ -509,6 +511,8 @@ export class ClientService {
       paidAmount: true,
       status: true,
       createdAt: true,
+      // Fecha de pago pactada (ADR-0029); null = sin fecha.
+      dueDate: true,
       payments: {
         select: {
           id: true,
