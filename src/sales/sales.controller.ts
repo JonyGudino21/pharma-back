@@ -17,6 +17,7 @@ import { SaleDiscountsService } from './sale-discounts.service';
 import { ApplyDiscountDto } from './dto/apply-discount.dto';
 import { SetItemPriceDto } from './dto/set-item-price.dto';
 import { SalePricesService } from './sale-prices.service';
+import { SaleReorderService } from './sale-reorder.service';
 import { Throttle } from '@nestjs/throttler';
 import { CreateSaleDto, SaleItemDto } from './dto/create-sale.dto';
 import { SetClientDto } from './dto/set-client.dto';
@@ -42,6 +43,7 @@ export class SalesController {
     private readonly salesService: SalesService,
     private readonly discounts: SaleDiscountsService,
     private readonly prices: SalePricesService,
+    private readonly reorders: SaleReorderService,
   ) {}
 
   /**
@@ -286,6 +288,20 @@ export class SalesController {
     await this.salesService.assertCanOperateDraft(id, user);
     const data = await this.salesService.completeSale(id, user.userId, dto);
     return ApiResponse.ok(data, 'Venta completada correctamente');
+  }
+
+  /**
+   * [OPERATIVO] Volver a vender: crea una venta nueva en borrador con el
+   * cliente y los productos de una venta anulada o cobrada, con precios y
+   * existencias de hoy. Responde qué se ajustó u omitió.
+   */
+  @Post(':id/reorder')
+  async reorder(
+    @Param('id', ParseIntPipe) id: number,
+    @GetUser() user: AuthenticatedUser,
+  ) {
+    const data = await this.reorders.reorder(id, user.userId);
+    return ApiResponse.ok(data, 'Venta lista en el punto de venta');
   }
 
   /**
