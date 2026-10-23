@@ -5,6 +5,22 @@ AAAA-MM-DD.
 
 ## Sin publicar
 
+### Ventas y compras más rápidas (23/10/2026, v1.5.0)
+
+- **Folio sugerido en compras** (`GET /purchase/suggest-folio?supplierId=`):
+  `FAC-001-ALV-20261023` (consecutivo del proveedor en el día, clave del proveedor, fecha de la
+  farmacia). `invoiceNumber` pasa a opcional: vacío → el servidor asigna el sugerido bajo un candado
+  por proveedor. ADR-0026.
+- **Folio duplicado rechazado:** la misma factura del mismo proveedor (no cancelada) ya no se puede
+  capturar dos veces (409 con la compra existente).
+- **Búsqueda por código de barras:** `POST /products/search` busca también en `barcode` y acepta
+  `by: all | name | code`.
+- **Volver a vender** (`POST /sales/:id/reorder`): venta nueva en borrador con el cliente y los
+  productos de una venta anulada o cobrada, con precios y existencias de hoy; informa ajustes,
+  omitidos y cambios de precio. ADR-0027.
+- Análisis (propuestas, sin código): exportar listas de precios (ADR-0028) y días de crédito con
+  cartera vencida (ADR-0029).
+
 ### Precios por cliente y comprobantes (20/10/2026, v1.4.0)
 
 - **Cambio de precio en caja** (`PATCH /sales/:id/items/:itemId/price`) y **precios especiales por
