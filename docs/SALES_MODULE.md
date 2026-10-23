@@ -223,6 +223,20 @@ Reglas:
   lo editado a mano) y responde `repriced` (líneas que cambiaron).
 - El cierre de venta **ya no** escribe precios especiales (antes congelaba la lista; ver ADR-0025).
 
+## Volver a vender (ADR-0027, v1.5)
+
+| Método | Ruta | Uso |
+|---|---|---|
+| POST | `/sales/:id/reorder` | Crea una venta **nueva** en borrador con el cliente y los productos de una venta anulada o cobrada. |
+
+- Precios de hoy (`SalesService.create`: especial vigente o lista). No copia precios manuales ni
+  descuentos. Sin nota (la nota se imprime en el ticket).
+- Producto dado de baja → `skipped` (`INACTIVO`); sin existencia → `skipped` (`SIN_EXISTENCIA`);
+  existencia menor → `adjusted`. Cliente dado de baja → Público General (`clientDropped`).
+- `priceChanges`: productos cuyo precio de hoy difiere del de la venta original.
+- 409 si el cajero ya tiene un borrador con productos; 400 si la venta es un borrador o nada se puede
+  vender hoy.
+
 ## 7. Comprobantes impresos: ticket y nota de remisión (sin publicar)
 
 Cada impresión de un comprobante se registra **antes** de mandar el papel a la impresora, para que

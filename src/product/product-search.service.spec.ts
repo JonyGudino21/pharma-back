@@ -50,6 +50,32 @@ describe('ProductService · búsqueda', () => {
     );
   });
 
+  it('también busca por código de barras (lo que captura el escáner)', async () => {
+    await service.search(' 7501234567890 ');
+
+    const { where } = argDe<Where>(mockPrisma.product.findMany);
+    expect(where.OR).toEqual(
+      expect.arrayContaining([{ barcode: { contains: '7501234567890' } }]),
+    );
+  });
+
+  it('by=name busca sólo en el nombre', async () => {
+    await service.search('para', undefined, undefined, undefined, 'name');
+
+    expect(argDe<Where>(mockPrisma.product.findMany).where.OR).toEqual([
+      { name: { contains: 'para', mode: 'insensitive' } },
+    ]);
+  });
+
+  it('by=code busca sólo en SKU y código de barras', async () => {
+    await service.search('750', undefined, undefined, undefined, 'code');
+
+    expect(argDe<Where>(mockPrisma.product.findMany).where.OR).toEqual([
+      { sku: { contains: '750', mode: 'insensitive' } },
+      { barcode: { contains: '750' } },
+    ]);
+  });
+
   it.each([true, false])(
     'active=%s filtra en la base de datos (lista y conteo)',
     async (active) => {

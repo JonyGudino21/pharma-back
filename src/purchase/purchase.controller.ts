@@ -15,6 +15,7 @@ import { UpdatePurchaseDto } from './dto/update-purchase.dto';
 import { ApiResponse } from 'src/common/dto/response.dto';
 import { JwtAuthGuard } from 'src/common/guards/jwt-auth.guard';
 import { FindAllPurchaseDto } from './dto/findAll.dto';
+import { SuggestFolioDto } from './dto/suggest-folio.dto';
 import { CreatePurchaseItemDto } from './dto/create-purchase-item.dto';
 import { UpdatePurchaseItemDto } from './dto/update-item.dto';
 import { AddPaymentDto } from './dto/add-payment.dto';
@@ -56,6 +57,17 @@ export class PurchaseController {
       { page: findAllPurchaseDto.page, limit: findAllPurchaseDto.limit },
     );
     return ApiResponse.ok(data, 'Compras encontradas correctamente');
+  }
+
+  /**
+   * [COMPRAS] Folio sugerido para una compra nueva cuando el proveedor no
+   * entrega factura o ticket con folio (FAC-001-ALV-20261023).
+   * Va antes de `:id` para que "suggest-folio" no se lea como un id.
+   */
+  @Get('suggest-folio')
+  async suggestFolio(@Query() query: SuggestFolioDto) {
+    const data = await this.purchaseService.suggestFolio(query.supplierId);
+    return ApiResponse.ok(data, 'Folio sugerido');
   }
 
   /**

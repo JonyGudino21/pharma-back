@@ -51,17 +51,17 @@ Si uno está en ✗ rojo: **no se instala**. Se corrige primero.
 cd C:\Projects\pharma-back
 git checkout main
 git pull
-git tag -a v1.4.0 -m "Versión 1.4.0"
-git push origin v1.4.0
+git tag -a v1.5.0 -m "Versión 1.5.0"
+git push origin v1.5.0
 
 cd C:\Projects\pharma-front
 git checkout main
 git pull
-git tag -a v1.4.0 -m "Versión 1.4.0"
-git push origin v1.4.0
+git tag -a v1.5.0 -m "Versión 1.5.0"
+git push origin v1.5.0
 ```
 
-Usa el mismo número en los dos. Súbelo en cada versión (1.4.0 → 1.4.1 para correcciones, 1.5.0 para
+Usa el mismo número en los dos. Súbelo en cada versión (1.5.0 → 1.5.1 para correcciones, 1.6.0 para
 funciones nuevas). Con la etiqueta siempre puedes volver exactamente a esa versión.
 
 ### A3. Compilar el front (el ZIP que llevarás)
@@ -74,7 +74,7 @@ pnpm install
 $env:NUXT_PUBLIC_API_BASE_URL = "/api"
 pnpm generate
 New-Item -ItemType Directory -Force C:\Releases | Out-Null
-Compress-Archive -Path .output\public\* -DestinationPath C:\Releases\pharmapos-web-v1.4.0.zip -Force
+Compress-Archive -Path .output\public\* -DestinationPath C:\Releases\pharmapos-web-v1.5.0.zip -Force
 ```
 
 **Comprueba:** abre el ZIP: en la raíz deben estar `index.html`, `200.html` y la carpeta `_nuxt`
@@ -100,7 +100,7 @@ Si todavía no:
 ```powershell
 $env:PATH = "C:\Program Files\PostgreSQL\16\bin;$env:PATH"
 New-Item -ItemType Directory -Force C:\PharmaPOS\respaldos | Out-Null
-pg_dump -h 127.0.0.1 -U pharmapos -d pharmapos -F c -f C:\PharmaPOS\respaldos\antes-de-v1.4.0.dump
+pg_dump -h 127.0.0.1 -U pharmapos -d pharmapos -F c -f C:\PharmaPOS\respaldos\antes-de-v1.5.0.dump
 ```
 (pide la contraseña de `pharmapos`).
 
@@ -127,13 +127,13 @@ sigas**: anota lo que salió y revisa 04-OPERACION.md § Problemas comunes.
 ```powershell
 git log -1 --oneline
 ```
-La primera vez que uses etiquetas, empieza en `v1.4.0`.
+La primera vez que uses etiquetas, empieza en `v1.5.0`.
 
 ### B4. Traer la versión nueva del backend
 
 ```powershell
 git fetch --tags
-git checkout v1.4.0
+git checkout v1.5.0
 ```
 (Si no usas etiquetas: `git checkout main` y luego `git pull`.)
 
@@ -173,10 +173,10 @@ npm run verificar
 
 ### B8. Front nuevo
 
-1. Copia el ZIP a la PC (p. ej. `C:\Releases\pharmapos-web-v1.4.0.zip`).
+1. Copia el ZIP a la PC (p. ej. `C:\Releases\pharmapos-web-v1.5.0.zip`).
 2. Descomprímelo **encima** de la carpeta actual (reemplaza archivos, **no borres antes**):
    ```powershell
-   Expand-Archive -Path C:\Releases\pharmapos-web-v1.4.0.zip -DestinationPath C:\PharmaPOS\web -Force
+   Expand-Archive -Path C:\Releases\pharmapos-web-v1.5.0.zip -DestinationPath C:\PharmaPOS\web -Force
    ```
 **Comprueba:** `Test-Path C:\PharmaPOS\web\index.html` → `True` y la fecha de modificación de
 `C:\PharmaPOS\web\index.html` es la de hoy.
@@ -220,8 +220,8 @@ Luego la prueba rápida (B10) en `https://tudominio`.
 
 Para instalar una etiqueta en lugar de `main`, antes de `./actualizar.sh`:
 ```bash
-git -C /opt/pharmapos/pharma-back fetch --tags && git -C /opt/pharmapos/pharma-back checkout v1.4.0
-git -C /opt/pharmapos/pharma-front fetch --tags && git -C /opt/pharmapos/pharma-front checkout v1.4.0
+git -C /opt/pharmapos/pharma-back fetch --tags && git -C /opt/pharmapos/pharma-back checkout v1.5.0
+git -C /opt/pharmapos/pharma-front fetch --tags && git -C /opt/pharmapos/pharma-front checkout v1.5.0
 docker compose up -d --build
 ```
 
@@ -235,6 +235,35 @@ docker compose up -d --build
 | La API no arranca y **no** había migraciones nuevas | Vuelve a la versión anterior: `git checkout v1.3.0` (su etiqueta) o, si aún no usas etiquetas, el *commit* anterior que anotaste en B4 (`git checkout <commit>`) → B5 → B7. |
 | La API no arranca y **sí** había migraciones nuevas | Restaura el respaldo de B1 (04-OPERACION.md §4.4) y vuelve a la versión anterior (fila de arriba). |
 | No sabes qué pasó | `npm run verificar` y `Get-Content C:\PharmaPOS\logs\api.log -Tail 50`. Con el código de referencia del error, busca en ese log. |
+
+---
+
+## Notas de la versión 1.5.0 (23/10/2026)
+
+> **Incluye la 1.4.0**, que nunca se etiquetó por separado: si la farmacia está en la 1.3.0, lee
+> también las notas de la 1.4.0 (abajo), sobre todo la **corrección de datos de precios especiales**.
+
+No trae migraciones nuevas (las de la 1.4.0 sí).
+
+Qué cambia para quien usa el sistema:
+
+- **Compras · folio sugerido.** Si el proveedor no da folio, aparece uno como
+  `FAC-001-ALV-20261023`; si el campo se deja vacío se guarda ese. La **misma factura** del mismo
+  proveedor ya **no** se puede capturar dos veces.
+- **Compras · lector de código de barras.** El buscador encuentra por código de barras y, con el
+  lector, agrega el producto directo. Se puede buscar sólo por nombre o sólo por código.
+- **Compras · producto nuevo.** Si no existe, «Dar de alta este producto» lo crea sin salir de la
+  compra (sin stock inicial: entra al recibir).
+- **Ventas · Volver a vender.** Una venta anulada se puede regresar al punto de venta con un clic, con
+  los precios y existencias de hoy. En las cobradas dice «Repetir venta».
+- **Punto de venta.** La vista previa del ticket usa todo el alto libre y tiene «Ver ticket completo».
+- **Configuración › Ticket.** La vista previa térmica de 80 mm cabe completa (sin barra lateral).
+
+Prueba rápida extra después de actualizar (B10):
+
+1. Compras › Nueva orden: elige un proveedor y verifica que aparezca el folio sugerido.
+2. Escanea un producto en «Agregar producto»: debe agregarse solo.
+3. Ventas: en una venta anulada, la flecha ↻ debe abrir el punto de venta con sus productos.
 
 ---
 

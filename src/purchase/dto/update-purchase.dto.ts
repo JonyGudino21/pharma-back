@@ -1,4 +1,4 @@
-import { IsInt, IsOptional, IsString } from 'class-validator';
+import { IsInt, IsOptional, IsString, MaxLength } from 'class-validator';
 
 /**
  * Actualización parcial de la cabecera de una compra.
@@ -16,5 +16,6 @@ export class UpdatePurchaseDto {
 
   @IsString()
   @IsOptional()
+  @MaxLength(60)
   invoiceNumber?: string;
 }
