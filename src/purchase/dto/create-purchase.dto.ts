@@ -2,6 +2,7 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  MaxLength,
   ValidateNested,
   ArrayMinSize,
 } from 'class-validator';
@@ -13,8 +14,14 @@ export class CreatePurchaseDto {
   @IsInt()
   supplierId: number;
 
+  /**
+   * Folio de la factura o ticket del proveedor. Opcional: sin folio (o vacío)
+   * el servidor asigna uno sugerido, p. ej. FAC-001-ALV-20261023.
+   */
+  @IsOptional()
   @IsString()
-  invoiceNumber: string; //Estes son los que se generan en la factura
+  @MaxLength(60)
+  invoiceNumber?: string;
 
   // items obligatorios para crear la compra
   @ValidateNested({ each: true })
