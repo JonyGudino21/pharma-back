@@ -89,9 +89,48 @@ Ver `SALES_MODULE.md` §7 y ADR-0019.
 | `showExpiry` | `true` | bool | Caducidad bajo cada producto (si la partida la tiene). |
 | `showTaxBreakdown` | `false` | bool | "IVA incluido" por tasa bajo el total. |
 | `density` | `AUTO` | `AUTO` \| `COMFORTABLE` \| `COMPACT` | Densidad de la tabla de partidas. AUTO: cómoda hasta 7 partidas, compacta desde 8 (ADR-0021). |
+| `showLogo` | `true` | bool | Logo de la farmacia en el encabezado (o la marca de PharmaPOS si no hay logo). `false`: ni logo ni marca. |
+| `showLegalName` | `true` | bool | Razón social (sólo si es distinta del nombre comercial). |
+| `showRfc` | `true` | bool | RFC de la farmacia. |
+| `showFiscalRegime` | `true` | bool | Régimen fiscal de la ficha ("Régimen: …"). Antes nunca se imprimía. |
+| `showAddress` | `true` | bool | Domicilio de la farmacia. |
+| `showPhone` | `true` | bool | Teléfono de la farmacia. |
+| `showEmail` | `true` | bool | Correo de la farmacia (en la misma línea que el teléfono si ambos salen). |
+
+Los `show*` de la farmacia sólo deciden si un dato se IMPRIME en la nota; los valores se capturan en
+la ficha de la farmacia (`/company`, Configuración › Ticket). Un dato sale sólo si su interruptor está
+encendido y la ficha lo tiene. El nombre (comercial o razón social) siempre sale. Las instalaciones
+que ya tenían la sección guardada reciben estos ajustes en `true` sin migrar: `materialize()` mezcla lo
+guardado sobre los valores de fábrica.
 
 Sin migración (vive en `AppSetting`, como el resto). La migración del día
 (`20261010200000_print_document_remission`) es sólo para la bitácora de impresiones.
+
+## Sección `pricing` — Precios en caja (ADR-0025, v1.4)
+
+Definición: `src/settings/definitions/pricing.settings.ts`.
+
+| Campo | Fábrica | Uso |
+|---|---|---|
+| `enabled` | true | Permitir cambiar precios en caja. |
+| `cashierCanEdit` | false | El cajero puede cambiar precios. |
+| `pharmacistCanEdit` | true | El farmacéutico puede cambiar precios. |
+| `requireReason` | false | Motivo obligatorio. |
+| `saveForClientByDefault` | true | Casilla "guardar para el cliente" marcada de inicio. |
+| `allowBelowCost` | false | Aceptar precios debajo del costo (igual al costo siempre se acepta con aviso). |
+
+Gerencia y administración siempre pueden cambiar precios si `enabled`.
+
+## Sección `credit` — Crédito y cobranza (ADR-0029, v1.6)
+
+Definición: `src/settings/definitions/credit.settings.ts`.
+
+| Campo | Fábrica | Uso |
+|---|---|---|
+| `defaultCreditDays` | 0 | Días que se proponen para pagar si el cliente no tiene días propios (0 = no proponer). |
+| `dueSoonDays` | 7 | Ventana de "por vencer" (1–60). |
+| `warnOverdueAtPos` | true | Avisar en caja al elegir un cliente con saldo vencido. |
+| `blockCreditWhenOverdue` | false | Rechazar (400) una venta a crédito nueva si el cliente tiene saldo vencido. |
 
 ## Migración de las tablas de configuración
 

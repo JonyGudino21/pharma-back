@@ -45,6 +45,8 @@ describe('PurchaseService — recepción, costo promedio y cancelación', () => 
       updateMany: jest.fn(),
       findUnique: jest.fn(),
       findUniqueOrThrow: jest.fn(),
+      findFirst: jest.fn(),
+      findMany: jest.fn(),
     },
     purchaseItem: {
       create: jest.fn(),
@@ -63,11 +65,12 @@ describe('PurchaseService — recepción, costo promedio y cancelación', () => 
     productPriceHistory: { create: jest.fn() },
     supplier: { update: jest.fn() },
     cashTransaction: { create: jest.fn() },
+    $executeRaw: jest.fn(),
   };
 
   const mockPrisma = {
     $transaction: jest.fn((cb: (client: typeof tx) => unknown) => cb(tx)),
-    purchase: { findUnique: jest.fn(), update: jest.fn() },
+    purchase: { findUnique: jest.fn(), update: jest.fn(), findMany: jest.fn() },
     product: { findMany: jest.fn(), findUnique: jest.fn() },
     supplier: { findUnique: jest.fn() },
     purchasePayment: { findUnique: jest.fn() },
@@ -1019,6 +1022,106 @@ describe('PurchaseService — recepción, costo promedio y cancelación', () => 
     it('no acepta cambios de proveedor ni de folio', async () => {
       await expect(service.update(5, { invoiceNumber: 'X' })).rejects.toThrow(
         BadRequestException,
+      );
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  describe('folio de la compra', () => {
+    const alvex = { id: 3, name: 'Distribuidora Alvex' };
+    const nuevaCompra = (invoiceNumber?: string) =>
+      ({
+        supplierId: 3,
+        invoiceNumber,
+        items: [{ productId: 100, quantity: 1, cost: 10 }],
+      }) as never;
+
+    beforeEach(() => {
+      jest.useFakeTimers({ now: new Date('2026-10-23T17:00:00Z') });
+      mockPrisma.supplier.findUnique.mockResolvedValue(alvex);
+      mockPrisma.product.findMany.mockResolvedValue([productoExistente]);
+      tx.purchase.create.mockResolvedValue({ id: 9 });
+      tx.purchase.findFirst.mockResolvedValue(null);
+      tx.purchase.findMany.mockResolvedValue([]);
+    });
+    afterEach(() => jest.useRealTimers());
+
+    it('sugiere FAC-consecutivo-clave-fecha según lo ya usado', async () => {
+      mockPrisma.purchase.findMany.mockResolvedValue([
+        { invoiceNumber: 'FAC-002-ALV-20261023' },
+      ]);
+
+      mockPrisma.supplier.findUnique.mockResolvedValue({
+        ...alvex,
+        creditDays: 30,
+      });
+
+      await expect(service.suggestFolio(3)).resolves.toEqual({
+        folio: 'FAC-003-ALV-20261023',
+        supplierCode: 'ALV',
+        creditDays: 30,
+        suggestedDueDate: '2026-11-22',
+      });
+    });
+
+    it('sin folio, al guardar asigna el sugerido bajo el candado del proveedor', async () => {
+      await service.create(nuevaCompra('  '), 99);
+
+      expect(tx.$executeRaw).toHaveBeenCalled();
+      expect(dataDe(tx.purchase.create).invoiceNumber).toBe(
+        'FAC-001-ALV-20261023',
+      );
+    });
+
+    it('rechaza un folio ya registrado del mismo proveedor (no cancelado)', async () => {
+      tx.purchase.findFirst.mockResolvedValue({ id: 4 });
+
+      await expect(service.create(nuevaCompra('A-123'), 99)).rejects.toThrow(
+        ConflictException,
+      );
+      expect(argDe<{ where: object }>(tx.purchase.findFirst).where).toEqual(
+        expect.objectContaining({
+          supplierId: 3,
+          invoiceNumber: { equals: 'A-123', mode: 'insensitive' },
+          status: { not: 'CANCELLED' },
+        }),
+      );
+      expect(tx.purchase.create).not.toHaveBeenCalled();
+    });
+
+    it('fecha de pago: sin dato usa los días del proveedor; null la deja sin fecha', async () => {
+      mockPrisma.supplier.findUnique.mockResolvedValue({
+        ...alvex,
+        creditDays: 30,
+      });
+
+      await service.create(nuevaCompra('A-1'), 99);
+      expect(dataDe(tx.purchase.create).dueDate).toEqual(
+        new Date('2026-11-22T00:00:00.000Z'),
+      );
+
+      tx.purchase.create.mockClear();
+      await service.create(
+        { ...(nuevaCompra('A-2') as object), dueDate: null } as never,
+        99,
+      );
+      expect(dataDe(tx.purchase.create).dueDate).toBeNull();
+    });
+
+    it('rechaza una fecha de pago anterior a hoy', async () => {
+      await expect(
+        service.create(
+          { ...(nuevaCompra('A-3') as object), dueDate: '2026-10-01' } as never,
+          99,
+        ),
+      ).rejects.toThrow('anterior a hoy');
+    });
+
+    it('al editar el folio no se compara contra la misma compra', async () => {
+      await service.update(5, { invoiceNumber: 'F-002' });
+
+      expect(argDe<{ where: object }>(tx.purchase.findFirst).where).toEqual(
+        expect.objectContaining({ id: { not: 5 } }),
       );
     });
   });

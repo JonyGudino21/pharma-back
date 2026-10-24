@@ -1,4 +1,10 @@
-import { IsInt, IsOptional, IsString } from 'class-validator';
+import {
+  IsInt,
+  IsOptional,
+  IsString,
+  Matches,
+  MaxLength,
+} from 'class-validator';
 
 /**
  * Actualización parcial de la cabecera de una compra.
@@ -16,5 +22,17 @@ export class UpdatePurchaseDto {
 
   @IsString()
   @IsOptional()
+  @MaxLength(60)
   invoiceNumber?: string;
+
+  /**
+   * Fecha límite para pagarle al proveedor (AAAA-MM-DD), opcional (ADR-0029).
+   * null = sin fecha; ausente al crear = la sugerida con los días de crédito
+   * del proveedor (ausente al editar = no se cambia).
+   */
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, {
+    message: 'La fecha de pago debe tener el formato AAAA-MM-DD.',
+  })
+  dueDate?: string | null;
 }

@@ -88,6 +88,42 @@ export class RemissionSettings {
     message: 'La densidad debe ser Automática, Cómoda o Compacta.',
   })
   density!: RemissionDensity;
+
+  /*
+   * Datos de la farmacia en el encabezado. Los VALORES viven en la ficha de la
+   * farmacia (Configuración › Ticket); aquí sólo se decide si se IMPRIMEN en la
+   * nota, porque el ticket y la nota van a públicos distintos (p. ej. una
+   * clínica cliente quiere el RFC y el régimen; un particular no los necesita).
+   * Un dato se imprime sólo si su interruptor está encendido Y la ficha lo tiene.
+   * Todos encendidos de fábrica: así la nota de una instalación existente no
+   * pierde nada al actualizar (el régimen fiscal es lo único que se agrega).
+   * El nombre de la farmacia siempre se imprime: sin él la nota no identifica
+   * a quién la emite.
+   */
+
+  /** Logo de la farmacia (o la marca de PharmaPOS si no hay logo). */
+  @IsBoolean({ message: 'Mostrar el logo debe ser sí o no.' })
+  showLogo!: boolean;
+
+  /** Razón social, cuando es distinta del nombre comercial. */
+  @IsBoolean({ message: 'Mostrar la razón social debe ser sí o no.' })
+  showLegalName!: boolean;
+
+  @IsBoolean({ message: 'Mostrar el RFC debe ser sí o no.' })
+  showRfc!: boolean;
+
+  /** Régimen fiscal tal como se capturó en la ficha (texto libre). */
+  @IsBoolean({ message: 'Mostrar el régimen fiscal debe ser sí o no.' })
+  showFiscalRegime!: boolean;
+
+  @IsBoolean({ message: 'Mostrar el domicilio debe ser sí o no.' })
+  showAddress!: boolean;
+
+  @IsBoolean({ message: 'Mostrar el teléfono debe ser sí o no.' })
+  showPhone!: boolean;
+
+  @IsBoolean({ message: 'Mostrar el correo debe ser sí o no.' })
+  showEmail!: boolean;
 }
 
 export const DEFAULT_REMISSION_LEGEND =
@@ -108,5 +144,12 @@ export const REMISSION_SETTINGS = defineSettings<RemissionSettings>({
     showExpiry: true,
     showTaxBreakdown: false,
     density: 'AUTO',
+    showLogo: true,
+    showLegalName: true,
+    showRfc: true,
+    showFiscalRegime: true,
+    showAddress: true,
+    showPhone: true,
+    showEmail: true,
   }),
 });

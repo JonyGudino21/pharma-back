@@ -43,6 +43,28 @@ Todos requieren **JWT**. Paginación: sin `page`/`limit` devuelve todas; con ell
 
 ---
 
+### Folio sugerido (ADR-0026, v1.5)
+
+| Método | Ruta | Uso |
+|---|---|---|
+| `GET` | `/purchase/suggest-folio?supplierId=3` | `{ folio: "FAC-003-ALV-20261023", supplierCode: "ALV" }`. No reserva el número. |
+
+- Formato: `FAC-{consecutivo del proveedor en el día, 3 dígitos}-{clave}-{AAAAMMDD}`. La fecha es la
+  de la farmacia (America/Mexico_City). La clave son las 3 primeras letras de la primera palabra que
+  distingue al proveedor ("Distribuidora Alvex S.A. de C.V." → `ALV`).
+- Al crear sin folio, el definitivo se calcula dentro de la transacción con
+  `pg_advisory_xact_lock(7003, supplierId)`: dos capturas simultáneas no toman el mismo consecutivo.
+- Crear o editar (folio o proveedor) revisa duplicados del mismo proveedor, sin distinguir
+  mayúsculas e ignorando compras canceladas.
+
+### Fecha límite de pago y cuentas por pagar (ADR-0029, v1.6)
+
+- `dueDate` (AAAA-MM-DD \| null) en `POST /purchase` y `PATCH /purchase/:id`. Al crear, ausente =
+  hoy + `Supplier.creditDays` (sin días: sin fecha); al editar, ausente = no cambia.
+- `GET /purchase/suggest-folio` devuelve además `creditDays` y `suggestedDueDate`.
+- `GET /purchase/payables`: compras **recibidas**, no canceladas y con saldo, en orden de pago, con
+  totales (vencido, por vencer, al corriente, sin fecha). Mismas reglas de estado que la cobranza.
+
 ## 4. Payload destacado
 
 **POST `/purchase`** (crear compra con ítems y pagos opcionales)
@@ -64,7 +86,7 @@ Todos requieren **JWT**. Paginación: sin `page`/`limit` devuelve todas; con ell
 | Campo | Tipo | Obligatorio | Descripción |
 |-------|------|-------------|-------------|
 | `supplierId` | number | Sí | ID del proveedor. |
-| `invoiceNumber` | string | Sí | Folio de la factura del proveedor (o interno). |
+| `invoiceNumber` | string | No | Folio de la factura o ticket del proveedor (máx. 60). Vacío o ausente: se asigna el sugerido `FAC-001-ALV-20261023`. Duplicado en otra compra no cancelada del mismo proveedor → **409**. |
 | `items` | array | Sí | Al menos un ítem. Cada uno: `productId`, `quantity` (≥ 1), `cost` (> 0). |
 | `payments` | array | No | Pagos iniciales. Cada uno: `method` (enum PaymentMethod), `amount`, `references` opcional. Si hay CASH, debe haber caja abierta. |
 

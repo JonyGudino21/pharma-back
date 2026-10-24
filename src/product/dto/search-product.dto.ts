@@ -3,16 +3,25 @@ import {
   IsString,
   IsArray,
   IsBoolean,
+  IsIn,
   IsNumber,
   Min,
   Max,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
+/** Dónde buscar el texto: todo, sólo el nombre o sólo los códigos (SKU y barras). */
+export const SEARCH_FIELDS = ['all', 'name', 'code'] as const;
+export type SearchField = (typeof SEARCH_FIELDS)[number];
+
 export class SearchProductDto {
   @IsOptional()
   @IsString()
   name: string;
+
+  @IsOptional()
+  @IsIn(SEARCH_FIELDS)
+  by?: SearchField;
 
   @IsOptional()
   @IsArray()

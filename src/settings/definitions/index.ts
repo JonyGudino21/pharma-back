@@ -1,6 +1,8 @@
 import { CASH_SETTINGS, CashSettings } from './cash.settings';
+import { CREDIT_SETTINGS, CreditSettings } from './credit.settings';
 import { DISCOUNT_SETTINGS, DiscountSettings } from './discounts.settings';
 import { INVENTORY_SETTINGS, InventorySettings } from './inventory.settings';
+import { PRICING_SETTINGS, PricingSettings } from './pricing.settings';
 import { REMISSION_SETTINGS, RemissionSettings } from './remission.settings';
 import { TAX_SETTINGS, TaxSettings } from './taxes.settings';
 import type { SettingsDefinition } from './settings-definition';
@@ -12,6 +14,8 @@ export interface SettingsMap {
   discounts: DiscountSettings;
   taxes: TaxSettings;
   remission: RemissionSettings;
+  pricing: PricingSettings;
+  credit: CreditSettings;
 }
 
 export type SettingsNamespace = keyof SettingsMap;
@@ -25,6 +29,8 @@ export const SETTINGS_REGISTRY: {
   discounts: DISCOUNT_SETTINGS,
   taxes: TAX_SETTINGS,
   remission: REMISSION_SETTINGS,
+  pricing: PRICING_SETTINGS,
+  credit: CREDIT_SETTINGS,
 };
 
 export const SETTINGS_NAMESPACES = Object.keys(
@@ -37,8 +43,10 @@ export function isSettingsNamespace(value: string): value is SettingsNamespace {
 
 export {
   CashSettings,
+  CreditSettings,
   DiscountSettings,
   InventorySettings,
+  PricingSettings,
   RemissionSettings,
   TaxSettings,
 };

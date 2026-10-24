@@ -203,6 +203,52 @@ Antes se reembolsaba `price × cantidad`: con 50 % de descuento se devolvía al 
 
 `GET /sales/summary` agrega `totalDiscounts` y `totalTax`.
 
+## Cambio de precio en caja y precios por cliente (ADR-0025, v1.4)
+
+| Método | Ruta | Uso |
+|---|---|---|
+| PATCH | `/sales/:id/items/:itemId/price` | `{ price, saveForClient?, reason? }`. Cambia el precio unitario (con IVA) de una línea. |
+
+Reglas:
+- Quién: según **Configuración › Precios en caja** (`pricing`). Gerencia y administración siempre
+  (si `enabled`); farmacéutico y cajero según `pharmacistCanEdit` / `cashierCanEdit`. 403 si no.
+- Sólo en borrador y **sin pagos** (409), como los descuentos. Bloquea la venta (`FOR UPDATE`).
+- Margen: neto por pieza (con el % de descuento de la línea) contra `costAtSale`. Bajo costo: 400
+  salvo `allowBelowCost`. Igual al costo: se acepta y la respuesta trae `margin: SIN_GANANCIA`.
+- Con cliente y `saveForClient`: queda como su precio especial con historial (`saleId`, motivo,
+  precio anterior). Igual al precio de lista: se **quita** el especial (el cliente sigue la lista).
+- La línea guarda `listPrice`, `priceSource` (`LIST | CLIENT | MANUAL`), `priceChangedById` y
+  `priceReason`.
+- `PATCH /sales/:id/set-client` re-precia a los precios especiales del cliente (o a lista, también
+  lo editado a mano) y responde `repriced` (líneas que cambiaron).
+- El cierre de venta **ya no** escribe precios especiales (antes congelaba la lista; ver ADR-0025).
+
+## Fecha de pago de una venta a crédito (ADR-0029, v1.6)
+
+`POST /sales/:id/complete` acepta `dueDate` (AAAA-MM-DD) cuando la venta queda con saldo:
+
+- fecha: se guarda (no anterior a hoy ni a más de dos años; 400 si no);
+- `null`: sin fecha, a propósito;
+- ausente (clientes con una versión anterior): la sugerida con `Client.creditDays` o
+  `credit.defaultCreditDays`.
+
+Con `credit.blockCreditWhenOverdue`, si el cliente tiene otra venta con saldo y fecha pasada, el
+cierre responde 400 antes de tocar la deuda. Una venta pagada completa no guarda fecha.
+
+## Volver a vender (ADR-0027, v1.5)
+
+| Método | Ruta | Uso |
+|---|---|---|
+| POST | `/sales/:id/reorder` | Crea una venta **nueva** en borrador con el cliente y los productos de una venta anulada o cobrada. |
+
+- Precios de hoy (`SalesService.create`: especial vigente o lista). No copia precios manuales ni
+  descuentos. Sin nota (la nota se imprime en el ticket).
+- Producto dado de baja → `skipped` (`INACTIVO`); sin existencia → `skipped` (`SIN_EXISTENCIA`);
+  existencia menor → `adjusted`. Cliente dado de baja → Público General (`clientDropped`).
+- `priceChanges`: productos cuyo precio de hoy difiere del de la venta original.
+- 409 si el cajero ya tiene un borrador con productos; 400 si la venta es un borrador o nada se puede
+  vender hoy.
+
 ## 7. Comprobantes impresos: ticket y nota de remisión (sin publicar)
 
 Cada impresión de un comprobante se registra **antes** de mandar el papel a la impresora, para que

@@ -14,26 +14,29 @@ datasource db {
 }
 
 model Client {
-  id             Int        @id @default(autoincrement())
-  name           String
-  email          String?    @unique
-  phone          String?
-  address        String?
-  rfc            String?
-  curp           String?
-  isActive       Boolean   @default(true)
+  id       Int     @id @default(autoincrement())
+  name     String
+  email    String? @unique
+  phone    String?
+  address  String?
+  rfc      String?
+  curp     String?
+  isActive Boolean @default(true)
 
   // Configuración de Crédito
-  hasCredit      Boolean   @default(false)
-  creditLimit    Decimal   @db.Decimal(12, 2) @default(0)
-  currentDebt    Decimal   @db.Decimal(12, 2) @default(0) // Campo calculado/caché para velocidad
+  hasCredit   Boolean @default(false)
+  creditLimit Decimal @default(0) @db.Decimal(12, 2)
+  currentDebt Decimal @default(0) @db.Decimal(12, 2) // Campo calculado/caché para velocidad
+  // Días de crédito pactados (opcional, ADR-0029). Sólo SUGIEREN la fecha de
+  // pago al vender a crédito; la caja puede cambiarla o dejar la venta sin fecha.
+  creditDays  Int?
 
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  sales                 Sale []
-  productPrice          ClientProductPrice[]
-  productPriceHistory   ClientProductPriceHistory[]
+  sales               Sale[]
+  productPrice        ClientProductPrice[]
+  productPriceHistory ClientProductPriceHistory[]
 
   @@index([name])
   @@index([rfc])
@@ -42,41 +45,41 @@ model Client {
 }
 
 model Product {
-  id             Int                @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
-  name           String
-  description    String?
-  sku            String             @unique                // Código interno
-  barcode        String?            @unique
-  controlled     Boolean            @default(false)        // Medicamento controlado
-  strength       String?                                   // 500mg, 1000mg
-  format         String?                                   // Tableta, Capsula
-  presentation   String?                                   // Adulto, Infantil
-  stock          Int @default(0)
-  minStock       Int @default(5)
-  price          Decimal            @db.Decimal(10, 2)     // Precio de VENTA al público
-  cost           Decimal            @db.Decimal(10, 2)     // Costo promedio actual
+  name         String
+  description  String?
+  sku          String      @unique // Código interno
+  barcode      String?     @unique
+  controlled   Boolean     @default(false) // Medicamento controlado
+  strength     String? // 500mg, 1000mg
+  format       String? // Tableta, Capsula
+  presentation String? // Adulto, Infantil
+  stock        Int         @default(0)
+  minStock     Int         @default(5)
+  price        Decimal     @db.Decimal(10, 2) // Precio de VENTA al público
+  cost         Decimal     @db.Decimal(10, 2) // Costo promedio actual
   // Tratamiento de IVA. El precio de venta es SIEMPRE con IVA incluido (LFPC
   // art. 7 Bis): el impuesto se desglosa hacia dentro. ZERO por defecto porque
   // el grueso del catálogo son medicinas (LIVA art. 2o.-A); perfumería,
   // refrescos, jugos y chicles deben marcarse GENERAL.
-  taxCategory    TaxCategory        @default(ZERO)
+  taxCategory  TaxCategory @default(ZERO)
 
-  isActive       Boolean            @default(true)
-  createdAt      DateTime           @default(now())
-  updatedAt      DateTime           @updatedAt
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Relación muchos a muchos con categorías
-  categories     ProductCategory[]
-  
-  saleItems                 SaleItem[]
-  priceHistory              ProductPriceHistory[]
-  purchaseItems             PurchaseItem[]
-  clientPrice               ClientProductPrice[]
-  clientPriceHistory        ClientProductPriceHistory[]
-  movements                 InventoryMovement[]
-  batches                   ProductBatch[]
-  controlledLogs            ControlledSaleLog[]
+  categories ProductCategory[]
+
+  saleItems          SaleItem[]
+  priceHistory       ProductPriceHistory[]
+  purchaseItems      PurchaseItem[]
+  clientPrice        ClientProductPrice[]
+  clientPriceHistory ClientProductPriceHistory[]
+  movements          InventoryMovement[]
+  batches            ProductBatch[]
+  controlledLogs     ControlledSaleLog[]
 
   @@index([name])
   @@index([sku])
@@ -85,64 +88,68 @@ model Product {
 }
 
 model ProductPriceHistory {
-  id          Int          @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
-  product     Product      @relation(fields: [productId], references: [id])
+  product     Product @relation(fields: [productId], references: [id])
   productId   Int
-  changedBy   User?        @relation(fields: [changedById], references: [id])
-  changedById Int? 
+  changedBy   User?   @relation(fields: [changedById], references: [id])
+  changedById Int?
 
-  price       Decimal      @db.Decimal(10, 2)
-  startDate   DateTime     @default(now())
-  endDate     DateTime?
+  price     Decimal   @db.Decimal(10, 2)
+  startDate DateTime  @default(now())
+  endDate   DateTime?
 
   @@index([productId])
   @@index([startDate])
 }
 
 model Sale {
-  id               Int           @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
-  client           Client?       @relation(fields: [clientId], references: [id])
-  clientId         Int?
-  user             User?         @relation(fields: [userId], references: [id])
-  userId           Int?        
+  client      Client?    @relation(fields: [clientId], references: [id])
+  clientId    Int?
+  user        User?      @relation(fields: [userId], references: [id])
+  userId      Int?
   // Relación con Turno de Caja (CRÍTICO para cuadrar cajeros)
-  cashShift        CashShift?    @relation(fields: [cashShiftId], references: [id])
-  cashShiftId      Int?
+  cashShift   CashShift? @relation(fields: [cashShiftId], references: [id])
+  cashShiftId Int?
 
   // Estado financiero REAL
-  paymentStatus    PaymentStatus @default(PENDING) // PENDING, PARTIAL, PAID
+  paymentStatus PaymentStatus @default(PENDING) // PENDING, PARTIAL, PAID
 
-  total            Decimal       @db.Decimal(12, 2)
-  subtotal         Decimal       @db.Decimal(12, 2)
-  paidAmount       Decimal       @db.Decimal(12, 2) @default(0) // Cuánto han pagado
-  balance          Decimal       @db.Decimal(12, 2) @default(0) // Cuánto deben (Deuda)
+  total      Decimal @db.Decimal(12, 2)
+  subtotal   Decimal @db.Decimal(12, 2)
+  paidAmount Decimal @default(0) @db.Decimal(12, 2) // Cuánto han pagado
+  balance    Decimal @default(0) @db.Decimal(12, 2) // Cuánto deben (Deuda)
 
   // Descuentos e impuestos. `subtotal` = suma bruta (precio × cantidad),
   // `total` = subtotal − discountTotal. El IVA va INCLUIDO en `total`.
-  discountTotal    Decimal       @db.Decimal(12, 2) @default(0)
-  taxTotal         Decimal       @db.Decimal(12, 2) @default(0)
+  discountTotal Decimal @default(0) @db.Decimal(12, 2)
+  taxTotal      Decimal @default(0) @db.Decimal(12, 2)
 
   // Snapshot de utilidad
-  totalCost        Decimal       @db.Decimal(12, 2) @default(0) // Suma del costo de los items al momento de venta
-  profit           Decimal       @db.Decimal(12, 2) @default(0) // total - taxTotal - totalCost (sin IVA)
+  totalCost Decimal @default(0) @db.Decimal(12, 2) // Suma del costo de los items al momento de venta
+  profit    Decimal @default(0) @db.Decimal(12, 2) // total - taxTotal - totalCost (sin IVA)
 
-  invoiceNumber    String?       @unique   //AAA010101AAA202401000000001  Para CFDI 4.0 en México
-  flowStatus       SaleFlowStatus @default(DRAFT)
-  status           SaleStatus    @default(PENDING)    
-  paymentMethod    PaymentMethod @default(CASH)
-  note             String?
+  invoiceNumber String?        @unique //AAA010101AAA202401000000001  Para CFDI 4.0 en México
+  flowStatus    SaleFlowStatus @default(DRAFT)
+  status        SaleStatus     @default(PENDING)
+  paymentMethod PaymentMethod  @default(CASH)
+  note          String?
+  // Fecha límite de pago de una venta a crédito (opcional, ADR-0029). Se fija
+  // al cobrar: cambiar después los días del cliente no mueve lo ya pactado.
+  dueDate       DateTime?      @db.Date
 
-  createdAt        DateTime      @default(now())
-  updatedAt        DateTime      @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  items            SaleItem[]
-  payments         SalePayment[]
-  saleReturn       SaleReturn[]
-  saleRefunds      SaleRefund[]
-  receiptPrints    SaleReceiptPrint[]
-  controlledLogs   ControlledSaleLog[]
+  items              SaleItem[]
+  payments           SalePayment[]
+  saleReturn         SaleReturn[]
+  saleRefunds        SaleRefund[]
+  receiptPrints      SaleReceiptPrint[]
+  clientPriceChanges ClientProductPriceHistory[]
+  controlledLogs     ControlledSaleLog[]
 
   @@index([createdAt])
   @@index([invoiceNumber])
@@ -152,7 +159,7 @@ model Sale {
   @@index([clientId])
   @@index([userId])
   @@index([flowStatus])
-
+  @@index([dueDate])
   // Recuperación del carrito en curso (GET /sales/draft). Corre en cada carga
   // del POS: sin el compuesto, filtrar por (userId, flowStatus) obligaba a
   // ordenar en memoria todo el histórico del cajero para devolver una fila.
@@ -160,37 +167,47 @@ model Sale {
 }
 
 model SaleItem {
-  id            Int         @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
-  sale          Sale        @relation(fields: [saleId], references: [id])
-  saleId        Int
-  product       Product     @relation(fields: [productId], references: [id])
-  productId     Int
+  sale      Sale    @relation(fields: [saleId], references: [id])
+  saleId    Int
+  product   Product @relation(fields: [productId], references: [id])
+  productId Int
 
-  quantity      Int
-  price         Decimal     @db.Decimal(10, 2) //Precio aplicado (con IVA)
+  quantity Int
+  price    Decimal @db.Decimal(10, 2) //Precio aplicado (con IVA)
   // Importe descontado de la línea (no por unidad). subtotal = price × qty − discount.
-  discount      Decimal     @db.Decimal(10, 2) @default(0)
-  subtotal      Decimal     @db.Decimal(10, 2)
+  discount Decimal @default(0) @db.Decimal(10, 2)
+  subtotal Decimal @db.Decimal(10, 2)
 
   // Descuento auditado: qué porcentaje, por qué, quién lo aplicó y quién lo
   // autorizó si rebasaba el tope de su rol.
-  discountPercent        Decimal  @db.Decimal(5, 2) @default(0)
+  discountPercent        Decimal @default(0) @db.Decimal(5, 2)
   discountReason         String?
-  discountAppliedBy      User?    @relation("SaleItemDiscountAppliedBy", fields: [discountAppliedById], references: [id])
+  discountAppliedBy      User?   @relation("SaleItemDiscountAppliedBy", fields: [discountAppliedById], references: [id])
   discountAppliedById    Int?
-  discountAuthorizedBy   User?    @relation("SaleItemDiscountAuthorizedBy", fields: [discountAuthorizedById], references: [id])
+  discountAuthorizedBy   User?   @relation("SaleItemDiscountAuthorizedBy", fields: [discountAuthorizedById], references: [id])
   discountAuthorizedById Int?
 
   // Impuesto CONGELADO al vender: tasa efectiva (0.16, 0.08, 0) y monto
   // incluido en `subtotal`. Si mañana cambia la tasa, la venta de hoy no cambia.
-  taxRate       Decimal     @db.Decimal(5, 4) @default(0)
-  taxAmount     Decimal     @db.Decimal(10, 2) @default(0)
+  taxRate   Decimal @default(0) @db.Decimal(5, 4)
+  taxAmount Decimal @default(0) @db.Decimal(10, 2)
 
   // Guardamos cuánto costaba este producto HOY para calcular ganancia histórica
-  costAtSale    Decimal     @db.Decimal(10, 2)
+  costAtSale Decimal @db.Decimal(10, 2)
 
-  batches       SaleItemBatch[]
+  // ORIGEN DEL PRECIO (ADR-0025). `listPrice` es el precio de lista del producto
+  // cuando se agregó la línea: la referencia para mostrar "precio especial" y
+  // auditar cuánto se movió. `priceSource`: LIST (de lista), CLIENT (precio
+  // especial del cliente) o MANUAL (lo cambió alguien en caja: quién y por qué).
+  listPrice        Decimal?        @db.Decimal(10, 2)
+  priceSource      SalePriceSource @default(LIST)
+  priceChangedBy   User?           @relation("SaleItemPriceChangedBy", fields: [priceChangedById], references: [id])
+  priceChangedById Int?
+  priceReason      String?
+
+  batches SaleItemBatch[]
 
   // Una sola línea por producto dentro de una venta.
   // Habilita el upsert atómico de addItem: sin esta restricción, dos escaneos
@@ -201,26 +218,26 @@ model SaleItem {
 }
 
 model SalePayment {
-  id            Int         @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
-  sale          Sale        @relation(fields: [saleId], references: [id])
-  saleId        Int
+  sale   Sale @relation(fields: [saleId], references: [id])
+  saleId Int
 
-  method        PaymentMethod
-  amount        Decimal     @db.Decimal(12,2)
-  references    String?
+  method     PaymentMethod
+  amount     Decimal       @db.Decimal(12, 2)
+  references String?
 
   // Si es en efectivo, ¿a qué caja entró?
-  cashShiftId   Int?
-  isDeposit     Boolean     @default(true) // true = Pago, false = Reembolso
+  cashShiftId Int?
+  isDeposit   Boolean @default(true) // true = Pago, false = Reembolso
 
   // Clave de idempotencia enviada por el cliente (header Idempotency-Key).
   // Si una respuesta se pierde y el cajero reintenta, el UNIQUE impide un
   // segundo cobro: el reintento devuelve el pago ya registrado.
   // Nullable para no romper los pagos históricos ni los abonos internos.
-  idempotencyKey String?    @unique
+  idempotencyKey String? @unique
 
-  createdAt     DateTime    @default(now())
+  createdAt DateTime @default(now())
 
   @@index([saleId])
   @@index([method])
@@ -229,41 +246,43 @@ model SalePayment {
   @@index([cashShiftId])
 }
 
-model SaleReturn { 
-  id             Int         @id @default(autoincrement())
-  
-  sale           Sale        @relation(fields: [saleId], references: [id])
-  saleId         Int
-  processedBy    User?       @relation(fields: [processedById], references: [id])
-  processedById  Int?
+model SaleReturn {
+  id Int @id @default(autoincrement())
 
-  note           String?
+  sale          Sale  @relation(fields: [saleId], references: [id])
+  saleId        Int
+  processedBy   User? @relation(fields: [processedById], references: [id])
+  processedById Int?
 
-  createdAt      DateTime   @default(now())
+  note String?
 
-  items          SaleReturnItem[]
-  refund         SaleRefund[]
+  createdAt DateTime @default(now())
+
+  items  SaleReturnItem[]
+  refund SaleRefund[]
+
   @@index([saleId])
 }
 
 model SaleReturnItem {
-  id            Int        @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
-  saleReturn    SaleReturn @relation(fields: [saleReturnId], references: [id])
-  saleReturnId  Int
+  saleReturn   SaleReturn @relation(fields: [saleReturnId], references: [id])
+  saleReturnId Int
 
-  saleItemId    Int
-  productId     Int
-  quantity      Int
-  unitPrice     Decimal   @db.Decimal(10, 2)
-  subtotal      Decimal   @db.Decimal(12, 2)
-  reason        String?
+  saleItemId Int
+  productId  Int
+  quantity   Int
+  unitPrice  Decimal @db.Decimal(10, 2)
+  subtotal   Decimal @db.Decimal(12, 2)
+  reason     String?
+
   @@index([saleItemId])
   @@index([saleReturnId])
 }
 
 model SaleRefund {
-  id           Int        @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
   // SIN @unique desde v1: una devolución de una venta pagada con varios medios
   // (parte tarjeta, parte efectivo) genera UN reembolso POR MEDIO. Con el
@@ -275,11 +294,12 @@ model SaleRefund {
   sale         Sale       @relation(fields: [saleId], references: [id])
   saleId       Int
 
-  amount       Decimal    @db.Decimal(12,2)
-  method       PaymentMethod?
-  reference    String?
+  amount    Decimal        @db.Decimal(12, 2)
+  method    PaymentMethod?
+  reference String?
 
-  createdAt    DateTime  @default(now())
+  createdAt DateTime @default(now())
+
   @@index([saleId])
   @@index([saleReturnId])
 }
@@ -287,16 +307,16 @@ model SaleRefund {
 //TODO: Registrar el vuelto en un futuro: CashMovement, CashMovementType, CashMovementCategory 
 
 model Category {
-  id           Int         @id @default(autoincrement())
-  name         String
-  description  String?
-  isActive     Boolean     @default(true)
+  id          Int     @id @default(autoincrement())
+  name        String
+  description String?
+  isActive    Boolean @default(true)
 
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Relación muchos a muchos con productos
-  products     ProductCategory[]
+  products ProductCategory[]
 
   @@unique([name])
   @@index([isActive])
@@ -304,36 +324,36 @@ model Category {
 
 // Tabla intermediaria para la relación muchos a muchos entre Product y Category
 model ProductCategory {
-  id          Int      @id @default(autoincrement())
-  
-  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
-  productId   Int
-  
-  category    Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
-  categoryId  Int
-  
+  id Int @id @default(autoincrement())
+
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId Int
+
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  categoryId Int
+
   // Campos adicionales opcionales
-  isPrimary   Boolean  @default(false)  // Categoría principal del producto
-  order       Int?                      // Orden de importancia de la categoría
-  
-  createdAt   DateTime @default(now())
-  
-  @@unique([productId, categoryId])  // Evita duplicados
+  isPrimary Boolean @default(false) // Categoría principal del producto
+  order     Int? // Orden de importancia de la categoría
+
+  createdAt DateTime @default(now())
+
+  @@unique([productId, categoryId]) // Evita duplicados
   @@index([productId])
   @@index([categoryId])
   @@index([isPrimary])
 }
 
 model User {
-  id          Int          @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
-  userName    String       @unique
-  password    String
-  email       String       @unique
-  firstName   String
-  lastName    String
-  role        UserRole
-  isActive    Boolean      @default(true)
+  userName  String   @unique
+  password  String
+  email     String   @unique
+  firstName String
+  lastName  String
+  role      UserRole
+  isActive  Boolean  @default(true)
 
   sale                      Sale[]
   productPriceHistory       ProductPriceHistory[]
@@ -343,14 +363,15 @@ model User {
   cashData                  CashShift[]
   saleReceiptPrints         SaleReceiptPrint[]
   controlledSaleLogs        ControlledSaleLog[]
-  settingsUpdated           AppSetting[]      @relation("AppSettingUpdatedBy")
-  settingsChanges           AppSettingAudit[] @relation("AppSettingAuditChangedBy")
-  discountsApplied          SaleItem[]        @relation("SaleItemDiscountAppliedBy")
-  discountsAuthorized       SaleItem[]        @relation("SaleItemDiscountAuthorizedBy")
+  settingsUpdated           AppSetting[]                @relation("AppSettingUpdatedBy")
+  settingsChanges           AppSettingAudit[]           @relation("AppSettingAuditChangedBy")
+  discountsApplied          SaleItem[]                  @relation("SaleItemDiscountAppliedBy")
+  discountsAuthorized       SaleItem[]                  @relation("SaleItemDiscountAuthorizedBy")
+  pricesChanged             SaleItem[]                  @relation("SaleItemPriceChangedBy")
   cashDrawerEvents          CashDrawerEvent[]
 
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([userName])
   @@index([email])
@@ -365,15 +386,15 @@ model User {
 // `version` es el bloqueo optimista: dos gerentes editando a la vez no se
 // pisan en silencio; el segundo recibe 409 y recarga.
 model AppSetting {
-  namespace   String   @id
-  value       Json
-  version     Int      @default(1)
+  namespace String @id
+  value     Json
+  version   Int    @default(1)
 
-  updatedBy   User?    @relation("AppSettingUpdatedBy", fields: [updatedById], references: [id])
+  updatedBy   User? @relation("AppSettingUpdatedBy", fields: [updatedById], references: [id])
   updatedById Int?
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 // Bitácora INMUTABLE de cambios de configuración: una fila por ajuste cambiado.
@@ -381,11 +402,11 @@ model AppSetting {
 // antifraude y sanitarios: "quién lo cambió y cuándo" tiene que poder
 // responderse en una auditoría.
 model AppSettingAudit {
-  id          Int      @id @default(autoincrement())
-  namespace   String
-  key         String
-  oldValue    Json?
-  newValue    Json
+  id        Int    @id @default(autoincrement())
+  namespace String
+  key       String
+  oldValue  Json?
+  newValue  Json
 
   changedBy   User     @relation("AppSettingAuditChangedBy", fields: [changedById], references: [id])
   changedById Int
@@ -397,18 +418,18 @@ model AppSettingAudit {
 // Una sola empresa por instalación. `singletonKey` impide que un GET
 // concurrente al primer arranque cree dos fichas fiscales.
 model Company {
-  id           Int      @id @default(autoincrement())
-  singletonKey String   @unique @default("default")
+  id           Int    @id @default(autoincrement())
+  singletonKey String @unique @default("default")
 
   legalName    String
   tradeName    String
-  rfc          String   @default("")
+  rfc          String  @default("")
   fiscalRegime String?
-  address      String   @default("")
+  address      String  @default("")
   phone        String?
   email        String?
   logoUrl      String?
-  ticketFooter String?  @db.Text
+  ticketFooter String? @db.Text
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -417,9 +438,9 @@ model Company {
 }
 
 model ReceiptTemplate {
-  id           Int     @id @default(autoincrement())
-  company      Company @relation(fields: [companyId], references: [id])
-  companyId    Int
+  id        Int     @id @default(autoincrement())
+  company   Company @relation(fields: [companyId], references: [id])
+  companyId Int
 
   name         String
   paperWidthMm Int     @default(58)
@@ -454,7 +475,7 @@ model SaleReceiptPrint {
   document   PrintDocument @default(TICKET)
   copyNumber Int
   channel    PrintChannel
-  printedAt  DateTime     @default(now())
+  printedAt  DateTime      @default(now())
 
   @@unique([saleId, document, copyNumber])
   @@index([saleId])
@@ -462,105 +483,112 @@ model SaleReceiptPrint {
 }
 
 model Supplier {
-  id         Int          @id @default(autoincrement())
-  name       String
-  contact    String?
-  phone      String?
-  email      String?      @unique
-  isActive   Boolean      @default(true)
+  id       Int     @id @default(autoincrement())
+  name     String
+  contact  String?
+  phone    String?
+  email    String? @unique
+  isActive Boolean @default(true)
 
-  creditDays  Int       @default(0)        // Días de crédito (Ej. 30)
-  balance     Decimal   @db.Decimal(12, 2) @default(0) // Cuánto le debemos nosotros
+  creditDays Int     @default(0) // Días de crédito (Ej. 30)
+  balance    Decimal @default(0) @db.Decimal(12, 2) // Cuánto le debemos nosotros
 
-  purchases  Purchase[]
+  purchases Purchase[]
 
-  createdAt  DateTime     @default(now())
-  updatedAt  DateTime     @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([name])
   @@index([email])
 }
 
 model Purchase {
-  id            Int             @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
-  supplier      Supplier        @relation(fields: [supplierId], references: [id])
-  supplierId    Int
+  supplier   Supplier @relation(fields: [supplierId], references: [id])
+  supplierId Int
 
-  invoiceNumber String          //folio de la factura
-  total         Decimal         @db.Decimal(10, 2)
-  subtotal      Decimal         @db.Decimal(10, 2)
-  paidAmount    Decimal         @db.Decimal(12, 2) @default(0) // Cuánto hemos abonado
-  balance       Decimal         @db.Decimal(12, 2) @default(0) // Cuánto falta pagar (Deuda)
-  
-  status        PurchaseStatus  @default(PENDING)              // estado del pago
+  invoiceNumber String //folio de la factura
+  total         Decimal @db.Decimal(10, 2)
+  subtotal      Decimal @db.Decimal(10, 2)
+  paidAmount    Decimal @default(0) @db.Decimal(12, 2) // Cuánto hemos abonado
+  balance       Decimal @default(0) @db.Decimal(12, 2) // Cuánto falta pagar (Deuda)
+
+  status PurchaseStatus @default(PENDING) // estado del pago
 
   // Define si la mercancía ya entró al almacén o es solo un pedido
   deliveryStatus PurchaseDeliveryStatus @default(PENDING)
 
-  items         PurchaseItem[]
-  payments      PurchasePayment[]
+  // Fecha límite para pagarle al proveedor (opcional, ADR-0029). Se sugiere con
+  // los días de crédito del proveedor.
+  dueDate DateTime? @db.Date
 
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime        @updatedAt
+  items    PurchaseItem[]
+  payments PurchasePayment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([status])
   @@index([deliveryStatus])
   @@index([invoiceNumber])
   @@index([supplierId])
   @@index([createdAt])
+  @@index([dueDate])
 }
 
 model PurchaseItem {
-  id          Int         @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
-  purchase    Purchase    @relation(fields: [purchaseId], references: [id])
-  purchaseId  Int
-  product     Product     @relation(fields: [productId], references: [id])
-  productId   Int
+  purchase   Purchase @relation(fields: [purchaseId], references: [id])
+  purchaseId Int
+  product    Product  @relation(fields: [productId], references: [id])
+  productId  Int
 
-  quantity    Int
-  cost        Decimal     @db.Decimal(10, 2)  // Precio de COMPRA real de este lote
-  subtotal    Decimal     @db.Decimal(12, 2)
+  quantity Int
+  cost     Decimal @db.Decimal(10, 2) // Precio de COMPRA real de este lote
+  subtotal Decimal @db.Decimal(12, 2)
 
   // Lote del fabricante. Obligatorio al recibir un controlado; opcional en el resto
   // para no bloquear insumos sin caducidad (bolsas, material de curación).
-  lotNumber   String?
-  expiryDate  DateTime?   @db.Date
+  lotNumber  String?
+  expiryDate DateTime? @db.Date
 
-  batches     ProductBatch[]
+  batches ProductBatch[]
+
   @@index([purchaseId])
   @@index([productId])
 }
 
 model PurchasePayment {
-  id          Int         @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
-  purchase    Purchase    @relation(fields: [purchaseId], references: [id])
-  purchaseId  Int
+  purchase   Purchase @relation(fields: [purchaseId], references: [id])
+  purchaseId Int
 
-  method      PaymentMethod
-  amount      Decimal     @db.Decimal(10,2)
-  references  String?
+  method     PaymentMethod
+  amount     Decimal       @db.Decimal(10, 2)
+  references String?
 
-  createdAt   DateTime    @default(now())
+  createdAt DateTime @default(now())
 
   @@index([purchaseId])
   @@index([method])
 }
 
-model ClientProductPrice { //precios especiales por cliente.
-  id         Int          @id @default(autoincrement())
+model ClientProductPrice {
+  id Int @id @default(autoincrement())
 
-  client     Client       @relation(fields: [clientId], references: [id])
-  clientId   Int
-  product    Product      @relation(fields: [productId], references: [id])
-  productId  Int
+  client    Client  @relation(fields: [clientId], references: [id])
+  clientId  Int
+  product   Product @relation(fields: [productId], references: [id])
+  productId Int
 
-  price      Decimal      @db.Decimal(10, 2)
-  isActive   Boolean      @default(true)
+  price    Decimal @db.Decimal(10, 2)
+  isActive Boolean @default(true)
 
-  createdAt  DateTime     @default(now())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
 
   @@unique([clientId, productId])
   @@index([clientId])
@@ -568,41 +596,56 @@ model ClientProductPrice { //precios especiales por cliente.
 }
 
 model ClientProductPriceHistory {
-  id          Int           @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
-  client      Client        @relation(fields: [clientId], references: [id])
+  client      Client  @relation(fields: [clientId], references: [id])
   clientId    Int
-  product     Product       @relation(fields: [productId], references: [id])
+  product     Product @relation(fields: [productId], references: [id])
   productId   Int
-  changedBy   User          @relation(fields: [changedById], references: [id])
+  changedBy   User    @relation(fields: [changedById], references: [id])
   changedById Int
 
-  price       Decimal       @db.Decimal(10, 2)
+  price         Decimal  @db.Decimal(10, 2)
+  // Auditoría del cambio (ADR-0025): precio anterior (null = no tenía precio
+  // especial), motivo, y la venta desde la que se cambió (null = desde la ficha
+  // del cliente).
+  previousPrice Decimal? @db.Decimal(10, 2)
+  reason        String?
+  sale          Sale?    @relation(fields: [saleId], references: [id])
+  saleId        Int?
 
-  startDate   DateTime      @default(now())
-  endDate     DateTime?
+  startDate DateTime  @default(now())
+  endDate   DateTime?
+
   @@index([clientId, productId])
 }
 
-model UserToken {
-  id            Int       @id @default(autoincrement())
+/// De dónde salió el precio de una línea de venta (ADR-0025).
+enum SalePriceSource {
+  LIST // precio de lista del producto
+  CLIENT // precio especial vigente del cliente
+  MANUAL // cambiado en caja por un usuario
+}
 
-  user          User      @relation(fields: [userId], references: [id])
-  userId        Int
+model UserToken {
+  id Int @id @default(autoincrement())
+
+  user   User @relation(fields: [userId], references: [id])
+  userId Int
 
   // sha256 del refresh token. El token en claro NUNCA se persiste: un dump de
   // esta tabla no debe entregar sesiones usables. Ver TokenService.
-  tokenHash     String    @unique
-  type          TokenType @default(REFRESH)
-  ipAddress     String?
-  userAgent     String?
-  lastUsedAt    DateTime?
-  expiresAt     DateTime
-  revoked       Boolean   @default(false)
-  revokedAt     DateTime?
+  tokenHash  String    @unique
+  type       TokenType @default(REFRESH)
+  ipAddress  String?
+  userAgent  String?
+  lastUsedAt DateTime?
+  expiresAt  DateTime
+  revoked    Boolean   @default(false)
+  revokedAt  DateTime?
 
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Sin @@index([tokenHash]): la columna ya es @unique y Postgres crea su propio
   // índice. El índice extra que existía sobre `token` sólo duplicaba el B-tree y
@@ -612,28 +655,28 @@ model UserToken {
 }
 
 model CashShift {
-  id               Int       @id @default(autoincrement())
-  
-  user             User      @relation(fields: [userId], references: [id])
-  userId           Int
-  
+  id Int @id @default(autoincrement())
+
+  user   User @relation(fields: [userId], references: [id])
+  userId Int
+
   // Control de tiempos
-  openedAt         DateTime  @default(now())
-  closedAt         DateTime? 
+  openedAt DateTime  @default(now())
+  closedAt DateTime?
 
   // Control de dinero
-  initialAmount    Decimal   @db.Decimal(12, 2) // Fondo de caja inicial
-  expectedAmount   Decimal?  @db.Decimal(12, 2) // Calculado por el sistema al cerrar
-  realAmount       Decimal?  @db.Decimal(12, 2) // Lo que el cajero contó físicamente (Cierre ciego)
-  difference       Decimal?  @db.Decimal(12, 2) // real - expected (Positivo sobra, Negativo falta)
+  initialAmount  Decimal  @db.Decimal(12, 2) // Fondo de caja inicial
+  expectedAmount Decimal? @db.Decimal(12, 2) // Calculado por el sistema al cerrar
+  realAmount     Decimal? @db.Decimal(12, 2) // Lo que el cajero contó físicamente (Cierre ciego)
+  difference     Decimal? @db.Decimal(12, 2) // real - expected (Positivo sobra, Negativo falta)
 
-  status           ShiftStatus @default(OPEN)
-  
-  notes            String?
+  status ShiftStatus @default(OPEN)
 
-  transactions     CashTransaction[] // Movimientos de dinero (Entradas/Salidas/Ventas)
-  drawerEvents     CashDrawerEvent[] // Aperturas del cajón SIN venta (auditadas)
-  sales            Sale[]            // Ventas ligadas a este turno
+  notes String?
+
+  transactions CashTransaction[] // Movimientos de dinero (Entradas/Salidas/Ventas)
+  drawerEvents CashDrawerEvent[] // Aperturas del cajón SIN venta (auditadas)
+  sales        Sale[] // Ventas ligadas a este turno
 
   @@index([userId])
   @@index([status])
@@ -641,46 +684,46 @@ model CashShift {
 }
 
 model CashTransaction {
-  id               Int       @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
-  shift            CashShift @relation(fields: [shiftId], references: [id])
-  shiftId          Int
+  shift   CashShift @relation(fields: [shiftId], references: [id])
+  shiftId Int
 
-  type             CashTransactionType // INGRESO, EGRESO, CORTE
-  amount           Decimal   @db.Decimal(12, 2)
-  reason           String    // "Retiro por exceso de efectivo", "Pago de luz caja chica"
-  
-  referenceId      Int?      // ID opcional si viene de una Venta o Compra
-  relatedTable     String?   // "Sale", "Purchase"
+  type   CashTransactionType // INGRESO, EGRESO, CORTE
+  amount Decimal             @db.Decimal(12, 2)
+  reason String // "Retiro por exceso de efectivo", "Pago de luz caja chica"
 
-  createdAt        DateTime  @default(now())
-  createdBy        Int       // User ID
+  referenceId  Int? // ID opcional si viene de una Venta o Compra
+  relatedTable String? // "Sale", "Purchase"
+
+  createdAt DateTime @default(now())
+  createdBy Int // User ID
 
   @@index([shiftId])
 }
 
 model InventoryMovement {
-  id               Int       @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
-  product          Product   @relation(fields: [productId], references: [id])
-  productId        Int
+  product   Product @relation(fields: [productId], references: [id])
+  productId Int
 
-  type             MovementType
-  quantity         Int       // Positivo (Entrada), Negativo (Salida)
-  
+  type     MovementType
+  quantity Int // Positivo (Entrada), Negativo (Salida)
+
   // Snapshot financiero: ¿Cuánto valía esto cuando se movió?
-  unitCost         Decimal   @db.Decimal(10, 2) 
-  totalCost        Decimal   @db.Decimal(12, 2)
+  unitCost  Decimal @db.Decimal(10, 2)
+  totalCost Decimal @db.Decimal(12, 2)
 
   // Trazabilidad
-  reason           String    // "Venta #123", "Merma", "Compra #55"
-  referenceId      Int?      // ID de Venta, Compra o Ajuste
-  
-  createdAt        DateTime  @default(now())
-  createdBy        Int       // User ID
+  reason      String // "Venta #123", "Merma", "Compra #55"
+  referenceId Int? // ID de Venta, Compra o Ajuste
 
-  batch            ProductBatch? @relation(fields: [batchId], references: [id])
-  batchId          Int?
+  createdAt DateTime @default(now())
+  createdBy Int // User ID
+
+  batch   ProductBatch? @relation(fields: [batchId], references: [id])
+  batchId Int?
 
   @@index([productId])
   @@index([createdAt])
@@ -693,19 +736,19 @@ model InventoryMovement {
 // debe coincidir. Nunca se recalcula el total como SUM en caliente: eso
 // reintroduce el read-modify-write que P0-1 cerró.
 model ProductBatch {
-  id             Int      @id @default(autoincrement())
+  id         Int      @id @default(autoincrement())
   // Restrict, NO Cascade: un lote es un registro financiero y regulatorio.
   // Con Cascade, un borrado físico de producto destruiría los lotes y dejaría
   // en NULL el batchId de los asientos del libro de controlados, anulando la
   // trazabilidad exigida en una inspección. Hoy el borrado es lógico
   // (isActive = false), así que esto sella una mina latente.
-  product        Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
-  productId      Int
-  lotNumber      String
-  expiryDate     DateTime @db.Date
-  quantity       Int      @default(0)
-  cost           Decimal  @db.Decimal(10, 2)
-  receivedAt     DateTime @default(now())
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  productId  Int
+  lotNumber  String
+  expiryDate DateTime @db.Date
+  quantity   Int      @default(0)
+  cost       Decimal  @db.Decimal(10, 2)
+  receivedAt DateTime @default(now())
 
   purchaseItem   PurchaseItem? @relation(fields: [purchaseItemId], references: [id])
   purchaseItemId Int?
@@ -739,15 +782,15 @@ model SaleItemBatch {
 // Libro de controlados COFEPRIS: bitácora append-only. Nunca se borra una fila;
 // una devolución o destrucción se registra con otro entryType.
 model ControlledSaleLog {
-  id             Int                   @id @default(autoincrement())
-  entryType      ControlledLogEntryType @default(DISPENSE)
+  id        Int                    @id @default(autoincrement())
+  entryType ControlledLogEntryType @default(DISPENSE)
 
-  sale           Sale?                 @relation(fields: [saleId], references: [id])
-  saleId         Int?
-  product        Product               @relation(fields: [productId], references: [id])
-  productId      Int
-  batch          ProductBatch?         @relation(fields: [batchId], references: [id])
-  batchId        Int?
+  sale      Sale?         @relation(fields: [saleId], references: [id])
+  saleId    Int?
+  product   Product       @relation(fields: [productId], references: [id])
+  productId Int
+  batch     ProductBatch? @relation(fields: [batchId], references: [id])
+  batchId   Int?
 
   quantity       Int
   prescriptionNo String?
@@ -755,10 +798,10 @@ model ControlledSaleLog {
   doctorLicense  String?
   patientName    String?
 
-  soldBy         User                  @relation(fields: [soldById], references: [id])
-  soldById       Int
+  soldBy   User @relation(fields: [soldById], references: [id])
+  soldById Int
 
-  createdAt      DateTime              @default(now())
+  createdAt DateTime @default(now())
 
   @@index([productId, createdAt])
   @@index([createdAt])
@@ -774,39 +817,39 @@ enum PaymentStatus {
 }
 
 enum MovementType {
-  INITIAL       // Saldo inicial al crear producto
-  SALE            // Salida por venta
-  PURCHASE        // Entrada por compra
-  RETURN_IN       // Entrada por devolución de cliente
-  RETURN_OUT      // Salida por devolución a proveedor
-  ADJUSTMENT      // Ajuste de inventario (Robo, Conteo)
-  LOSS          // Merma conocida (roto, caducado, robo confirmado) - Gasto
-  TRANSFER        // Movimiento entre sucursales (Futuro)
+  INITIAL // Saldo inicial al crear producto
+  SALE // Salida por venta
+  PURCHASE // Entrada por compra
+  RETURN_IN // Entrada por devolución de cliente
+  RETURN_OUT // Salida por devolución a proveedor
+  ADJUSTMENT // Ajuste de inventario (Robo, Conteo)
+  LOSS // Merma conocida (roto, caducado, robo confirmado) - Gasto
+  TRANSFER // Movimiento entre sucursales (Futuro)
 }
 
 // Aperturas del cajón de dinero que NO vienen de un cobro en efectivo.
 // "Abrir sin venta" es la vía clásica para sacar dinero sin rastro: cada una
 // queda registrada con quién, cuándo, en qué caja y por qué.
 model CashDrawerEvent {
-  id        Int                 @id @default(autoincrement())
-  kind      CashDrawerEventKind
-  reason    String
-  terminal  String?
+  id       Int                 @id @default(autoincrement())
+  kind     CashDrawerEventKind
+  reason   String
+  terminal String?
 
-  user      User                @relation(fields: [userId], references: [id])
-  userId    Int
-  shift     CashShift?          @relation(fields: [shiftId], references: [id])
-  shiftId   Int?
+  user    User       @relation(fields: [userId], references: [id])
+  userId  Int
+  shift   CashShift? @relation(fields: [shiftId], references: [id])
+  shiftId Int?
 
-  createdAt DateTime            @default(now())
+  createdAt DateTime @default(now())
 
   @@index([shiftId])
   @@index([createdAt])
 }
 
 enum CashDrawerEventKind {
-  MANUAL  // Apertura manual (cambio, revisión)
-  TEST    // Prueba desde Configuración › Dispositivos
+  MANUAL // Apertura manual (cambio, revisión)
+  TEST // Prueba desde Configuración › Dispositivos
 }
 
 // Tratamiento de IVA de un producto. La tasa de GENERAL (16 % u 8 % en región
@@ -822,31 +865,30 @@ enum TaxCategory {
 enum ShiftStatus {
   OPEN
   CLOSED
-  AUDIT_REQUIRED   // Si la diferencia es muy grande, se marca para revisión
+  AUDIT_REQUIRED // Si la diferencia es muy grande, se marca para revisión
 }
 
 enum CashTransactionType {
-  SALE_INCOME      // Venta Contado
-  CREDIT_PAYMENT   // Cliente paga una deuda
-  MANUAL_ADD       // Ingreso manual
-  MANUAL_WITHDRAW  // Sangría / Retiro
-  REFUND_OUT       // Rembolso de salida
+  SALE_INCOME // Venta Contado
+  CREDIT_PAYMENT // Cliente paga una deuda
+  MANUAL_ADD // Ingreso manual
+  MANUAL_WITHDRAW // Sangría / Retiro
+  REFUND_OUT // Rembolso de salida
   PURCHASE_PAYMENT // Pago a proveedor por mercancía
-  REFUND_IN        // Proveedor nos devuelve dinero
-  EXPENSE          // Gasto menor
+  REFUND_IN // Proveedor nos devuelve dinero
+  EXPENSE // Gasto menor
 }
 
-
 enum TokenType {
-  REFRESH          // Para refrescar access tokens
-  ACCESS           // Para acceso a recursos (JWT usualmente)
-  VERIFICATION     // Para verificar email/cuenta
-  PASSWORD_RESET   // Para resetear contraseña
-  API              // Tokens de API de larga duración
+  REFRESH // Para refrescar access tokens
+  ACCESS // Para acceso a recursos (JWT usualmente)
+  VERIFICATION // Para verificar email/cuenta
+  PASSWORD_RESET // Para resetear contraseña
+  API // Tokens de API de larga duración
 }
 
 enum UserRole {
-  MANAGER 
+  MANAGER
   ADMIN
   PHARMACIST
   CASHIER
@@ -859,29 +901,29 @@ enum PaymentMethod {
 }
 
 enum SaleStatus {
-  PENDING     // Venta registrada pero sin pago
-  PARTIAL     // Abonada parcialmente
-  COMPLETED   // Pagada completamente
+  PENDING // Venta registrada pero sin pago
+  PARTIAL // Abonada parcialmente
+  COMPLETED // Pagada completamente
   CANCELLED
-  REFUNDED    // Rembolsado
+  REFUNDED // Rembolsado
 }
 
 enum SaleFlowStatus {
-  DRAFT        // Venta abierta, editable
-  COMPLETED    // Venta cerrada (stock ya impactado)
-  CANCELLED    // Cancelada antes de cerrar
+  DRAFT // Venta abierta, editable
+  COMPLETED // Venta cerrada (stock ya impactado)
+  CANCELLED // Cancelada antes de cerrar
 }
 
 enum PurchaseStatus {
-  PENDING    // Pedido registrado pero no pagado
-  PARTIAL    // Abonado parcialmente
-  PAID       // Pagado completamente
+  PENDING // Pedido registrado pero no pagado
+  PARTIAL // Abonado parcialmente
+  PAID // Pagado completamente
   CANCELLED
 }
 
 enum PurchaseDeliveryStatus {
-  PENDING    // Orden creada, mercancía no ha llegado
-  RECEIVED   // Mercancía recibida e Inventario actualizado (Kardex)
+  PENDING // Orden creada, mercancía no ha llegado
+  RECEIVED // Mercancía recibida e Inventario actualizado (Kardex)
   CANCELLED
 }
 

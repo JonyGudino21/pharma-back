@@ -5,6 +5,48 @@ AAAA-MM-DD.
 
 ## Sin publicar
 
+### Cobranza y días de crédito (23/10/2026, v1.6.0)
+
+- **Días de crédito opcionales** por cliente y **fecha de pago opcional** en ventas a crédito
+  (`CompleteSaleDto.dueDate`) y compras (`dueDate`). Migración
+  `20261023180000_credito_fechas_de_pago` (aditiva; fecha a compras recibidas con saldo de
+  proveedores con días). ADR-0029.
+- **Cobranza:** `GET /client/receivables` (antigüedad, resumen por cliente, orden de cobro),
+  `PATCH /client/receivables/:saleId/due-date`, `GET /client/:id/credit-status`.
+- **Cuentas por pagar:** `GET /purchase/payables`.
+- **Configuración › Crédito** (`credit`): días sugeridos, ventana de por vencer, aviso y bloqueo
+  opcional con saldo vencido.
+- Guía nueva `docs/produccion/08-RESPALDO-Y-CAMBIO-DE-PC.md`.
+
+### Ventas y compras más rápidas (23/10/2026, v1.5.0)
+
+- **Folio sugerido en compras** (`GET /purchase/suggest-folio?supplierId=`):
+  `FAC-001-ALV-20261023` (consecutivo del proveedor en el día, clave del proveedor, fecha de la
+  farmacia). `invoiceNumber` pasa a opcional: vacío → el servidor asigna el sugerido bajo un candado
+  por proveedor. ADR-0026.
+- **Folio duplicado rechazado:** la misma factura del mismo proveedor (no cancelada) ya no se puede
+  capturar dos veces (409 con la compra existente).
+- **Búsqueda por código de barras:** `POST /products/search` busca también en `barcode` y acepta
+  `by: all | name | code`.
+- **Volver a vender** (`POST /sales/:id/reorder`): venta nueva en borrador con el cliente y los
+  productos de una venta anulada o cobrada, con precios y existencias de hoy; informa ajustes,
+  omitidos y cambios de precio. ADR-0027.
+- Análisis (propuestas, sin código): exportar listas de precios (ADR-0028) y días de crédito con
+  cartera vencida (ADR-0029).
+
+### Precios por cliente y comprobantes (20/10/2026, v1.4.0)
+
+- **Cambio de precio en caja** (`PATCH /sales/:id/items/:itemId/price`) y **precios especiales por
+  cliente** con historial (ficha: `/client/:clientId/prices`). Sección de configuración `pricing`.
+  ADR-0025.
+- **Corregido: precios congelados.** El cierre de venta copiaba el precio de lista como "especial" del
+  cliente. Se eliminó; la migración `20261020212412_precios_especiales_cliente` desactiva (sin borrar)
+  esas filas capturadas automáticamente.
+- `set-client` responde cuántas líneas cambiaron de precio (`repriced`); las líneas guardan el origen del precio.
+- **Nota de remisión:** datos de la farmacia opcionales uno por uno (logo, razón social, RFC, régimen
+  fiscal —nuevo—, domicilio, teléfono, correo).
+- **Semilla:** el RFC se normaliza y valida (`common/utils/rfc.util.ts`).
+
 ### Corregido — contrato front ↔ back (16/10/2026, v1.3.0)
 
 - **Crear producto respondía 400** «property isActive should not exist» (con el cliente enfrente).

@@ -31,6 +31,21 @@ import { SettingsService } from 'src/settings/settings.service';
 import { Decimal } from '@prisma/client/runtime/library';
 import { decimalText, money } from 'src/common/utils/decimal.util';
 import { normalizeLotNumber, toUtcDateOnly } from 'src/inventory/fefo';
+import {
+  armarFolio,
+  claveProveedor,
+  fechaFolio,
+  FOLIO_PREFIJO,
+  siguienteConsecutivo,
+} from './purchase-folio';
+import {
+  fechaSugerida,
+  resolverFechaPago,
+  ymdDe,
+} from 'src/common/utils/credit-terms';
+
+/** Candado por proveedor al asignar folio (pg_advisory_xact_lock(clase, proveedor)). */
+const LOCK_FOLIO_POR_PROVEEDOR = 7003;
 
 @Injectable()
 export class PurchaseService {
@@ -90,13 +105,22 @@ export class PurchaseService {
       };
     });
 
+    // Fecha de pago al proveedor (opcional): sin dato, la de sus días de crédito.
+    const dueDate = this.fechaDePago(dto.dueDate, supplier.creditDays);
+
     //crear purchase e items, pagos y actualizar stock automaticamente
     const purchase = await this.prisma.$transaction(async (tx) => {
       // A. Crear la cabecera de la compra
       const created = await tx.purchase.create({
         data: {
           supplierId: dto.supplierId,
-          invoiceNumber: dto.invoiceNumber || `PO-${Date.now()}`, //Genera un folio si no se proporciona
+          // Sin folio del proveedor se asigna el sugerido (FAC-001-ALV-20261023).
+          invoiceNumber: await this.resolverFolio(
+            tx,
+            supplier,
+            dto.invoiceNumber,
+          ),
+          dueDate,
           total,
           subtotal,
           status: PurchaseStatus.PENDING,
@@ -245,24 +269,136 @@ export class PurchaseService {
     if (purchase.status === PurchaseStatus.CANCELLED) {
       throw new BadRequestException('Compra cancelada, no se puede actualizar');
     }
-    if (dto.supplierId) {
-      const supplier = await this.prisma.supplier.findUnique({
-        where: { id: dto.supplierId },
-      });
-      if (!supplier) {
-        throw new NotFoundException('Proveedor no encontrado');
-      }
+    const supplierId = dto.supplierId ?? purchase.supplierId;
+    const supplier = await this.prisma.supplier.findUnique({
+      where: { id: supplierId },
+    });
+    if (!supplier) {
+      throw new NotFoundException('Proveedor no encontrado');
     }
 
-    const update = await this.prisma.purchase.update({
-      where: { id },
-      data: {
-        supplierId: dto.supplierId,
-        invoiceNumber: dto.invoiceNumber,
-      },
-    });
+    const cambiaFolio =
+      dto.invoiceNumber !== undefined || supplierId !== purchase.supplierId;
 
-    return update;
+    return this.prisma.$transaction(async (tx) =>
+      tx.purchase.update({
+        where: { id },
+        data: {
+          supplierId: dto.supplierId,
+          // Al cambiar folio o proveedor se vuelve a revisar el duplicado.
+          invoiceNumber: cambiaFolio
+            ? await this.resolverFolio(
+                tx,
+                supplier,
+                dto.invoiceNumber ?? purchase.invoiceNumber,
+                id,
+              )
+            : undefined,
+          dueDate:
+            dto.dueDate === undefined
+              ? undefined
+              : this.fechaDePago(dto.dueDate, null),
+        },
+      }),
+    );
+  }
+
+  /** Fecha de pago validada (no anterior a hoy); errores como 400. */
+  private fechaDePago(
+    pedida: string | null | undefined,
+    diasProveedor: number | null,
+  ): Date | null {
+    try {
+      return resolverFechaPago(pedida, diasProveedor, 0);
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
+  }
+
+  /**
+   * Folio sugerido para una compra nueva del proveedor (no lo reserva: el
+   * definitivo se calcula al guardar, con el candado del proveedor).
+   */
+  async suggestFolio(supplierId: number) {
+    const supplier = await this.prisma.supplier.findUnique({
+      where: { id: supplierId },
+      select: { id: true, name: true, creditDays: true },
+    });
+    if (!supplier) {
+      throw new NotFoundException('Proveedor no encontrado');
+    }
+    const fechaPago = fechaSugerida(supplier.creditDays);
+    return {
+      folio: await this.sugerirFolio(this.prisma, supplier),
+      supplierCode: claveProveedor(supplier.name),
+      // Para proponer la fecha de pago en la captura (ADR-0029).
+      creditDays: supplier.creditDays,
+      suggestedDueDate: fechaPago ? ymdDe(fechaPago) : null,
+    };
+  }
+
+  /**
+   * Folio definitivo de la compra, con el proveedor bloqueado para que dos
+   * capturas simultáneas no tomen el mismo consecutivo ni el mismo folio.
+   *  - Vacío: se asigna el sugerido.
+   *  - Con texto: se rechaza si ya existe en otra compra no cancelada del
+   *    mismo proveedor (la misma factura capturada dos veces duplicaría la
+   *    deuda y el inventario).
+   */
+  private async resolverFolio(
+    tx: Prisma.TransactionClient,
+    supplier: { id: number; name: string },
+    folio: string | undefined,
+    excluirCompraId?: number,
+  ): Promise<string> {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${LOCK_FOLIO_POR_PROVEEDOR}::int, ${supplier.id}::int)`;
+
+    const propio = folio?.trim();
+    if (!propio) return this.sugerirFolio(tx, supplier);
+
+    const duplicada = await tx.purchase.findFirst({
+      where: {
+        supplierId: supplier.id,
+        invoiceNumber: { equals: propio, mode: 'insensitive' },
+        status: { not: PurchaseStatus.CANCELLED },
+        ...(excluirCompraId ? { id: { not: excluirCompraId } } : {}),
+      },
+      select: { id: true },
+    });
+    if (duplicada) {
+      throw new ConflictException(
+        `El folio ${propio} ya está registrado en la compra #${duplicada.id} de ${supplier.name}. Revisa que no la estés capturando dos veces.`,
+      );
+    }
+    return propio;
+  }
+
+  private async sugerirFolio(
+    db: Prisma.TransactionClient,
+    supplier: { id: number; name: string },
+  ): Promise<string> {
+    const clave = claveProveedor(supplier.name);
+    const fecha = fechaFolio();
+    const usados = await db.purchase.findMany({
+      where: {
+        supplierId: supplier.id,
+        invoiceNumber: {
+          startsWith: `${FOLIO_PREFIJO}-`,
+          endsWith: `-${clave}-${fecha}`,
+          mode: 'insensitive',
+        },
+      },
+      select: { invoiceNumber: true },
+    });
+    return armarFolio(
+      clave,
+      fecha,
+      siguienteConsecutivo(
+        usados.map((u) => u.invoiceNumber),
+        clave,
+        fecha,
+      ),
+    );
   }
 
   /**

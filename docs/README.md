@@ -66,6 +66,11 @@ Viven en el repositorio `engineering-playbook`, carpeta `adrs/`:
 | ADR-0022 | Asignar lote a existencia sin lote | `engineering-playbook/adrs/ADR-0022-pharma-assign-lot-to-unbatched-stock.md` |
 | ADR-0023 | Ayuda contextual y diseño responsivo | `engineering-playbook/adrs/ADR-0023-pharma-contextual-help-and-responsive-ui.md` |
 | ADR-0024 | Topología de producción e instalación por cliente | `engineering-playbook/adrs/ADR-0024-pharma-production-topology-and-installation.md` |
+| ADR-0025 | Precios especiales por cliente y cambio de precio en caja | `engineering-playbook/adrs/ADR-0025-pharma-client-special-prices.md` |
+| ADR-0026 | Folio sugerido, búsqueda por código y alta de producto desde Compras | `engineering-playbook/adrs/ADR-0026-pharma-purchase-folio-and-inline-product.md` |
+| ADR-0027 | Volver a vender una venta anulada | `engineering-playbook/adrs/ADR-0027-pharma-reorder-cancelled-sale.md` |
+| ADR-0028 | Exportar listas de precios (propuesta) | `engineering-playbook/adrs/ADR-0028-pharma-price-list-export.md` |
+| ADR-0029 | Días de crédito, cobranza por antigüedad y cuentas por pagar | `engineering-playbook/adrs/ADR-0029-pharma-credit-days-and-receivables.md` |
 
 ## 4. Flujo de trabajo
 

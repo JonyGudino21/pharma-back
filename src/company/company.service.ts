@@ -6,6 +6,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { isUniqueConstraintError } from 'src/common/utils/prisma-error.util';
+import { normalizarRfc } from 'src/common/utils/rfc.util';
 import {
   DEFAULT_COMPANY,
   DEFAULT_RECEIPT_LAYOUT,
@@ -61,7 +62,7 @@ export class CompanyService {
       data: {
         ...(dto.legalName !== undefined && { legalName: dto.legalName.trim() }),
         ...(dto.tradeName !== undefined && { tradeName: dto.tradeName.trim() }),
-        ...(dto.rfc !== undefined && { rfc: dto.rfc.trim().toUpperCase() }),
+        ...(dto.rfc !== undefined && { rfc: normalizarRfc(dto.rfc) }),
         ...(dto.fiscalRegime !== undefined && {
           fiscalRegime: dto.fiscalRegime,
         }),
