@@ -51,17 +51,17 @@ Si uno está en ✗ rojo: **no se instala**. Se corrige primero.
 cd C:\Projects\pharma-back
 git checkout main
 git pull
-git tag -a v1.5.0 -m "Versión 1.5.0"
-git push origin v1.5.0
+git tag -a v1.6.0 -m "Versión 1.6.0"
+git push origin v1.6.0
 
 cd C:\Projects\pharma-front
 git checkout main
 git pull
-git tag -a v1.5.0 -m "Versión 1.5.0"
-git push origin v1.5.0
+git tag -a v1.6.0 -m "Versión 1.6.0"
+git push origin v1.6.0
 ```
 
-Usa el mismo número en los dos. Súbelo en cada versión (1.5.0 → 1.5.1 para correcciones, 1.6.0 para
+Usa el mismo número en los dos. Súbelo en cada versión (1.6.0 → 1.6.1 para correcciones, 1.7.0 para
 funciones nuevas). Con la etiqueta siempre puedes volver exactamente a esa versión.
 
 ### A3. Compilar el front (el ZIP que llevarás)
@@ -74,7 +74,7 @@ pnpm install
 $env:NUXT_PUBLIC_API_BASE_URL = "/api"
 pnpm generate
 New-Item -ItemType Directory -Force C:\Releases | Out-Null
-Compress-Archive -Path .output\public\* -DestinationPath C:\Releases\pharmapos-web-v1.5.0.zip -Force
+Compress-Archive -Path .output\public\* -DestinationPath C:\Releases\pharmapos-web-v1.6.0.zip -Force
 ```
 
 **Comprueba:** abre el ZIP: en la raíz deben estar `index.html`, `200.html` y la carpeta `_nuxt`
@@ -100,7 +100,7 @@ Si todavía no:
 ```powershell
 $env:PATH = "C:\Program Files\PostgreSQL\16\bin;$env:PATH"
 New-Item -ItemType Directory -Force C:\PharmaPOS\respaldos | Out-Null
-pg_dump -h 127.0.0.1 -U pharmapos -d pharmapos -F c -f C:\PharmaPOS\respaldos\antes-de-v1.5.0.dump
+pg_dump -h 127.0.0.1 -U pharmapos -d pharmapos -F c -f C:\PharmaPOS\respaldos\antes-de-v1.6.0.dump
 ```
 (pide la contraseña de `pharmapos`).
 
@@ -127,13 +127,13 @@ sigas**: anota lo que salió y revisa 04-OPERACION.md § Problemas comunes.
 ```powershell
 git log -1 --oneline
 ```
-La primera vez que uses etiquetas, empieza en `v1.5.0`.
+La primera vez que uses etiquetas, empieza en `v1.6.0`.
 
 ### B4. Traer la versión nueva del backend
 
 ```powershell
 git fetch --tags
-git checkout v1.5.0
+git checkout v1.6.0
 ```
 (Si no usas etiquetas: `git checkout main` y luego `git pull`.)
 
@@ -173,10 +173,10 @@ npm run verificar
 
 ### B8. Front nuevo
 
-1. Copia el ZIP a la PC (p. ej. `C:\Releases\pharmapos-web-v1.5.0.zip`).
+1. Copia el ZIP a la PC (p. ej. `C:\Releases\pharmapos-web-v1.6.0.zip`).
 2. Descomprímelo **encima** de la carpeta actual (reemplaza archivos, **no borres antes**):
    ```powershell
-   Expand-Archive -Path C:\Releases\pharmapos-web-v1.5.0.zip -DestinationPath C:\PharmaPOS\web -Force
+   Expand-Archive -Path C:\Releases\pharmapos-web-v1.6.0.zip -DestinationPath C:\PharmaPOS\web -Force
    ```
 **Comprueba:** `Test-Path C:\PharmaPOS\web\index.html` → `True` y la fecha de modificación de
 `C:\PharmaPOS\web\index.html` es la de hoy.
@@ -220,8 +220,8 @@ Luego la prueba rápida (B10) en `https://tudominio`.
 
 Para instalar una etiqueta en lugar de `main`, antes de `./actualizar.sh`:
 ```bash
-git -C /opt/pharmapos/pharma-back fetch --tags && git -C /opt/pharmapos/pharma-back checkout v1.5.0
-git -C /opt/pharmapos/pharma-front fetch --tags && git -C /opt/pharmapos/pharma-front checkout v1.5.0
+git -C /opt/pharmapos/pharma-back fetch --tags && git -C /opt/pharmapos/pharma-back checkout v1.6.0
+git -C /opt/pharmapos/pharma-front fetch --tags && git -C /opt/pharmapos/pharma-front checkout v1.6.0
 docker compose up -d --build
 ```
 
@@ -235,6 +235,39 @@ docker compose up -d --build
 | La API no arranca y **no** había migraciones nuevas | Vuelve a la versión anterior: `git checkout v1.3.0` (su etiqueta) o, si aún no usas etiquetas, el *commit* anterior que anotaste en B4 (`git checkout <commit>`) → B5 → B7. |
 | La API no arranca y **sí** había migraciones nuevas | Restaura el respaldo de B1 (04-OPERACION.md §4.4) y vuelve a la versión anterior (fila de arriba). |
 | No sabes qué pasó | `npm run verificar` y `Get-Content C:\PharmaPOS\logs\api.log -Tail 50`. Con el código de referencia del error, busca en ese log. |
+
+---
+
+## Notas de la versión 1.6.0 (23/10/2026)
+
+> **Incluye la 1.5.0 y la 1.4.0**, que no se etiquetaron por separado: si la farmacia está en la
+> 1.3.0, lee también sus notas (abajo), sobre todo la **corrección de datos de precios especiales**.
+
+**Trae una migración** (`20261023180000_credito_fechas_de_pago`): agrega columnas opcionales, no
+borra nada. Las **compras ya recibidas que aún se deben** a proveedores con días de crédito reciben su
+fecha límite de pago (día de la compra + días del proveedor). Las ventas a crédito ya existentes
+quedan **sin fecha de pago** (los clientes no tenían días de crédito): aparecen en Cobranza como «Sin
+fecha» y se les puede poner fecha con el lápiz.
+
+Qué cambia para quien usa el sistema:
+
+- **Clientes › Cobranza** (antes «Deudores»): cuánto te deben, cuánto está vencido, la barra de
+  antigüedad, un resumen por cliente ordenado por urgencia y cada venta con su fecha de pago.
+- **Panel:** «Por cobrar a clientes» y «Por pagar a proveedores».
+- **Crédito del cliente:** «Días para pagar» (opcional).
+- **Caja:** al cargar a crédito se propone una **fecha de pago opcional**; aviso si el cliente debe
+  algo vencido.
+- **Compras:** fecha límite de pago al proveedor (propuesta con sus días de crédito), editable en el
+  detalle.
+- **Configuración › Crédito:** días sugeridos, aviso de «por vencer», aviso y bloqueo opcional con
+  saldo vencido (el bloqueo viene apagado).
+- Guía nueva para respaldar y cambiar de computadora: [08-RESPALDO-Y-CAMBIO-DE-PC.md](08-RESPALDO-Y-CAMBIO-DE-PC.md).
+
+Prueba rápida extra después de actualizar (B10):
+
+1. Abre **Clientes › Cobranza**: el total por cobrar debe ser igual a «Cuentas por Cobrar» del panel.
+2. En el panel, baja a **Cobrar y pagar**: se ven los dos recuadros.
+3. Con un cliente con crédito, al cobrar con **Cargar a crédito** aparece **Fecha de pago (opcional)**.
 
 ---
 

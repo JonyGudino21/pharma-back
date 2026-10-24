@@ -223,6 +223,18 @@ Reglas:
   lo editado a mano) y responde `repriced` (líneas que cambiaron).
 - El cierre de venta **ya no** escribe precios especiales (antes congelaba la lista; ver ADR-0025).
 
+## Fecha de pago de una venta a crédito (ADR-0029, v1.6)
+
+`POST /sales/:id/complete` acepta `dueDate` (AAAA-MM-DD) cuando la venta queda con saldo:
+
+- fecha: se guarda (no anterior a hoy ni a más de dos años; 400 si no);
+- `null`: sin fecha, a propósito;
+- ausente (clientes con una versión anterior): la sugerida con `Client.creditDays` o
+  `credit.defaultCreditDays`.
+
+Con `credit.blockCreditWhenOverdue`, si el cliente tiene otra venta con saldo y fecha pasada, el
+cierre responde 400 antes de tocar la deuda. Una venta pagada completa no guarda fecha.
+
 ## Volver a vender (ADR-0027, v1.5)
 
 | Método | Ruta | Uso |

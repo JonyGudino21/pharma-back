@@ -20,6 +20,7 @@ ha administrado un servidor**: cada paso dice qué hacer, qué escribir y cómo 
 | 5 | [Instalar en un cliente](05-INSTALAR-CLIENTE.md) | La visita a la farmacia: equipo, impresora, cajón, lector, capacitación y entrega. |
 | 6 | [Costos y planes](06-COSTOS-Y-PLANES.md) | Cuánto cuesta cada opción y propuesta de planes y precios para tus clientes. |
 | 7 | [Actualizar](07-ACTUALIZAR.md) | Llevar una versión nueva (backend y front) a la farmacia o a la nube sin perder nada, y cómo volver atrás. |
+| 8 | [Respaldo y cambio de computadora](08-RESPALDO-Y-CAMBIO-DE-PC.md) | Sacar y probar un respaldo cuando quieras, y pasar todos los datos a una computadora nueva. |
 
 ---
 

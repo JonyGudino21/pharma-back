@@ -121,6 +121,17 @@ Definición: `src/settings/definitions/pricing.settings.ts`.
 
 Gerencia y administración siempre pueden cambiar precios si `enabled`.
 
+## Sección `credit` — Crédito y cobranza (ADR-0029, v1.6)
+
+Definición: `src/settings/definitions/credit.settings.ts`.
+
+| Campo | Fábrica | Uso |
+|---|---|---|
+| `defaultCreditDays` | 0 | Días que se proponen para pagar si el cliente no tiene días propios (0 = no proponer). |
+| `dueSoonDays` | 7 | Ventana de "por vencer" (1–60). |
+| `warnOverdueAtPos` | true | Avisar en caja al elegir un cliente con saldo vencido. |
+| `blockCreditWhenOverdue` | false | Rechazar (400) una venta a crédito nueva si el cliente tiene saldo vencido. |
+
 ## Migración de las tablas de configuración
 
 `AppSetting` y `AppSettingAudit` (junto con `CashDrawerEvent`, `TaxCategory` y las columnas de

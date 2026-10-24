@@ -5,6 +5,19 @@ AAAA-MM-DD.
 
 ## Sin publicar
 
+### Cobranza y días de crédito (23/10/2026, v1.6.0)
+
+- **Días de crédito opcionales** por cliente y **fecha de pago opcional** en ventas a crédito
+  (`CompleteSaleDto.dueDate`) y compras (`dueDate`). Migración
+  `20261023180000_credito_fechas_de_pago` (aditiva; fecha a compras recibidas con saldo de
+  proveedores con días). ADR-0029.
+- **Cobranza:** `GET /client/receivables` (antigüedad, resumen por cliente, orden de cobro),
+  `PATCH /client/receivables/:saleId/due-date`, `GET /client/:id/credit-status`.
+- **Cuentas por pagar:** `GET /purchase/payables`.
+- **Configuración › Crédito** (`credit`): días sugeridos, ventana de por vencer, aviso y bloqueo
+  opcional con saldo vencido.
+- Guía nueva `docs/produccion/08-RESPALDO-Y-CAMBIO-DE-PC.md`.
+
 ### Ventas y compras más rápidas (23/10/2026, v1.5.0)
 
 - **Folio sugerido en compras** (`GET /purchase/suggest-folio?supplierId=`):

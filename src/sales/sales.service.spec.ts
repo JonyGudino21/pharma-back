@@ -15,6 +15,7 @@ import { CashShiftService } from '../cash-shift/cash-shift.service';
 import { PaymentService } from '../payment/payment.service';
 import { SettingsService } from '../settings/settings.service';
 import { createSettingsMock } from '../common/testing/settings.mock';
+import { pharmacyToday } from '../common/utils/mx-date-range.util';
 
 /**
  * Pruebas del contrato de CONCURRENCIA del cierre de venta (P0-1 / P2-1).
@@ -33,6 +34,7 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
       findUnique: jest.fn(),
       findUniqueOrThrow: jest.fn(),
       update: jest.fn(),
+      findFirst: jest.fn(),
     },
     saleItem: {
       findMany: jest.fn(),
@@ -120,6 +122,8 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
     ],
   };
 
+  const settings = createSettingsMock();
+
   const receta = {
     prescriptionNo: 'RX-001',
     doctorName: 'Dra. López',
@@ -136,9 +140,10 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
         { provide: InventoryBatchesService, useValue: mockBatches },
         { provide: CashShiftService, useValue: mockCashShift },
         { provide: PaymentService, useValue: mockPayment },
-        { provide: SettingsService, useValue: createSettingsMock() },
+        { provide: SettingsService, useValue: settings },
       ],
     }).compile();
+    settings.reset();
 
     service = module.get<SalesService>(SalesService);
     jest.clearAllMocks();
@@ -390,6 +395,80 @@ describe('SalesService — cierre de venta a prueba de concurrencia', () => {
       await expect(service.completeSale(10, 99)).rejects.toThrow(
         BadRequestException,
       );
+    });
+
+    describe('fecha de pago (ADR-0029, opcional)', () => {
+      const DIA = 24 * 60 * 60 * 1000;
+      const hoy = () => new Date(`${pharmacyToday()}T00:00:00.000Z`);
+      const enDias = (n: number) => new Date(hoy().getTime() + n * DIA);
+      const ymd = (d: Date) => d.toISOString().slice(0, 10);
+      /** Fecha de pago de la última escritura de la venta (el cierre). */
+      const dueDateGuardada = () => {
+        const llamadas = tx.sale.update.mock.calls as [
+          { data: { dueDate?: Date | null } },
+        ][];
+        return llamadas.at(-1)?.[0].data.dueDate ?? null;
+      };
+
+      beforeEach(() => {
+        tx.client.update.mockResolvedValue({
+          name: 'Farmacia Cliente',
+          currentDebt: new Decimal(300),
+          creditLimit: new Decimal(1000),
+        });
+      });
+
+      it('guarda la fecha elegida en caja', async () => {
+        tx.sale.findUnique.mockResolvedValue(ventaCredito);
+        await service.completeSale(10, 99, { dueDate: ymd(enDias(10)) });
+        expect(dueDateGuardada()).toEqual(enDias(10));
+      });
+
+      it('null = sin fecha, aunque el cliente tenga días de crédito', async () => {
+        tx.sale.findUnique.mockResolvedValue({
+          ...ventaCredito,
+          client: { ...ventaCredito.client, creditDays: 30 },
+        });
+        await service.completeSale(10, 99, { dueDate: null });
+        expect(dueDateGuardada()).toBeNull();
+      });
+
+      it('sin dato (versión anterior): sugiere con los días del cliente', async () => {
+        tx.sale.findUnique.mockResolvedValue({
+          ...ventaCredito,
+          client: { ...ventaCredito.client, creditDays: 30 },
+        });
+        await service.completeSale(10, 99);
+        expect(dueDateGuardada()).toEqual(enDias(30));
+      });
+
+      it('rechaza una fecha anterior a hoy, antes de tocar la deuda', async () => {
+        tx.sale.findUnique.mockResolvedValue(ventaCredito);
+        await expect(
+          service.completeSale(10, 99, { dueDate: ymd(enDias(-1)) }),
+        ).rejects.toThrow('anterior a hoy');
+        expect(tx.client.update).not.toHaveBeenCalled();
+      });
+
+      it('con «bloquear crédito con saldo vencido», rechaza a quien ya debe vencido', async () => {
+        settings.set('credit', { blockCreditWhenOverdue: true });
+        tx.sale.findUnique.mockResolvedValue(ventaCredito);
+        tx.sale.findFirst.mockResolvedValue({
+          id: 3,
+          invoiceNumber: 'FAC-20260901-000003',
+          dueDate: enDias(-5),
+        });
+        await expect(service.completeSale(10, 99)).rejects.toThrow(
+          'saldo vencido',
+        );
+        expect(tx.client.update).not.toHaveBeenCalled();
+      });
+
+      it('una venta pagada completa no guarda fecha de pago', async () => {
+        tx.sale.findUnique.mockResolvedValue(ventaBase);
+        await service.completeSale(10, 99, { dueDate: ymd(enDias(10)) });
+        expect(dueDateGuardada()).toBeNull();
+      });
     });
 
     it('rechaza saldo pendiente de un cliente sin crédito', async () => {
